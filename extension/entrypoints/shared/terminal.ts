@@ -63,6 +63,20 @@ async function createEphemeralTTY(): Promise<{ id: string; url: string }> {
     return createTTY({ mode: "shell" });
 }
 
+// Shift/Cmd+Enter send CSI 13;2u so agent CLIs insert a newline instead of submitting.
+function bindNewlineKeys(terminal: Terminal) {
+    terminal.attachCustomKeyEventHandler((event) => {
+        if (event.key !== "Enter" || event.ctrlKey || event.altKey || !(event.shiftKey || event.metaKey)) {
+            return true;
+        }
+        if (event.type === "keydown") {
+            event.preventDefault();
+            terminal.input("\x1b[13;2u");
+        }
+        return false;
+    });
+}
+
 function showSetup(message: string) {
     document.body.className = "at-setup-host";
     document.body.innerHTML = "";
@@ -189,6 +203,7 @@ async function main() {
     let ptyAttach: PtyAttachHandle | null = null;
 
     const terminal = new Terminal(xtermResp.result);
+    bindNewlineKeys(terminal);
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
@@ -529,6 +544,7 @@ async function runSingleTerminal(
 ) {
     let activeTtyId = tty.id;
     const terminal = new Terminal(xtermConfig);
+    bindNewlineKeys(terminal);
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
