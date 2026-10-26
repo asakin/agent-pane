@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"embed"
@@ -863,7 +862,7 @@ func HandleWebsocket(session *Session) http.HandlerFunc {
 				close(done)
 				return
 			}
-			if _, err := session.Pty.Write(bytes.Trim(data, "\x00")); err != nil {
+			if _, err := session.Pty.Write(data); err != nil {
 				log.Printf("failed to write to tty: %s", err)
 				close(done)
 				return

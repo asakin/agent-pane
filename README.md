@@ -65,6 +65,20 @@ Because it is just a terminal, you can use any browser automation you prefer: [a
 - **One-Click Agent Launcher:** `+` runs your last agent; dropdown menu for Claude, Codex, Cursor, Hermes, OpenClaw, or Terminal
 - **Settings:** shell, theme, font size, env, and Run doctor in Chrome extension options
 
+Terminal editing follows VS Code/Cursor conventions. Shift+Enter inserts a newline in
+supporting agent CLIs; on macOS, Cmd+Enter does too. Cmd+Backspace deletes to the start
+of the line, Cmd+Left/Right moves to its start/end, and Option+Left/Right moves by word.
+Option+Backspace sends Ctrl+W (delete the previous whitespace-delimited word), and
+Option+Delete deletes forward by word. On Windows/Linux, Ctrl+Backspace/Delete deletes
+backward/forward by word. Option/Alt+Up/Down sends Ctrl+Up/Down.
+
+On macOS, Cmd+A selects the terminal buffer, Cmd+K clears the visible terminal history,
+and Escape clears a selection. Page Up/Down, Cmd+Home/End and Cmd+Option+Page Up/Down
+scroll by page, to the top/bottom and by line respectively. Scrolling shortcuts apply
+only to the normal buffer, leaving alternate-screen applications in control of page
+navigation. Copy/paste uses the browser's normal shortcuts. Browser-reserved shortcuts
+and Cursor's editor, pane, search and shell-integration commands are not remapped.
+
 ## Features
 
 - **Session survival:** close the side panel and reopen later; the agent is still running

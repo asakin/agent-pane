@@ -2,6 +2,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { bindKeySequences } from "./terminalKeys";
 import {
     RequestCreateTTY,
     RequestGetXtermConfig,
@@ -61,20 +62,6 @@ async function createEphemeralTTY(): Promise<{ id: string; url: string }> {
         return resp.result;
     }
     return createTTY({ mode: "shell" });
-}
-
-// Shift/Cmd+Enter send CSI 13;2u so agent CLIs insert a newline instead of submitting.
-function bindNewlineKeys(terminal: Terminal) {
-    terminal.attachCustomKeyEventHandler((event) => {
-        if (event.key !== "Enter" || event.ctrlKey || event.altKey || !(event.shiftKey || event.metaKey)) {
-            return true;
-        }
-        if (event.type === "keydown") {
-            event.preventDefault();
-            terminal.input("\x1b[13;2u");
-        }
-        return false;
-    });
 }
 
 function showSetup(message: string) {
@@ -203,7 +190,7 @@ async function main() {
     let ptyAttach: PtyAttachHandle | null = null;
 
     const terminal = new Terminal(xtermResp.result);
-    bindNewlineKeys(terminal);
+    bindKeySequences(terminal);
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
@@ -544,7 +531,7 @@ async function runSingleTerminal(
 ) {
     let activeTtyId = tty.id;
     const terminal = new Terminal(xtermConfig);
-    bindNewlineKeys(terminal);
+    bindKeySequences(terminal);
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
