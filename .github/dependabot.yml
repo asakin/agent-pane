@@ -1,0 +1,39 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /extension
+    schedule:
+      interval: weekly
+    groups:
+      non-major:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      non-major-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      non-major:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      non-major-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch

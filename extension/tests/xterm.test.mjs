@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import xterm from "@xterm/xterm";
-import ts from "typescript";
+import { attachPtySocket } from "../entrypoints/shared/ptyAttach.ts";
 
 const { Terminal } = xterm;
 const write = (terminal, data) => new Promise(resolve => terminal.write(data, resolve));
@@ -26,9 +25,6 @@ test("xterm handles chunked synchronized output, alternate screen and reset", as
 });
 
 test("PTY replay suppresses old terminal replies, then forwards live control bytes", async (t) => {
-    const source = await readFile(new URL("../entrypoints/shared/ptyAttach.ts", import.meta.url), "utf8");
-    const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext } });
-    const { attachPtySocket } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
     const originalWebSocket = globalThis.WebSocket;
     globalThis.WebSocket = { OPEN: 1 };
     t.after(() => { globalThis.WebSocket = originalWebSocket; });

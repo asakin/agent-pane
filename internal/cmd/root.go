@@ -30,15 +30,10 @@ var cacheDir = filepath.Join(os.Getenv("HOME"), ".cache", "agent-terminal")
 var dataDir = filepath.Join(os.Getenv("HOME"), ".local", "share", "agent-terminal")
 var commandDir = filepath.Join(configDir, "commands")
 var appDir = filepath.Join(configDir, "apps")
-var shimDir = filepath.Join(dataDir, "bin")
 
 var legacyConfigDir = filepath.Join(os.Getenv("HOME"), ".config", "tweety")
 var legacyCacheDir = filepath.Join(os.Getenv("HOME"), ".cache", "tweety")
 var legacyDataDir = filepath.Join(os.Getenv("HOME"), ".local", "share", "tweety")
-
-const nativeHostID = "com.agentterminal.native"
-const nativeHostManifest = "com.agentterminal.native.json"
-const legacyNativeHostManifest = "com.github.pomdtr.tweety.json"
 
 func NewCmdRoot(version string) *cobra.Command {
 	cmd := &cobra.Command{
@@ -56,10 +51,8 @@ func NewCmdRoot(version string) *cobra.Command {
 
 	cmd.AddCommand(
 		NewCmdServe(),
-		NewCmdInstall(),
 		NewCmdRun(),
-		NewCmdDoctor(),
-		NewCmdBrowserGate(),
+		NewCmdSpawn(),
 	)
 
 	return cmd
@@ -69,8 +62,9 @@ func loadConfig() error {
 	migrateLegacyDirs()
 
 	confmapProvider := confmap.Provider(map[string]interface{}{
-		"command": getDefaultShell(),
-		"theme":   "Tomorrow Night",
+		"command":   getDefaultShell(),
+		"theme":     "Tomorrow Night",
+		"themeDark": "Tomorrow Night",
 		"xterm": map[string]interface{}{
 			"fontSize": 13,
 		},
@@ -86,8 +80,9 @@ func loadConfig() error {
 		}
 
 		configBytes, err := json.MarshalIndent(map[string]interface{}{
-			"command": getDefaultShell(),
-			"theme":   "Tomorrow Night",
+			"command":   getDefaultShell(),
+			"theme":     "Tomorrow Night",
+			"themeDark": "Tomorrow Night",
 			"xterm": map[string]interface{}{
 				"fontSize": 13,
 			},

@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import ts from "typescript";
-
-const source = await readFile(new URL("../entrypoints/shared/terminalKeys.ts", import.meta.url), "utf8");
-const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext } });
-const { bindKeySequences } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+import { bindKeySequences } from "../entrypoints/shared/terminalKeys.ts";
 
 function harness(isMac, bufferType = "normal", selected = false) {
     let handler;

@@ -15,30 +15,28 @@ jobs:
   goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - run: git fetch --force --tags
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: "18"
+          node-version: "26"
           cache: "npm"
           cache-dependency-path: "extension/package-lock.json"
-      - name: Set VERSION env var
-        run: echo "VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')" >> $GITHUB_ENV
+      - name: Set manifest version
+        run: echo "MANIFEST_VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')" >> "$GITHUB_ENV"
       - name: Build extension
         run: npm ci && npm run build && npm run zip:firefox
         working-directory: extension
-        env:
-          MANIFEST_VERSION: ${{ env.VERSION }}
-      - uses: actions/setup-go@v3
+      - uses: actions/setup-go@v7
         with:
-          go-version: ">=1.19.4"
+          go-version-file: go.mod
           cache: true
-      - uses: goreleaser/goreleaser-action@v4
+      - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
-          version: latest
+          version: "~> v2"
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

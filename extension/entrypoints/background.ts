@@ -1,6 +1,7 @@
-import { JSONRPCResponse, RequestDestroyTTY } from "~/entrypoints/shared/rpc"
+import { requestNative } from "~/entrypoints/shared/nativeRpc"
+import type { RequestDestroyTTY } from "~/entrypoints/shared/rpc"
 import {
-  WindowTabState,
+  type WindowTabState,
   legacySessionKey,
   windowStateKey,
 } from "~/entrypoints/shared/windowTabs"
@@ -59,33 +60,23 @@ export default defineBackground(() => {
       await browser.storage.local.set({ browserId });
     }
 
-    await initialize(_nativePort, browserId);
+    // Handshake only. The host answers other calls without it, so a stalled
+    // initialize must not hold the port.
+    void initialize(_nativePort, browserId);
 
     return _nativePort;
   }
 
   function initialize(port: Browser.runtime.Port, browserId: string) {
-    return new Promise((resolve) => {
-      const requestId = crypto.randomUUID();
-
-      port.onMessage.addListener((message) => {
-        if (!isJsonRpcResponse(message) || message.id !== requestId) {
-          return;
-        }
-
-        return resolve(message);
-      });
-
-      port.postMessage({
-        jsonrpc: "2.0",
-        method: "initialize",
-        id: requestId,
-        params: {
-          browserId,
-          version: browser.runtime.getManifest().version,
-        }
-      })
-    })
+    return requestNative(port, {
+      jsonrpc: "2.0",
+      method: "initialize",
+      id: crypto.randomUUID(),
+      params: {
+        browserId,
+        version: browser.runtime.getManifest().version,
+      },
+    });
   }
 
   browser.runtime.onInstalled.addListener(async () => {
@@ -102,35 +93,13 @@ export default defineBackground(() => {
   });
 
   async function destroyTTYViaNative(nativePort: Browser.runtime.Port, ttyId: string) {
-    const requestId = crypto.randomUUID();
     const msg: RequestDestroyTTY = {
       jsonrpc: "2.0",
-      id: requestId,
+      id: crypto.randomUUID(),
       method: "tty.destroy",
       params: { id: ttyId },
     };
-
-    await new Promise<void>((resolve) => {
-      const listener = (res: unknown) => {
-        if (!isJsonRpcResponse(res) || res.id !== requestId) {
-          return;
-        }
-        nativePort.onMessage.removeListener(listener);
-        resolve();
-      };
-      nativePort.onMessage.addListener(listener);
-      try {
-        nativePort.postMessage(msg);
-      } catch {
-        nativePort.onMessage.removeListener(listener);
-        resolve();
-        return;
-      }
-      setTimeout(() => {
-        nativePort.onMessage.removeListener(listener);
-        resolve();
-      }, 2000);
-    });
+    await requestNative(nativePort, msg, 2000);
   }
 
   async function destroyWindowSession(windowId: number) {
@@ -174,66 +143,46 @@ export default defineBackground(() => {
       return false; // Ignore messages from unknown senders
     }
 
-    getNativePort().then((nativePort) => {
+    const id = msg && typeof msg.id === "string" ? msg.id : "";
+    if (!id) {
+      sendResponse({
+        jsonrpc: "2.0",
+        error: {
+          code: -32600,
+          message: "id is required",
+        },
+      });
+      return true;
+    }
+
+    getNativePort().then(async (nativePort) => {
       if (!nativePort) {
-        return sendResponse({
+        sendResponse({
           jsonrpc: "2.0",
-          id: msg.id || generateSecureId(12),
+          id,
           error: {
             code: -32001,
             message: "Native host is not connected",
           }
         });
+        return;
       }
 
-      const listener = (res: unknown) => {
-        if (typeof res !== "object" || res === null) {
-          return;
+      const res = await requestNative(nativePort, msg);
+      sendResponse(res);
+    }).catch((err: unknown) => {
+      sendResponse({
+        jsonrpc: "2.0",
+        id,
+        error: {
+          code: -32001,
+          message: err instanceof Error ? err.message : "Native host is not connected",
         }
-
-        if (!isJsonRpcResponse(res)) {
-          return;
-        }
-
-        if (res.id !== msg.id) {
-          return;
-        }
-
-        nativePort.onMessage.removeListener(listener);
-        sendResponse(res);
-      }
-
-      nativePort.onMessage.addListener(listener)
-      nativePort.postMessage(msg);
+      });
     })
-
 
     return true
   })
-
-  const isJsonRpcResponse = (message: unknown): message is JSONRPCResponse => {
-    if (typeof message !== "object" || message === null) {
-      return false;
-    }
-
-    if (!("jsonrpc" in message) || message.jsonrpc !== "2.0") {
-      return false;
-    }
-
-    if (!("id" in message) || typeof message.id !== "string") {
-      return false;
-    }
-
-    if ("result" in message && (typeof message.result !== "object" || message.result === null)) {
-      return false;
-    }
-
-    if ("error" in message && (typeof message.error !== "object" || message.error === null)) {
-      return false;
-    }
-
-    return true;
-  }
 
   function generateSecureId(length = 12) {
     const charset = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';

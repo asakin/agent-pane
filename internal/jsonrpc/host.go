@@ -12,30 +12,23 @@ import (
 )
 
 type RequestHandlerFunc = func(params []byte) (result any, err error)
-type NotificationHandlerFunc = func(params []byte) error
 
 type Host struct {
-	logger               *slog.Logger
-	mu                   sync.Mutex
-	requestsHandler      map[string]RequestHandlerFunc
-	notificationsHandler map[string]NotificationHandlerFunc
-	clientChannels       map[string]chan JSONRPCResponse
+	logger         *slog.Logger
+	mu             sync.Mutex
+	handlers       map[string]RequestHandlerFunc
+	clientChannels map[string]chan JSONRPCResponse
 }
 
 func (h *Host) HandleRequest(method string, handler RequestHandlerFunc) {
-	h.requestsHandler[method] = handler
-}
-
-func (h *Host) HandleNotification(method string, handler NotificationHandlerFunc) {
-	h.notificationsHandler[method] = handler
+	h.handlers[method] = handler
 }
 
 func NewHost(logger *slog.Logger) *Host {
 	return &Host{
-		logger:               logger,
-		requestsHandler:      make(map[string]RequestHandlerFunc),
-		notificationsHandler: make(map[string]NotificationHandlerFunc),
-		clientChannels:       make(map[string]chan JSONRPCResponse),
+		logger:         logger,
+		handlers:       make(map[string]RequestHandlerFunc),
+		clientChannels: make(map[string]chan JSONRPCResponse),
 	}
 }
 
@@ -102,22 +95,10 @@ func (h *Host) Listen() error {
 		}
 
 		if request.ID == "" {
-			handler, ok := h.notificationsHandler[request.Method]
-			if !ok {
-				h.logger.Error("no handler found for notification", "method", request.Method)
-				continue
-			}
-
-			go func() {
-				if err := handler(request.Params); err != nil {
-					h.logger.Error("failed to handle notification", "method", request.Method, "error", err)
-				}
-			}()
-
 			continue
 		}
 
-		handler, ok := h.requestsHandler[request.Method]
+		handler, ok := h.handlers[request.Method]
 		if !ok {
 			h.logger.Error("no handler found for request", "method", request.Method)
 
@@ -198,24 +179,7 @@ func (h *Host) SendRequest(request JSONRPCRequest) (JSONRPCResponse, error) {
 	}
 }
 
-func (h *Host) SendNotification(method string, params interface{}) error {
-	paramsBytes, err := json.Marshal(params)
-	if err != nil {
-		return fmt.Errorf("failed to marshal params: %w", err)
-	}
-
-	notification := JSONRPCRequest{
-		JSONRPCVersion: "2.0",
-		Method:         method,
-		Params:         paramsBytes,
-	}
-
-	if err := writeMessage(notification); err != nil {
-		return fmt.Errorf("failed to write notification: %w", err)
-	}
-
-	return nil
-}
+var writeMu sync.Mutex
 
 func writeMessage(data interface{}) error {
 	msg, err := json.Marshal(data)
@@ -224,12 +188,13 @@ func writeMessage(data interface{}) error {
 	}
 	length := uint32(len(msg))
 
-	// Write the 4-byte length header
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
 	if err := binary.Write(os.Stdout, binary.LittleEndian, length); err != nil {
 		return err
 	}
 
-	// Write the message
 	_, err = os.Stdout.Write(msg)
 	return err
 }

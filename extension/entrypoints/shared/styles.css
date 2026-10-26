@@ -1,3 +1,35 @@
+@font-face {
+    font-family: "JetBrainsMono Nerd Font Mono";
+    src: url("/fonts/JetBrainsMonoNerdFontMono-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: block;
+}
+
+@font-face {
+    font-family: "JetBrainsMono Nerd Font Mono";
+    src: url("/fonts/JetBrainsMonoNerdFontMono-Bold.woff2") format("woff2");
+    font-weight: 700;
+    font-style: normal;
+    font-display: block;
+}
+
+@font-face {
+    font-family: "JetBrainsMono Nerd Font Mono";
+    src: url("/fonts/JetBrainsMonoNerdFontMono-Italic.woff2") format("woff2");
+    font-weight: 400;
+    font-style: italic;
+    font-display: block;
+}
+
+@font-face {
+    font-family: "JetBrainsMono Nerd Font Mono";
+    src: url("/fonts/JetBrainsMonoNerdFontMono-BoldItalic.woff2") format("woff2");
+    font-weight: 700;
+    font-style: italic;
+    font-display: block;
+}
+
 html::-webkit-scrollbar,
 body::-webkit-scrollbar,
 div::-webkit-scrollbar {

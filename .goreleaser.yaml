@@ -36,19 +36,3 @@ checksum:
   name_template: "checksums.txt"
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
-brews:
-  - name: agent-terminal
-    homepage: https://github.com/agent-terminal/agent-terminal
-    repository:
-      owner: agent-terminal
-      name: homebrew-tap
-    install: |-
-      bin.install "agent-terminal"
-      (share/"agent-terminal").install "extensions"
-      bash_completion.install "completions/agent-terminal.bash"
-      zsh_completion.install "completions/agent-terminal.zsh"
-      fish_completion.install "completions/agent-terminal.fish"
-    caveats: |
-      After installation, run:
-        agent-terminal install
-      Then load the Chrome extension from share/agent-terminal/extensions/chrome

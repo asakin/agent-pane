@@ -1,10 +1,8 @@
-import {
+import type {
     RequestConfigGet,
     RequestConfigSet,
-    RequestDoctorFix,
     ResponseConfigGet,
     ResponseConfigSet,
-    ResponseDoctorFix,
 } from "./rpc";
 
 const form = document.getElementById("settings-form") as HTMLFormElement;
@@ -138,23 +136,6 @@ async function save(event: Event) {
     setStatus("Saved. Open a new side-panel session to apply.", "ok");
 }
 
-async function runDoctor() {
-    setStatus("Running doctor…");
-    const resp = await browser.runtime.sendMessage<RequestDoctorFix, ResponseDoctorFix>({
-        jsonrpc: "2.0",
-        id: crypto.randomUUID(),
-        method: "doctor.fix",
-        params: undefined,
-    });
-    if ("error" in resp) {
-        setStatus(resp.error.message, "error");
-        return;
-    }
-    setStatus(resp.result.message, resp.result.ok ? "ok" : "error");
-    await load();
-}
-
 form.addEventListener("submit", (e) => void save(e));
-document.getElementById("run-doctor")?.addEventListener("click", () => void runDoctor());
 
 void load();

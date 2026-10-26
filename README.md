@@ -10,60 +10,59 @@
 </p>
 
 <p align="center">
-An integrated terminal in your browser that lets you use AI coding agents to control live tabs (works with Claude Code, Codex, Cursor, Hermes, and more).
+A local shell in Chrome’s side panel.
 </p>
 
-https://github.com/user-attachments/assets/4a35a440-5a95-40eb-a6b8-d0e51e34b9f6
+Each terminal is a local shell. An agent in that shell uses whatever browser tools it already has.
 
-Connect your agents to Chrome with interactive browser automation, in Chrome’s side panel, on your live tabs.
-
-**Note:** this project is experimental. Agents can control your live Chrome and run shell commands on your machine. Use with care.
+**Note:** this project is experimental. Agents run shell commands on your machine. Use with care.
 
 ## Why Agent Terminal
 
-This extension lets coding agents drive the page you’re looking at: open, click, fill, snapshot in your real Chrome, while you watch and intervene.
-
+The side panel is a terminal next to the browser, in the same window.
 
 |                             | Agent Terminal                                   | IDE / Terminal.app alone                   |
 | --------------------------- | ------------------------------------------------ | ------------------------------------------ |
-| Interactive browser + agent | Side panel interaction next to live browser tabs | Easy to spawn invisible tabs you never see |
-| You stay in the loop        | Same window (watch the agent, take over anytime) | Automation often runs off-screen           |
-| One-click agents            | Claude / Codex / Cursor / Hermes / OpenClaw      | Manual shells and PATH                     |
+| Where the terminal sits     | Chrome side panel, beside the page               | A separate app                             |
+| You stay in the loop        | Same window                                      | You switch away to watch a terminal        |
+| One-click agents            | Scripts in ~/.config/agent-terminal/apps         | Manual shells and PATH                     |
 
+## Install
 
-## Quick start
-
-**Prerequisites:** [Go](https://go.dev/) 1.24+, [Node.js](https://nodejs.org/en) 20+, Chrome.
+Chrome, then:
 
 ```sh
-git clone https://github.com/rishiskhare/agent-terminal.git
-cd agent-terminal
-go build -o agent-terminal .
-./agent-terminal install
-cd extension && npm install && npm run build
+curl -fsSL https://raw.githubusercontent.com/asakin/agent-terminal/main/install.sh | sh
 ```
+
+The script downloads the binary for this machine, puts `~/.local/bin` on `PATH`, and writes the native-messaging manifest Chrome needs. On macOS it also starts a LaunchAgent that launches the shell, so programs the agent runs are not children of Chrome. If that manifest is not written, the script exits with an error. Running it again writes the same files again.
 
 Then load the extension in Chrome:
 
 1. Open `chrome://extensions`
 2. Turn on **Developer mode**
-3. Click **Load unpacked** and choose the `extension/dist/chrome-mv3` folder in this repo
+3. Click **Load unpacked** and choose `~/.local/share/agent-terminal/extensions/chrome` (the installer copies it from the release), or `extension/dist/chrome-mv3` from a checkout
 4. Open the side panel from the Agent Terminal extension icon
+
+From a checkout, build the binary and point the same script at it:
+
+```sh
+git clone https://github.com/asakin/agent-terminal.git
+cd agent-terminal
+go build -o agent-terminal .
+AGENT_TERMINAL_BIN="$PWD/agent-terminal" ./install.sh
+cd extension && npm install && npm run build
+```
 
 ## How it works
 
-This extension uses Vercel’s [agent-browser](https://github.com/vercel-labs/agent-browser) CLI, so the extension never touches page DOM. Browser automation runs using normal CLI tools inside the PTY. Agent Terminal does not add heavy MCP servers or a custom automation stack.
-
-It is a real terminal in Chrome’s side panel: your shell, local files, `git`, language toolchains, existing CLI/agent tools, and whatever else is on your `PATH`. By default, coding agents are guided to use agent-browser on your live Chrome tabs through an [AGENTS.md](internal/cmd/embed/AGENTS.md) file (custom instructions can be configured by directly editing this file).
-
-Because it is just a terminal, you can use any browser automation you prefer: [agent-browser](https://github.com/vercel-labs/agent-browser), Playwright, Puppeteer, Selenium, Chrome DevTools Protocol, or another CLI/MCP you already trust.
+It is a terminal in Chrome’s side panel: your shell, local files, `git`, language toolchains, existing CLI/agent tools, and whatever else is on your `PATH`. The extension does not attach to a browser and does not choose one. Browser automation is whatever CLI the agent runs.
 
 ## Usage
 
-- **Browse freely:** while your agent browses the web, you can browse other tabs. No need to keep the agent’s working tab in focus.
 - **Tabs:** up to 8 terminals per Chrome window
-- **One-Click Agent Launcher:** `+` runs your last agent; dropdown menu for Claude, Codex, Cursor, Hermes, OpenClaw, or Terminal
-- **Settings:** shell, theme, font size, env, and Run doctor in Chrome extension options
+- **One-Click Agent Launcher:** `+` runs your last agent. The menu lists the scripts in `~/.config/agent-terminal/apps`, then Terminal
+- **Settings:** shell, theme, font size, and env in the Chrome extension options
 
 Terminal editing follows VS Code/Cursor conventions. Shift+Enter inserts a newline in
 supporting agent CLIs; on macOS, Cmd+Enter does too. Cmd+Backspace deletes to the start
@@ -82,20 +81,10 @@ and Cursor's editor, pane, search and shell-integration commands are not remappe
 ## Features
 
 - **Session survival:** close the side panel and reopen later; the agent is still running
-- **Isolated sessions:** concurrent agents each get their own browser session
-- **Live Chrome only:** attaches to your Chrome (never Chrome-for-Testing)
-- **Setup doctor:** detects agent CLIs and sets up launchers plus `AGENTS.md`
-
-## Live Chrome
-
-Agents attach to the Chrome you’re already using. They will not start Chrome-for-Testing. You can keep browsing other tabs; the agent does not need its tab focused to keep working.
-
-1. Turn on remote debugging once at `chrome://inspect/#remote-debugging` (leave Chrome open)
-2. Click **Allow** if Chrome asks after a restart
 
 ## Contributing
 
-PRs welcome. For large changes, open an issue first. Keep the extension free of page host permissions, and keep browser automation on the user’s live Chrome.
+PRs welcome. For large changes, open an issue first. Keep the extension free of page host permissions.
 
 ## License
 

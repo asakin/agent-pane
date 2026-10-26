@@ -1,5 +1,4 @@
-const SETUP_COMMANDS = `go build -o agent-terminal .
-./agent-terminal install`;
+const SETUP_COMMANDS = `curl -fsSL https://raw.githubusercontent.com/asakin/agent-terminal/main/install.sh | sh`;
 
 /** Minimal native-host disconnect screen: error + install commands + Retry. */
 export function renderSetupScreen(errorMessage?: string): HTMLElement {
