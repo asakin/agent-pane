@@ -1,6 +1,6 @@
 module agent-terminal
 
-go 1.24
+go 1.25.0
 
 require (
 	github.com/aymanbagabas/go-pty v0.2.2
@@ -15,7 +15,7 @@ require (
 require (
 	github.com/creack/pty v1.1.24 // indirect
 	github.com/u-root/u-root v0.11.0 // indirect
-	golang.org/x/crypto v0.38.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
 )
 
 require (
@@ -29,5 +29,5 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
-	golang.org/x/sys v0.33.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 )
