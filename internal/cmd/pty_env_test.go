@@ -5,6 +5,27 @@ import (
 	"testing"
 )
 
+func TestLoginShellArgs(t *testing.T) {
+	cases := []struct {
+		shell string
+		args  []string
+		want  string
+	}{
+		{"/bin/zsh", nil, "-l"},
+		{"/bin/bash", []string{"--noprofile"}, "-l --noprofile"},
+		{"/usr/local/bin/fish", []string{"-l"}, "-l"},
+		{"/bin/zsh", []string{"--login"}, "--login"},
+		{"/bin/dash", nil, ""},
+		{"/usr/bin/python3", []string{"-q"}, "-q"},
+	}
+	for _, c := range cases {
+		got := strings.Join(loginShellArgs(c.shell, c.args), " ")
+		if got != c.want {
+			t.Fatalf("%s %v: got %q, want %q", c.shell, c.args, got, c.want)
+		}
+	}
+}
+
 func TestMergePtyEnvReplacesPATH(t *testing.T) {
 	base := []string{
 		"PATH=/usr/bin:/bin",

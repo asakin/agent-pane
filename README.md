@@ -25,7 +25,7 @@ The side panel is a terminal next to the browser, in the same window.
 | --------------------------- | ------------------------------------------------ | ------------------------------------------ |
 | Where the terminal sits     | Chrome side panel, beside the page               | A separate app                             |
 | You stay in the loop        | Same window                                      | You switch away to watch a terminal        |
-| One-click agents            | Scripts in ~/.config/agent-terminal/apps         | Manual shells and PATH                     |
+| One-click agents            | The agent commands your shell can already run    | Manual shells and PATH                     |
 
 ## Install
 
@@ -61,7 +61,7 @@ It is a terminal in Chrome’s side panel: your shell, local files, `git`, langu
 ## Usage
 
 - **Tabs:** up to 8 terminals per Chrome window
-- **One-Click Agent Launcher:** `+` runs your last agent. The menu lists the scripts in `~/.config/agent-terminal/apps`, then Terminal
+- **One-Click Agent Launcher:** `+` runs your last agent. The menu lists agent commands your shell can run (`pi`, `opencode`, `goose`, `claude`, `codex`), then any other script in `~/.config/agent-terminal/apps`, then Terminal
 - **Settings:** shell, theme, font size, and env in the Chrome extension options
 
 Terminal editing follows VS Code/Cursor conventions. Shift+Enter inserts a newline in

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"embed"
@@ -549,6 +550,7 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager) *jsonrpc.Ho
 		}
 		themes, _ := listThemeNames()
 		apps, _ := listAppNames()
+		apps = visibleApps(apps, userShellEnv())
 		return map[string]any{
 			"config": cfg,
 			"themes": themes,
@@ -621,17 +623,19 @@ func isSafeAppID(app string) bool {
 	return app != "" && safeAppIDRe.MatchString(app)
 }
 
-func appExists(app string) bool {
+const agentAppMarker = "# agent-terminal-app:"
+
+func appScript(app string) (string, bool) {
 	if !isSafeAppID(app) {
-		return false
+		return "", false
 	}
 	entrypoint := filepath.Join(appDir, app)
-	if _, err := os.Stat(entrypoint); err == nil {
-		return true
+	if info, err := os.Stat(entrypoint); err == nil && !info.IsDir() {
+		return entrypoint, true
 	}
 	entries, err := os.ReadDir(appDir)
 	if err != nil {
-		return false
+		return "", false
 	}
 	for _, file := range entries {
 		if file.IsDir() {
@@ -639,58 +643,90 @@ func appExists(app string) bool {
 		}
 		name := file.Name()
 		if strings.TrimSuffix(name, filepath.Ext(name)) == app {
+			return filepath.Join(appDir, name), true
+		}
+	}
+	return "", false
+}
+
+func managedAppScript(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 256)
+	n, _ := f.Read(buf)
+	return bytes.Contains(buf[:n], []byte(agentAppMarker))
+}
+
+func appExists(app string) bool {
+	script, ok := appScript(app)
+	if ok && !managedAppScript(script) {
+		return true
+	}
+	if isAgentCommand(app) {
+		if _, found := lookPathIn(userShellEnv(), app); found {
 			return true
 		}
 	}
-	return false
+	return ok
+}
+
+func scriptCommand(tty pty.Pty, entrypoint string, args []string) (*pty.Cmd, error) {
+	stat, err := os.Stat(entrypoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat app entrypoint: %w", err)
+	}
+	if stat.IsDir() {
+		return nil, fmt.Errorf("app entrypoint is a directory, expected a file: %s", entrypoint)
+	}
+	if stat.Mode()&0111 == 0 {
+		if err := os.Chmod(entrypoint, 0755); err != nil {
+			return nil, fmt.Errorf("failed to make app entrypoint executable: %w", err)
+		}
+	}
+	return tty.Command(entrypoint, args...), nil
 }
 
 func buildPtyCommand(tty pty.Pty, mode, app string, args []string, cwd string) (*pty.Cmd, error) {
 	var cmd *pty.Cmd
 	if mode == "app" && app != "" {
-		entrypoint := filepath.Join(appDir, app)
-		stat, err := os.Stat(entrypoint)
-
-		if os.IsNotExist(err) {
-			files, readErr := os.ReadDir(appDir)
-			if readErr == nil {
-				for _, file := range files {
-					if file.IsDir() {
-						continue
-					}
-
-					name := file.Name()
-					nameWithoutExt := strings.TrimSuffix(name, filepath.Ext(name))
-
-					if nameWithoutExt == app {
-						entrypoint = filepath.Join(appDir, name)
-						stat, err = os.Stat(entrypoint)
-						break
-					}
-				}
+		script, hasScript := appScript(app)
+		custom := hasScript && !managedAppScript(script)
+		if custom {
+			var err error
+			cmd, err = scriptCommand(tty, script, args)
+			if err != nil {
+				return nil, err
+			}
+		} else if isAgentCommand(app) {
+			if bin, found := lookPathIn(userShellEnv(), app); found {
+				cmd = tty.Command("/bin/sh", agentLaunchArgv(bin, configuredShell(), args)...)
 			}
 		}
-
-		if err != nil {
-			return nil, fmt.Errorf("failed to stat app entrypoint: %w", err)
-		}
-
-		if stat.IsDir() {
-			return nil, fmt.Errorf("app entrypoint is a directory, expected a file: %s", entrypoint)
-		}
-
-		if stat.Mode()&0111 == 0 {
-			if err := os.Chmod(entrypoint, 0755); err != nil {
-				return nil, fmt.Errorf("failed to make app entrypoint executable: %w", err)
+		if cmd == nil && hasScript {
+			var err error
+			cmd, err = scriptCommand(tty, script, args)
+			if err != nil {
+				return nil, err
 			}
 		}
-
-		cmd = tty.Command(entrypoint, args...)
+		if cmd == nil {
+			return nil, fmt.Errorf("unknown app %q", app)
+		}
 	} else {
-		cmd = tty.Command(k.String("command"), k.Strings("args")...)
+		shell := k.String("command")
+		cmd = tty.Command(shell, loginShellArgs(shell, k.Strings("args"))...)
 	}
 
-	cmd.Env = mergePtyEnv(os.Environ(), map[string]string{
+	// The plain shell is a login shell, so it builds its own PATH from the
+	// host's environment the way a terminal app does.
+	base := os.Environ()
+	if mode == "app" && app != "" {
+		base = userShellEnv()
+	}
+	cmd.Env = mergePtyEnv(base, map[string]string{
 		"TERM":         "xterm-256color",
 		"TERM_PROGRAM": "agent-terminal",
 	}, k.StringMap("env"))
@@ -702,6 +738,22 @@ func buildPtyCommand(tty pty.Pty, mode, app string, args []string, cwd string) (
 	}
 
 	return cmd, nil
+}
+
+// loginShellArgs makes zsh, bash, and fish start as login shells unless the
+// configured args already say so.
+func loginShellArgs(shell string, args []string) []string {
+	switch filepath.Base(shell) {
+	case "zsh", "bash", "fish":
+	default:
+		return args
+	}
+	for _, arg := range args {
+		if arg == "-l" || arg == "--login" {
+			return args
+		}
+	}
+	return append([]string{"-l"}, args...)
 }
 
 // mergePtyEnv builds the PTY environment. Later maps win, and a key replaces
