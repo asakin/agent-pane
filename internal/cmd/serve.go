@@ -460,6 +460,7 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager) *jsonrpc.Ho
 
 		xtermConfig := map[string]interface{}{
 			"cursorBlink":                   true,
+			"cursorStyle":                   "block",
 			"allowProposedApi":              true,
 			"macOptionIsMeta":               true,
 			"macOptionClickForcesSelection": true,

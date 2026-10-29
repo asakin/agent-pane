@@ -54,6 +54,15 @@ import {
     type TtyDimensions,
 } from "./windowTabs";
 
+function useBlockCursor(terminal: Terminal) {
+    terminal.options.cursorStyle = "block";
+    // Shells ask for a thin bar. Keep the full rectangle.
+    terminal.parser.registerCsiHandler({ intermediates: " ", final: "q" }, () => {
+        terminal.options.cursorStyle = "block";
+        return true;
+    });
+}
+
 function isSidePanelPage(): boolean {
     const path = location.pathname;
     return path.endsWith("sidepanel.html") || path.includes("/sidepanel");
@@ -259,6 +268,7 @@ async function main() {
 
     await loadTerminalFont(xtermResp.result);
     const terminal = new Terminal(xtermResp.result);
+    useBlockCursor(terminal);
     bindKeySequences(terminal);
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
@@ -636,6 +646,7 @@ async function runSingleTerminal(
     let activeTtyId = "";
     const scheduleResize = createResizeSender();
     const terminal = new Terminal(xtermConfig);
+    useBlockCursor(terminal);
     bindKeySequences(terminal);
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
