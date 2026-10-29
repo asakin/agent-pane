@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { errorFromResponse, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
+import { CHOOSE_FOLDER_TIMEOUT_MS, errorFromResponse, NATIVE_RPC_TIMEOUT_MS, nativeTimeoutMs, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
 
 function fakePort() {
     const listeners = new Set();
@@ -42,6 +42,12 @@ function clock() {
 function ok(id) {
     return { jsonrpc: "2.0", id, result: { ok: true } };
 }
+
+test("the folder picker is allowed to wait", () => {
+    assert.equal(nativeTimeoutMs("dialog.chooseFolder"), CHOOSE_FOLDER_TIMEOUT_MS);
+    assert.ok(CHOOSE_FOLDER_TIMEOUT_MS > NATIVE_RPC_TIMEOUT_MS);
+    assert.equal(nativeTimeoutMs("tty.create"), NATIVE_RPC_TIMEOUT_MS);
+});
 
 test("a matching response settles the call and drops the listener", async () => {
     const port = fakePort();

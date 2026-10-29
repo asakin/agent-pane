@@ -13,8 +13,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -525,6 +527,14 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager) *jsonrpc.Ho
 		return map[string]any{}, nil
 	})
 
+	messagingHost.HandleRequest("dialog.chooseFolder", func(input []byte) (any, error) {
+		path, err := chooseFolder()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"path": path}, nil
+	})
+
 	messagingHost.HandleRequest("config.get", func(input []byte) (any, error) {
 		cfg, err := readConfigMap()
 		if err != nil {
@@ -560,6 +570,38 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager) *jsonrpc.Ho
 	})
 
 	return messagingHost
+}
+
+const chooseFolderScript = `try
+	POSIX path of (choose folder with prompt "Launch in a folder")
+on error errMsg number errNum
+	if errNum is -128 then
+		return ""
+	end if
+	error errMsg number errNum
+end try`
+
+func chooseFolder() (string, error) {
+	if runtime.GOOS != "darwin" {
+		return "", fmt.Errorf("folder picker is not available")
+	}
+	out, err := exec.Command("osascript", "-e", chooseFolderScript).Output()
+	return folderPick(out, err)
+}
+
+func folderPick(stdout []byte, runErr error) (string, error) {
+	if runErr != nil {
+		detail := runErr.Error()
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) && len(exitErr.Stderr) > 0 {
+			detail = string(exitErr.Stderr)
+		}
+		if strings.Contains(detail, "User canceled") || strings.Contains(detail, "-128") {
+			return "", nil
+		}
+		return "", fmt.Errorf("folder picker: %s", strings.TrimSpace(detail))
+	}
+	return strings.TrimSpace(string(stdout)), nil
 }
 
 func listThemeNames() ([]string, error) {

@@ -50,6 +50,7 @@ import {
     resolveWindowId,
     saveWindowState,
     tabApp,
+    tabCwd,
     shortTabLabel,
     type TtyDimensions,
 } from "./windowTabs";
@@ -250,7 +251,7 @@ async function main() {
 
     let launcher!: LauncherController;
     launcher = mountAgentLauncher(launcherHost, {
-        onLaunch: (appId) => void newTab(appId),
+        onLaunch: (appId, cwd) => void newTab(appId, cwd),
         canLaunch: () => !!state && state.tabs.length < MAX_TABS,
     });
 
@@ -304,20 +305,20 @@ async function main() {
         return !!state && state.tabs.some((tab) => tab.id === id);
     }
 
-    async function openKind(app: string, size: TtyDimensions, remember: boolean): Promise<{ id: string; url: string; app: string }> {
+    async function openKind(app: string, size: TtyDimensions, remember: boolean, cwd?: string): Promise<{ id: string; url: string; app: string; cwd?: string }> {
         try {
-            const created = await createTTY(optsFromAppId(app, size));
+            const created = await createTTY(optsFromAppId(app, size, cwd));
             if (remember) {
                 await launcher.rememberApp(app, app !== "");
             }
-            return { ...created, app };
+            return { ...created, app, cwd };
         } catch (err) {
             if (!remember) {
                 throw err;
             }
             await launcher.rememberApp("", false);
-            const created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
-            return { ...created, app: "" };
+            const created = await createTTY({ mode: "shell", cwd, cols: size.cols, rows: size.rows });
+            return { ...created, app: "", cwd };
         }
     }
 
@@ -358,7 +359,7 @@ async function main() {
             if (!size) {
                 throw new Error("Terminal has no size yet");
             }
-            const created = await createTTY(optsFromAppId(kind, size));
+            const created = await createTTY(optsFromAppId(kind, size, tabCwd(state, deadId)));
             if (gen !== switchGen) {
                 await destroyTTY(created.id);
                 return false;
@@ -446,7 +447,7 @@ async function main() {
         }
     }
 
-    async function newTab(appId?: string) {
+    async function newTab(appId?: string, cwd?: string) {
         if (!state || state.tabs.length >= MAX_TABS) {
             return;
         }
@@ -455,9 +456,9 @@ async function main() {
             return;
         }
         const gen = ++switchGen;
-        let created: { id: string; url: string; app: string };
+        let created: { id: string; url: string; app: string; cwd?: string };
         try {
-            created = await openKind(appId ?? "", size, true);
+            created = await openKind(appId ?? "", size, true, cwd);
             await ensureWindowAlive(windowId, created.id);
         } catch (err) {
             if (!(err instanceof NativeUnavailable)) {
@@ -470,7 +471,7 @@ async function main() {
             return;
         }
         state = {
-            tabs: [...state.tabs, { id: created.id, app: created.app }],
+            tabs: [...state.tabs, { id: created.id, app: created.app, cwd: created.cwd }],
             activeId: created.id,
         };
         await saveWindowState(windowId, state);

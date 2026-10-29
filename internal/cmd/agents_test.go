@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -120,6 +122,36 @@ func TestSessionDir(t *testing.T) {
 	}
 	if got := sessionDir("", "", true); got != home {
 		t.Fatalf("empty = %s", got)
+	}
+}
+
+func TestChooseFolderCancelIsEmpty(t *testing.T) {
+	script := `try
+	error "User canceled." number -128
+on error errMsg number errNum
+	if errNum is -128 then
+		return ""
+	end if
+	error errMsg number errNum
+end try`
+	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	got, pickErr := folderPick(out, err)
+	if pickErr != nil || got != "" {
+		t.Fatalf("cancel = %q err=%v pick=%v", out, err, pickErr)
+	}
+}
+
+func TestFolderPick(t *testing.T) {
+	got, err := folderPick([]byte("/Users/a/proj\n"), nil)
+	if err != nil || got != "/Users/a/proj" {
+		t.Fatalf("path = %q %v", got, err)
+	}
+	got, err = folderPick(nil, fmt.Errorf("osascript: User canceled. (-128)"))
+	if err != nil || got != "" {
+		t.Fatalf("cancel = %q %v", got, err)
+	}
+	if _, err = folderPick(nil, fmt.Errorf("osascript: not allowed")); err == nil {
+		t.Fatal("expected a picker error")
 	}
 }
 

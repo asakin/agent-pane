@@ -1,5 +1,5 @@
 import { iconMarkup } from "./agentIcons";
-import type { AgentInfo, RequestConfigGet, ResponseConfigGet } from "./rpc";
+import type { AgentInfo, RequestChooseFolder, RequestConfigGet, ResponseChooseFolder, ResponseConfigGet } from "./rpc";
 import type { CreateTTYOpts, TtyDimensions } from "./windowTabs";
 
 const LAST_APP_KEY = "agent-terminal.lastApp";
@@ -99,17 +99,34 @@ export function resolveLastApp(last: string, agents: MenuAgent[]): string {
     return hit ? hit.id : SHELL_ID;
 }
 
-export function optsFromAppId(appId: string, size: TtyDimensions): CreateTTYOpts {
+export function optsFromAppId(appId: string, size: TtyDimensions, cwd?: string): CreateTTYOpts {
+    const dir = cwd ? { cwd } : {};
     if (!appId) {
-        return { mode: "shell", cols: size.cols, rows: size.rows };
+        return { mode: "shell", ...dir, cols: size.cols, rows: size.rows };
     }
-    return { mode: "app", app: appId, cols: size.cols, rows: size.rows };
+    return { mode: "app", app: appId, ...dir, cols: size.cols, rows: size.rows };
+}
+
+export async function chooseFolder(): Promise<string> {
+    const resp = await browser.runtime.sendMessage<RequestChooseFolder, ResponseChooseFolder>({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "dialog.chooseFolder",
+        params: undefined,
+    });
+    if ("error" in resp) {
+        throw new Error(resp.error.message);
+    }
+    if (typeof resp.result?.path !== "string") {
+        throw new Error("Folder picker returned no path");
+    }
+    return resp.result.path.trim();
 }
 
 export function mountAgentLauncher(
     host: HTMLElement,
     handlers: {
-        onLaunch: (appId: string) => void;
+        onLaunch: (appId: string, cwd?: string) => void;
         canLaunch: () => boolean;
     },
 ): LauncherController {
@@ -215,12 +232,28 @@ export function mountAgentLauncher(
         menuEl.style.top = `${r.bottom + 4}px`;
     };
 
-    const selectItem = async (appId: string) => {
-        await remember(appId, false);
-        closeMenu();
-        if (handlers.canLaunch()) {
-            handlers.onLaunch(appId);
+    const selectItem = async (appId: string, cwd?: string) => {
+        if (cwd === undefined) {
+            await remember(appId, false);
+            closeMenu();
+            if (handlers.canLaunch()) {
+                handlers.onLaunch(appId);
+            }
+            return;
         }
+        closeMenu();
+        let picked = "";
+        try {
+            picked = await chooseFolder();
+        } catch (err) {
+            console.error("agent-terminal:", err);
+            return;
+        }
+        if (!picked || !handlers.canLaunch()) {
+            return;
+        }
+        await remember(appId, false);
+        handlers.onLaunch(appId, picked);
     };
 
     const onMenuKey = (e: KeyboardEvent) => {
@@ -282,13 +315,20 @@ export function mountAgentLauncher(
                 check.textContent = "✓";
                 item.appendChild(check);
             }
-            item.addEventListener("click", () => void selectItem(id));
+            item.addEventListener("click", (event) => {
+                void selectItem(id, event.shiftKey ? "" : undefined);
+            });
             menuEl!.appendChild(item);
             menuItems.push(item);
             if (id === lastApp) {
                 activeIndex = i;
             }
         });
+
+        const hint = document.createElement("div");
+        hint.className = "at-launcher__hint";
+        hint.textContent = "shift+click to launch in a folder";
+        menuEl.appendChild(hint);
 
         document.body.appendChild(menuEl);
         positionMenu();
@@ -320,11 +360,11 @@ export function mountAgentLauncher(
         paintPrimary();
     };
 
-    primary.addEventListener("click", () => {
+    primary.addEventListener("click", (event) => {
         if (!launchEnabled || !handlers.canLaunch()) {
             return;
         }
-        handlers.onLaunch(lastApp);
+        void selectItem(lastApp, event.shiftKey ? "" : undefined);
     });
     chevron.addEventListener("click", () => void openMenu());
 

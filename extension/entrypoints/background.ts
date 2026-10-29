@@ -1,4 +1,4 @@
-import { requestNative } from "~/entrypoints/shared/nativeRpc"
+import { nativeTimeoutMs, requestNative } from "~/entrypoints/shared/nativeRpc"
 import type { RequestDestroyTTY } from "~/entrypoints/shared/rpc"
 import {
   type WindowTabState,
@@ -174,7 +174,8 @@ export default defineBackground(() => {
         return;
       }
 
-      const res = await requestNative(nativePort, msg);
+      const method = msg && typeof msg.method === "string" ? msg.method : "";
+      const res = await requestNative(nativePort, msg, nativeTimeoutMs(method));
       sendResponse(res);
     }).catch((err: unknown) => {
       sendResponse({

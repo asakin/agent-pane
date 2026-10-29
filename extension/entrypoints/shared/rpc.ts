@@ -37,6 +37,12 @@ export type RequestDestroyTTY = JSONRPCRequestBase<"tty.destroy", {
     id: string;
 }>
 
+export type RequestChooseFolder = JSONRPCRequestBase<"dialog.chooseFolder", undefined>
+
+export type ResponseChooseFolder = JSONRPCResponseBase<{
+    path: string;
+}>
+
 export type RequestGetXtermConfig = JSONRPCRequestBase<"xterm.getConfig", {
     variant?: "light" | "dark";
 }>;

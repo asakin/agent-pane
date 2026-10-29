@@ -12,6 +12,7 @@ export const MAX_TABS = 8;
 export type WindowTab = {
     id: string;
     app: string;
+    cwd?: string;
 };
 
 export type WindowTabState = {
@@ -86,13 +87,14 @@ export type TtyDimensions = {
 };
 
 export type CreateTTYOpts =
-    | ({ mode: "shell" } & TtyDimensions)
-    | ({ mode: "app"; app: string } & TtyDimensions);
+    | ({ mode: "shell"; cwd?: string } & TtyDimensions)
+    | ({ mode: "app"; app: string; cwd?: string } & TtyDimensions);
 
 export async function createTTY(opts: CreateTTYOpts): Promise<{ id: string; url: string }> {
+    const cwd = opts.cwd || undefined;
     const params = opts.mode === "app"
-        ? { mode: "app" as const, app: opts.app, cols: opts.cols, rows: opts.rows }
-        : { mode: "shell" as const, cols: opts.cols, rows: opts.rows };
+        ? { mode: "app" as const, app: opts.app, cwd, cols: opts.cols, rows: opts.rows }
+        : { mode: "shell" as const, cwd, cols: opts.cols, rows: opts.rows };
     const resp = await browser.runtime.sendMessage<RequestCreateTTY, ResponseCreateTTY>({
         jsonrpc: "2.0",
         id: crypto.randomUUID(),
@@ -179,4 +181,9 @@ export function replaceTabId(state: WindowTabState, oldId: string, nextId: strin
 
 export function tabApp(state: WindowTabState, id: string): string {
     return state.tabs.find((tab) => tab.id === id)?.app ?? "";
+}
+
+export function tabCwd(state: WindowTabState, id: string): string | undefined {
+    const cwd = state.tabs.find((tab) => tab.id === id)?.cwd;
+    return cwd || undefined;
 }

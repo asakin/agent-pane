@@ -307,6 +307,22 @@ body.at-options {
     font-size: 12px;
 }
 
+.at-launcher__hint {
+    margin: 4px 8px 2px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+    font-style: italic;
+    font-size: 11px;
+    color: rgba(0, 0, 0, 0.38);
+    text-shadow: 0 1px 0 rgba(255, 255, 255, 0.75);
+
+    @media (prefers-color-scheme: dark) {
+        border-top-color: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.32);
+        text-shadow: 0 1px 0 rgba(0, 0, 0, 0.65);
+    }
+}
+
 div#terminal {
     flex: 1 1 auto;
     min-height: 0;

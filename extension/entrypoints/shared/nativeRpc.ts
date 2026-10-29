@@ -1,6 +1,14 @@
 import type { JSONRPCResponse } from "./rpc";
 
 export const NATIVE_RPC_TIMEOUT_MS = 5000;
+export const CHOOSE_FOLDER_TIMEOUT_MS = 120_000;
+
+export function nativeTimeoutMs(method: string): number {
+    if (method === "dialog.chooseFolder") {
+        return CHOOSE_FOLDER_TIMEOUT_MS;
+    }
+    return NATIVE_RPC_TIMEOUT_MS;
+}
 export const NATIVE_TIMEOUT = -32000;
 export const NATIVE_DISCONNECTED = -32001;
 
