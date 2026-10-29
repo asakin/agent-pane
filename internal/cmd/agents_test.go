@@ -106,6 +106,23 @@ func TestAgentExecArgsDoesNotTrap(t *testing.T) {
 	}
 }
 
+func TestSessionDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got := sessionDir("/tmp/asked", home+"/agents", true); got != "/tmp/asked" {
+		t.Fatalf("request = %s", got)
+	}
+	if got := sessionDir("", "~/work", true); got != filepath.Join(home, "work") {
+		t.Fatalf("tilde = %s", got)
+	}
+	if got := sessionDir("", "~/work", false); got != home {
+		t.Fatalf("shell = %s", got)
+	}
+	if got := sessionDir("", "", true); got != home {
+		t.Fatalf("empty = %s", got)
+	}
+}
+
 func TestLoginPathArgs(t *testing.T) {
 	zsh := loginPathArgs("/bin/zsh")
 	if strings.Join(zsh, " ") != "-lc printenv PATH" {

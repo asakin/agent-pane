@@ -609,14 +609,28 @@ func buildPtyCommand(tty pty.Pty, mode, app string, args []string, cwd string) (
 	}
 
 	cmd.Env = mergePtyEnv(os.Environ(), overlay, k.StringMap("env"))
-
-	if cwd != "" {
-		cmd.Dir = cwd
-	} else {
-		cmd.Dir = os.Getenv("HOME")
-	}
+	cmd.Dir = sessionDir(cwd, k.String("cwd"), mode == "app" && app != "")
 
 	return cmd, nil
+}
+
+// sessionDir is the request directory, or the configured agent folder, or home.
+// A leading ~ is the home directory. The shell tab does not use the agent folder.
+func sessionDir(requested, configured string, agent bool) string {
+	dir := requested
+	if dir == "" && agent {
+		dir = strings.TrimSpace(configured)
+	}
+	if dir == "" {
+		return os.Getenv("HOME")
+	}
+	if dir == "~" {
+		return os.Getenv("HOME")
+	}
+	if strings.HasPrefix(dir, "~/") {
+		return filepath.Join(os.Getenv("HOME"), dir[2:])
+	}
+	return dir
 }
 
 // loginShellArgs makes zsh, bash, and fish start as login shells unless the

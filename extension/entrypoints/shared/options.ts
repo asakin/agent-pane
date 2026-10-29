@@ -14,6 +14,7 @@ const argsEl = document.getElementById("args") as HTMLInputElement;
 const themeEl = document.getElementById("theme") as HTMLSelectElement;
 const fontSizeEl = document.getElementById("fontSize") as HTMLInputElement;
 const envEl = document.getElementById("env") as HTMLTextAreaElement;
+const cwdEl = document.getElementById("cwd") as HTMLInputElement;
 const agentsEl = document.getElementById("agents") as HTMLDivElement;
 const alphabeticalEl = document.getElementById("agentMenuAlphabetical") as HTMLInputElement;
 
@@ -156,6 +157,7 @@ async function load() {
         : {};
     fontSizeEl.value = String(clampFontSize(xterm.fontSize ?? 13));
     envEl.value = envToText(config.env);
+    cwdEl.value = typeof config.cwd === "string" ? config.cwd : "";
     alphabeticalEl.checked = config.agentMenuAlphabetical === true;
     renderAgents(knownAgents);
     setStatus("Loaded.", "ok");
@@ -170,6 +172,7 @@ async function save(event: Event) {
         args: parseArgs(argsEl.value),
         theme: themeEl.value,
         env: textToEnv(envEl.value),
+        cwd: cwdEl.value.trim() || null,
         xterm: {
             fontSize: clampFontSize(fontSizeEl.value),
         },
