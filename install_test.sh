@@ -36,6 +36,10 @@ grep -qx 'hello' "$home/AGENTS.md"
 grep -qx 'bye' "$home/AGENTS.md"
 grep -c 'agent-terminal:start' "$home/AGENTS.md" | grep -qx 1
 grep -q 'Playwright' "$home/AGENTS.md"
+[ -f "$home/.local/share/agent-terminal/agents/enabled.json" ]
+[ -f "$home/.local/share/agent-terminal/agents/claude/agent.json" ]
+[ -f "$home/.local/share/agent-terminal/agents/goose/icon.png" ]
+[ ! -e "$home/.config/agent-terminal/agents" ]
 
 if [ "$(uname -s)" = Darwin ]; then
 	plist="$home/Library/LaunchAgents/com.agentterminal.spawn.plist"

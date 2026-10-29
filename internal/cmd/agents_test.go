@@ -7,90 +7,127 @@ import (
 	"testing"
 )
 
-func TestParseShellEnvIgnoresBanner(t *testing.T) {
-	out := []byte("starship: command not found\n" +
-		envMarkerStart + "\n" +
-		"PATH=/opt/homebrew/bin:/usr/bin\x00HOME=/Users/a\x00" +
-		"\n" + envMarkerEnd + "\n")
-	env, err := parseShellEnv(out)
-	if err != nil {
+func writeAgent(t *testing.T, dir, id, body string) {
+	t.Helper()
+	folder := filepath.Join(dir, id)
+	if err := os.MkdirAll(folder, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if envValue(env, "PATH") != "/opt/homebrew/bin:/usr/bin" {
-		t.Fatalf("PATH = %q", envValue(env, "PATH"))
-	}
-	if envValue(env, "HOME") != "/Users/a" {
-		t.Fatalf("HOME = %q", envValue(env, "HOME"))
+	if err := os.WriteFile(filepath.Join(folder, "agent.json"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestShellCaptureArgs(t *testing.T) {
-	args, ok := shellCaptureArgs("/bin/zsh")
-	if !ok || len(args) != 2 || args[0] != "-ilc" {
-		t.Fatalf("zsh: %v %v", ok, args)
+func TestLoadAgentsMergeAndEnabled(t *testing.T) {
+	root := t.TempDir()
+	shipped := filepath.Join(root, "shipped")
+	user := filepath.Join(root, "user")
+	writeAgent(t, shipped, "claude", `{"name":"Claude","command":"claude"}`)
+	writeAgent(t, shipped, "goose", `{"name":"Goose","command":"goose"}`)
+	writeAgent(t, shipped, "broken", `{`)
+	writeAgent(t, shipped, "empty", `{"name":"Empty"}`)
+	writeAgent(t, user, "claude", `{"name":"Mine","command":"my-claude"}`)
+	if err := os.WriteFile(filepath.Join(user, "enabled.json"), []byte(`{"agents":{"claude":{"enabled":false},"goose":{"enabled":false}}}`), 0644); err != nil {
+		t.Fatal(err)
 	}
-	args, ok = shellCaptureArgs("/usr/local/bin/fish")
-	if !ok || args[0] != "-l" || args[1] != "-c" {
-		t.Fatalf("fish: %v %v", ok, args)
+	if err := os.WriteFile(filepath.Join(shipped, "enabled.json"), []byte(`{"agents":{"claude":{"enabled":true},"goose":{"enabled":true},"missing":{"enabled":true}}}`), 0644); err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := shellCaptureArgs("/bin/dash"); ok {
-		t.Fatal("dash should not be treated as a login interactive shell")
+
+	binDir := t.TempDir()
+	for _, name := range []string{"my-claude", "goose"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	untouched := loadAgents(shipped, user, nil, binDir)
+	for _, agent := range untouched {
+		if agent.ID == "claude" && !agent.Enabled {
+			t.Fatal("user enabled.json turned claude off")
+		}
+		if agent.ID == "goose" && !agent.Enabled {
+			t.Fatal("user enabled.json turned goose off")
+		}
+	}
+
+	off := false
+	got := loadAgents(shipped, user, map[string]*bool{"goose": &off}, binDir)
+	byID := map[string]Agent{}
+	for _, agent := range got {
+		byID[agent.ID] = agent
+	}
+	if _, ok := byID["broken"]; ok {
+		t.Fatal("broken agent.json was not skipped")
+	}
+	if _, ok := byID["empty"]; ok {
+		t.Fatal("agent without command was not skipped")
+	}
+	if _, ok := byID["missing"]; ok {
+		t.Fatal("enabled.json invented an agent with no folder")
+	}
+	claude := byID["claude"]
+	if claude.Name != "Mine" || claude.Source != "user" || !claude.Enabled || !claude.Available {
+		t.Fatalf("claude = %+v", claude)
+	}
+	if !strings.HasSuffix(claude.Bin, "my-claude") {
+		t.Fatalf("bin = %s", claude.Bin)
+	}
+	goose := byID["goose"]
+	if goose.Enabled || goose.Source != "shipped" || !goose.Available {
+		t.Fatalf("goose = %+v", goose)
 	}
 }
 
-func TestCaptureShellEnvFromFakeZsh(t *testing.T) {
-	dir := t.TempDir()
-	shell := filepath.Join(dir, "zsh")
-	script := "#!/bin/sh\nprintf '%s\\n' '" + envMarkerStart + "'\nprintf 'FOO=bar\\0PATH=/agents:/bin\\0'\nprintf '\\n%s\\n' '" + envMarkerEnd + "'\n"
-	if err := os.WriteFile(shell, []byte(script), 0755); err != nil {
+func TestShippedEnabledBrokenIsOff(t *testing.T) {
+	root := t.TempDir()
+	writeAgent(t, root, "claude", `{"name":"Claude","command":"claude"}`)
+	if err := os.WriteFile(filepath.Join(root, "enabled.json"), []byte(`{`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	env, err := captureShellEnv(shell)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if envValue(env, "FOO") != "bar" || envValue(env, "PATH") != "/agents:/bin" {
-		t.Fatalf("env = %v", env)
+	got := loadAgents(root, filepath.Join(root, "nope"), nil, "")
+	if len(got) != 1 || got[0].Enabled {
+		t.Fatalf("agents = %+v", got)
 	}
 }
 
-func TestVisibleAppsUsesPATHNotAStoredPath(t *testing.T) {
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "pi")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	env := []string{"PATH=" + dir + ":/usr/bin"}
-	got := visibleApps(nil, env)
-	if len(got) != 1 || got[0] != "pi" {
-		t.Fatalf("apps = %v", got)
-	}
-	if _, ok := lookPathIn(env, "cursor-agent"); ok {
-		t.Fatal("cursor-agent is not an agent command")
-	}
-	missing := visibleApps(nil, []string{"PATH=/usr/bin"})
-	if len(missing) != 0 {
-		t.Fatalf("expected no apps, got %v", missing)
-	}
-}
-
-func TestVisibleAppsKeepsAScriptAndDoesNotDuplicate(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "codex"), []byte("#!/bin/sh\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	got := visibleApps([]string{"codex", "mine"}, []string{"PATH=" + dir})
-	if strings.Join(got, ",") != "codex,mine" {
-		t.Fatalf("apps = %v", got)
-	}
-}
-
-func TestAgentLaunchArgvResolvesAtLaunch(t *testing.T) {
-	argv := agentLaunchArgv("/opt/homebrew/bin/claude", "/bin/bash", []string{"--resume"})
-	if argv[0] != "-c" || argv[2] != "_" || argv[3] != "/opt/homebrew/bin/claude" || argv[4] != "/bin/bash" || argv[5] != "--resume" {
+func TestAgentExecArgsDoesNotTrap(t *testing.T) {
+	argv := agentExecArgs("/bin/zsh", []string{"/opt/homebrew/bin/claude", "--resume"})
+	script := strings.Join(argv, "\n")
+	if strings.Contains(script, "trap") || strings.Contains(script, `exec "$shell"`) {
 		t.Fatalf("argv = %#v", argv)
 	}
-	if !strings.Contains(argv[1], `exec "$shell"`) {
-		t.Fatalf("script = %s", argv[1])
+	if argv[0] != "-l" || argv[1] != "-c" || argv[2] != `exec "$0" "$@"` || argv[3] != "/opt/homebrew/bin/claude" || argv[4] != "--resume" {
+		t.Fatalf("argv = %#v", argv)
+	}
+	fish := agentExecArgs("/usr/local/bin/fish", []string{"/bin/claude"})
+	if fish[0] != "-l" || fish[1] != "-c" || fish[2] != "exec $argv" || fish[3] != "/bin/claude" {
+		t.Fatalf("fish = %#v", fish)
+	}
+}
+
+func TestLoginPathArgs(t *testing.T) {
+	zsh := loginPathArgs("/bin/zsh")
+	if strings.Join(zsh, " ") != "-lc printenv PATH" {
+		t.Fatalf("zsh = %#v", zsh)
+	}
+	fish := loginPathArgs("/usr/local/bin/fish")
+	if strings.Join(fish, " ") != "-l -c printenv PATH" {
+		t.Fatalf("fish = %#v", fish)
+	}
+}
+
+func TestResolveCommandRelativeToFolder(t *testing.T) {
+	dir := t.TempDir()
+	wrapper := filepath.Join(dir, "bin", "wrap")
+	if err := os.MkdirAll(filepath.Dir(wrapper), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := resolveCommand(dir, "bin/wrap", nil)
+	if !ok || got != wrapper {
+		t.Fatalf("got %q %v", got, ok)
 	}
 }

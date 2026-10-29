@@ -46,8 +46,10 @@ import {
     loadWindowState,
     pruneTab,
     reclaimLegacySession,
+    replaceTabId,
     resolveWindowId,
     saveWindowState,
+    tabApp,
     shortTabLabel,
     type TtyDimensions,
 } from "./windowTabs";
@@ -155,7 +157,8 @@ function renderTabList(
 ) {
     list.replaceChildren();
 
-    for (const id of state.tabs) {
+    for (const entry of state.tabs) {
+        const id = entry.id;
         const tab = document.createElement("button");
         tab.type = "button";
         tab.className = "at-tabs__tab" + (id === state.activeId ? " at-tabs__tab--active" : "");
@@ -287,17 +290,24 @@ async function main() {
         launcher.setLaunchEnabled(state!.tabs.length < MAX_TABS);
     };
 
-    async function createWithFallback(preferred: string | undefined, size: TtyDimensions) {
+    function hasTab(id: string): boolean {
+        return !!state && state.tabs.some((tab) => tab.id === id);
+    }
+
+    async function openKind(app: string, size: TtyDimensions, remember: boolean): Promise<{ id: string; url: string; app: string }> {
         try {
-            if (preferred !== undefined) {
-                await launcher.rememberApp(preferred);
-                return await createTTY(optsFromAppId(preferred, size));
+            const created = await createTTY(optsFromAppId(app, size));
+            if (remember) {
+                await launcher.rememberApp(app, app !== "");
             }
-            const opts = await launcher.getCreateOpts(size);
-            return await createTTY(opts);
-        } catch {
-            await launcher.rememberApp("");
-            return await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
+            return { ...created, app };
+        } catch (err) {
+            if (!remember) {
+                throw err;
+            }
+            await launcher.rememberApp("", false);
+            const created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
+            return { ...created, app: "" };
         }
     }
 
@@ -332,44 +342,24 @@ async function main() {
 
         let endpoint = await attachTTY(state.activeId);
         if (!endpoint) {
-            const pruned = pruneTab(state, state.activeId);
-            if (!pruned) {
-                // Recreate with shell — no per-tab app metadata.
-                const size = fitAddon.proposeDimensions();
-                if (!size) {
-                    throw new Error("Terminal has no size yet");
-                }
-                const created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
-                if (gen !== switchGen) {
-                    await destroyTTY(created.id);
-                    return false;
-                }
-                await ensureWindowAlive(windowId, created.id);
-                state = { tabs: [created.id], activeId: created.id };
-            } else {
-                state = pruned;
+            const deadId = state.activeId;
+            const kind = tabApp(state, deadId);
+            const size = fitAddon.proposeDimensions();
+            if (!size) {
+                throw new Error("Terminal has no size yet");
             }
+            const created = await createTTY(optsFromAppId(kind, size));
+            if (gen !== switchGen) {
+                await destroyTTY(created.id);
+                return false;
+            }
+            await ensureWindowAlive(windowId, created.id);
+            state = replaceTabId(state, deadId, created.id);
             await saveWindowState(windowId, state);
             refreshStrip();
             endpoint = await attachTTY(state.activeId);
             if (!endpoint) {
-                const size = fitAddon.proposeDimensions();
-                if (!size) {
-                    throw new Error("Terminal has no size yet");
-                }
-                const created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
-                if (gen !== switchGen) {
-                    await destroyTTY(created.id);
-                    return false;
-                }
-                await ensureWindowAlive(windowId, created.id);
-                state = { tabs: [created.id], activeId: created.id };
-                await saveWindowState(windowId, state);
-                refreshStrip();
-                endpoint = await attachTTY(state.activeId);
-                if (!endpoint) {
-                    throw new Error("Could not attach to terminal session");
-                }
+                throw new Error("Could not attach to terminal session");
             }
         }
 
@@ -390,7 +380,7 @@ async function main() {
                 if (gen !== switchGen || !state) {
                     return;
                 }
-                if (!state.tabs.includes(attachedId) || state.activeId !== attachedId) {
+                if (!hasTab(attachedId) || state.activeId !== attachedId) {
                     return;
                 }
                 void (async () => {
@@ -398,8 +388,6 @@ async function main() {
                         return;
                     }
                     try {
-                        // Reattach same tty if still alive (e.g. ping timeout);
-                        // attachActive creates a shell only when attach fails.
                         await attachActive(gen);
                     } catch (err) {
                         if (gen === switchGen) {
@@ -423,7 +411,7 @@ async function main() {
     }
 
     async function switchTo(id: string) {
-        if (!state || !state.tabs.includes(id)) {
+        if (!state || !hasTab(id)) {
             return;
         }
         if (id === state.activeId && activeTtyId === id && ws?.readyState === WebSocket.OPEN) {
@@ -457,9 +445,9 @@ async function main() {
             return;
         }
         const gen = ++switchGen;
-        let created: { id: string; url: string };
+        let created: { id: string; url: string; app: string };
         try {
-            created = await createWithFallback(appId, size);
+            created = await openKind(appId ?? "", size, true);
             await ensureWindowAlive(windowId, created.id);
         } catch (err) {
             if (!(err instanceof NativeUnavailable)) {
@@ -472,7 +460,7 @@ async function main() {
             return;
         }
         state = {
-            tabs: [...state.tabs, created.id],
+            tabs: [...state.tabs, { id: created.id, app: created.app }],
             activeId: created.id,
         };
         await saveWindowState(windowId, state);
@@ -504,7 +492,7 @@ async function main() {
             return;
         }
 
-        const idx = state.tabs.indexOf(id);
+        const idx = state.tabs.findIndex((tab) => tab.id === id);
         const neighbor = state.tabs[idx + 1] ?? state.tabs[idx - 1];
 
         if (!neighbor) {
@@ -519,7 +507,7 @@ async function main() {
             titles.delete(id);
             let created: { id: string; url: string };
             try {
-                created = await createWithFallback(undefined, size);
+                created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
                 await ensureWindowAlive(windowId, created.id);
             } catch (err) {
                 await clearWindowState(windowId);
@@ -530,7 +518,7 @@ async function main() {
                 await destroyTTY(created.id);
                 return;
             }
-            state = { tabs: [created.id], activeId: created.id };
+            state = { tabs: [{ id: created.id, app: "" }], activeId: created.id };
             await saveWindowState(windowId, state);
             refreshStrip();
             try {
@@ -544,7 +532,7 @@ async function main() {
         }
 
         const gen = ++switchGen;
-        state = { tabs: state.tabs.filter((t) => t !== id), activeId: neighbor };
+        state = { tabs: state.tabs.filter((tab) => tab.id !== id), activeId: neighbor.id };
         await saveWindowState(windowId, state);
         refreshStrip();
         try {
@@ -602,13 +590,13 @@ async function main() {
         createStarted = true;
         const gen = ++switchGen;
         try {
-            const created = await createWithFallback(undefined, size);
+            const created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
             await ensureWindowAlive(windowId, created.id);
             if (gen !== switchGen) {
                 await destroyTTY(created.id);
                 return;
             }
-            state = { tabs: [created.id], activeId: created.id };
+            state = { tabs: [{ id: created.id, app: "" }], activeId: created.id };
             await saveWindowState(windowId, state);
             refreshStrip();
             await attachActive(gen);
@@ -706,7 +694,8 @@ async function runSingleTerminal(
                         if (!size) {
                             return;
                         }
-                        const created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
+                        const app = new URLSearchParams(location.search).get("app") || "";
+                        const created = await createTTY(optsFromAppId(app, size));
                         bindSocket(new WebSocket(created.url), created.id);
                         scheduleResize({ tty: created.id, cols: size.cols, rows: size.rows });
                         terminal.focus();

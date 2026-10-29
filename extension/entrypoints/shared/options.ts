@@ -1,4 +1,5 @@
 import type {
+    AgentInfo,
     RequestConfigGet,
     RequestConfigSet,
     ResponseConfigGet,
@@ -13,6 +14,11 @@ const argsEl = document.getElementById("args") as HTMLInputElement;
 const themeEl = document.getElementById("theme") as HTMLSelectElement;
 const fontSizeEl = document.getElementById("fontSize") as HTMLInputElement;
 const envEl = document.getElementById("env") as HTMLTextAreaElement;
+const agentsEl = document.getElementById("agents") as HTMLDivElement;
+const alphabeticalEl = document.getElementById("agentMenuAlphabetical") as HTMLInputElement;
+
+let loadedConfig: Record<string, unknown> = {};
+let knownAgents: AgentInfo[] = [];
 
 function setStatus(message: string, kind: "ok" | "error" | "" = "") {
     statusEl.hidden = !message;
@@ -60,6 +66,50 @@ function fillSelect(select: HTMLSelectElement, values: string[], selected?: stri
     }
 }
 
+function renderAgents(agents: AgentInfo[]) {
+    agentsEl.replaceChildren();
+    const sorted = [...agents].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    for (const agent of sorted) {
+        const row = document.createElement("label");
+        row.className = "at-agent";
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = agent.enabled;
+        box.dataset.id = agent.id;
+        row.appendChild(box);
+        const name = document.createElement("span");
+        name.textContent = agent.name || agent.id;
+        row.appendChild(name);
+        if (!agent.available) {
+            const note = document.createElement("span");
+            note.className = "at-agent__missing";
+            note.textContent = "not on PATH";
+            row.appendChild(note);
+        }
+        agentsEl.appendChild(row);
+    }
+}
+
+function agentOverrides(): Record<string, unknown> {
+    const current = loadedConfig.agents;
+    const out: Record<string, unknown> = current && typeof current === "object"
+        ? { ...(current as Record<string, unknown>) }
+        : {};
+    for (const box of agentsEl.querySelectorAll<HTMLInputElement>("input[type=checkbox][data-id]")) {
+        const id = box.dataset.id;
+        if (!id) {
+            continue;
+        }
+        const prev = out[id];
+        const entry: Record<string, unknown> = prev && typeof prev === "object"
+            ? { ...(prev as Record<string, unknown>) }
+            : {};
+        entry.enabled = box.checked;
+        out[id] = entry;
+    }
+    return out;
+}
+
 function parseArgs(raw: string): string[] {
     return raw
         .trim()
@@ -89,7 +139,9 @@ async function load() {
         return;
     }
 
-    const { config, themes, path } = resp.result;
+    const { config, themes, path, agents } = resp.result;
+    loadedConfig = config;
+    knownAgents = Array.isArray(agents) ? agents : [];
     configPathEl.textContent = path;
 
     const themeList = themes?.length ? themes : ["Tomorrow Night"];
@@ -104,6 +156,8 @@ async function load() {
         : {};
     fontSizeEl.value = String(clampFontSize(xterm.fontSize ?? 13));
     envEl.value = envToText(config.env);
+    alphabeticalEl.checked = config.agentMenuAlphabetical === true;
+    renderAgents(knownAgents);
     setStatus("Loaded.", "ok");
 }
 
@@ -119,6 +173,8 @@ async function save(event: Event) {
         xterm: {
             fontSize: clampFontSize(fontSizeEl.value),
         },
+        agents: agentOverrides(),
+        agentMenuAlphabetical: alphabeticalEl.checked,
     };
 
     const resp = await browser.runtime.sendMessage<RequestConfigSet, ResponseConfigSet>({
@@ -133,6 +189,7 @@ async function save(event: Event) {
         return;
     }
 
+    loadedConfig = { ...loadedConfig, ...resp.result.config };
     setStatus("Saved. Open a new side-panel session to apply.", "ok");
 }
 

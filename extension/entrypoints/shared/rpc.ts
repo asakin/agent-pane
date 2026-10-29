@@ -85,10 +85,20 @@ export type ResponseListTTY = JSONRPCResponseBase<{
     sessions: { id: string }[];
 }>
 
+export type AgentInfo = {
+    id: string;
+    name: string;
+    command: string;
+    enabled: boolean;
+    available: boolean;
+    source: "shipped" | "user";
+    icon: string;
+};
+
 export type ResponseConfigGet = JSONRPCResponseBase<{
     config: Record<string, unknown>;
     themes: string[];
-    apps: string[];
+    agents: AgentInfo[];
     path: string;
 }>
 

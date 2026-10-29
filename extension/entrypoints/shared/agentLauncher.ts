@@ -1,41 +1,51 @@
-import { agentIconSVG } from "./agentIcons";
-import type { RequestConfigGet, ResponseConfigGet } from "./rpc";
+import { iconMarkup } from "./agentIcons";
+import type { AgentInfo, RequestConfigGet, ResponseConfigGet } from "./rpc";
 import type { CreateTTYOpts, TtyDimensions } from "./windowTabs";
 
 const LAST_APP_KEY = "agent-terminal.lastApp";
+const RECENT_KEY = "agent-terminal.menuRecent";
 const SHELL_ID = "";
-
-/** Product agents in display order (only shown when present in apps/). */
-const PRODUCT_ORDER = ["pi", "opencode", "goose", "claude", "codex", "cursor-agent"] as const;
-
-const LABELS: Record<string, string> = {
-    claude: "Claude",
-    codex: "Codex",
-    "cursor-agent": "Cursor",
-    goose: "Goose",
-    pi: "Pi",
-    opencode: "OpenCode",
-};
 
 export type LauncherController = {
     setLaunchEnabled: (enabled: boolean) => void;
     refreshCatalog: () => Promise<void>;
-    getCreateOpts: (size: TtyDimensions) => Promise<CreateTTYOpts>;
-    rememberApp: (appId: string) => Promise<void>;
+    rememberApp: (appId: string, bump: boolean) => Promise<void>;
 };
 
-function labelFor(id: string): string {
-    if (id === SHELL_ID) {
-        return "Terminal";
+export type MenuAgent = Pick<AgentInfo, "id" | "name" | "icon" | "enabled" | "available">;
+
+function byName(a: MenuAgent, b: MenuAgent): number {
+    const name = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    if (name !== 0) {
+        return name;
     }
-    return LABELS[id] || id;
+    return a.id.localeCompare(b.id);
 }
 
-function iconEl(id: string): HTMLElement {
-    const wrap = document.createElement("span");
-    wrap.className = "at-launcher__icon";
-    wrap.innerHTML = agentIconSVG(id);
-    return wrap;
+/** A–Z, or recently opened first with the rest still A–Z. Terminal is not in this list. */
+export function orderMenu(agents: MenuAgent[], recent: string[], alphabetical: boolean): MenuAgent[] {
+    const visible = agents.filter((agent) => agent.enabled && agent.available);
+    if (alphabetical) {
+        return [...visible].sort(byName);
+    }
+    const left = new Map(visible.map((agent) => [agent.id, agent]));
+    const bumped: MenuAgent[] = [];
+    for (const id of recent) {
+        const agent = left.get(id);
+        if (!agent) {
+            continue;
+        }
+        bumped.push(agent);
+        left.delete(id);
+    }
+    return [...bumped, ...[...left.values()].sort(byName)];
+}
+
+export function bumpRecent(recent: string[], id: string): string[] {
+    if (!id) {
+        return recent.filter((item) => item);
+    }
+    return [id, ...recent.filter((item) => item && item !== id)];
 }
 
 export async function loadLastApp(): Promise<string> {
@@ -48,25 +58,45 @@ export async function saveLastApp(appId: string): Promise<void> {
     await browser.storage.local.set({ [LAST_APP_KEY]: appId });
 }
 
-export async function fetchAppNames(): Promise<string[]> {
+async function loadRecent(): Promise<string[]> {
+    const stored = await browser.storage.local.get<{ [RECENT_KEY]?: string[] }>(RECENT_KEY);
+    const v = stored[RECENT_KEY];
+    if (!Array.isArray(v)) {
+        return [];
+    }
+    return v.filter((id) => typeof id === "string" && id);
+}
+
+async function saveRecent(ids: string[]): Promise<void> {
+    await browser.storage.local.set({ [RECENT_KEY]: ids });
+}
+
+type Catalog = {
+    agents: AgentInfo[];
+    alphabetical: boolean;
+};
+
+async function fetchCatalog(): Promise<Catalog> {
     const resp = await browser.runtime.sendMessage<RequestConfigGet, ResponseConfigGet>({
         jsonrpc: "2.0",
         id: crypto.randomUUID(),
         method: "config.get",
         params: undefined,
     });
-    if ("error" in resp || !Array.isArray(resp.result.apps)) {
-        return [];
+    if ("error" in resp || !Array.isArray(resp.result.agents)) {
+        return { agents: [], alphabetical: false };
     }
-    return resp.result.apps.filter((a) => typeof a === "string" && a);
+    const agents = resp.result.agents.filter((agent) => agent && typeof agent.id === "string" && agent.id);
+    const alphabetical = resp.result.config?.agentMenuAlphabetical === true;
+    return { agents, alphabetical };
 }
 
-/** Drop stale lastApp; shell is always valid. */
-export function resolveLastApp(last: string, apps: string[]): string {
+export function resolveLastApp(last: string, agents: MenuAgent[]): string {
     if (!last || last === "terminal") {
         return SHELL_ID;
     }
-    return apps.includes(last) ? last : SHELL_ID;
+    const hit = agents.find((agent) => agent.id === last && agent.enabled && agent.available);
+    return hit ? hit.id : SHELL_ID;
 }
 
 export function optsFromAppId(appId: string, size: TtyDimensions): CreateTTYOpts {
@@ -74,15 +104,6 @@ export function optsFromAppId(appId: string, size: TtyDimensions): CreateTTYOpts
         return { mode: "shell", cols: size.cols, rows: size.rows };
     }
     return { mode: "app", app: appId, cols: size.cols, rows: size.rows };
-}
-
-/** Known product order, then any extra apps/, then Terminal. */
-export function orderLauncherIds(apps: string[]): string[] {
-    const known = PRODUCT_ORDER.filter((id) => apps.includes(id));
-    const extras = apps
-        .filter((id) => !(PRODUCT_ORDER as readonly string[]).includes(id))
-        .sort();
-    return [...known, ...extras, SHELL_ID];
 }
 
 export function mountAgentLauncher(
@@ -95,7 +116,9 @@ export function mountAgentLauncher(
     host.classList.add("at-launcher");
     host.replaceChildren();
 
-    let apps: string[] = [];
+    let agents: AgentInfo[] = [];
+    let alphabetical = false;
+    let recent: string[] = [];
     let lastApp = SHELL_ID;
     let menuOpen = false;
     let launchEnabled = true;
@@ -117,6 +140,23 @@ export function mountAgentLauncher(
     chevron.setAttribute("aria-haspopup", "menu");
     chevron.setAttribute("aria-expanded", "false");
     chevron.innerHTML = `<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+    const agentById = (id: string) => agents.find((agent) => agent.id === id);
+
+    const labelFor = (id: string) => {
+        if (id === SHELL_ID) {
+            return "Terminal";
+        }
+        return agentById(id)?.name || id;
+    };
+
+    const iconEl = (id: string): HTMLElement => {
+        const wrap = document.createElement("span");
+        wrap.className = "at-launcher__icon";
+        const agent = id ? agentById(id) : undefined;
+        wrap.innerHTML = iconMarkup(agent?.icon || "", id === SHELL_ID);
+        return wrap;
+    };
 
     const paintPrimary = () => {
         primary.replaceChildren(iconEl(lastApp));
@@ -176,9 +216,7 @@ export function mountAgentLauncher(
     };
 
     const selectItem = async (appId: string) => {
-        lastApp = appId;
-        await saveLastApp(appId);
-        paintPrimary();
+        await remember(appId, false);
         closeMenu();
         if (handlers.canLaunch()) {
             handlers.onLaunch(appId);
@@ -214,21 +252,19 @@ export function mountAgentLauncher(
         }
     };
 
+    const menuIds = () => [...orderMenu(agents, recent, alphabetical).map((agent) => agent.id), SHELL_ID];
+
     const openMenu = async () => {
         if (menuOpen) {
             closeMenu();
             return;
         }
-        apps = await fetchAppNames();
-        lastApp = resolveLastApp(await loadLastApp(), apps);
-        await saveLastApp(lastApp);
-        paintPrimary();
-
+        await reload();
         menuEl = document.createElement("div");
         menuEl.className = "at-launcher__menu";
         menuEl.setAttribute("role", "menu");
 
-        const ids = orderLauncherIds(apps);
+        const ids = menuIds();
         menuItems = [];
         ids.forEach((id, i) => {
             const item = document.createElement("button");
@@ -264,6 +300,26 @@ export function mountAgentLauncher(
         menuItems[activeIndex]?.focus();
     };
 
+    const remember = async (appId: string, bump: boolean) => {
+        lastApp = resolveLastApp(appId, agents);
+        await saveLastApp(lastApp);
+        if (bump && lastApp) {
+            recent = bumpRecent(recent, lastApp);
+            await saveRecent(recent);
+        }
+        paintPrimary();
+    };
+
+    const reload = async () => {
+        const catalog = await fetchCatalog();
+        agents = catalog.agents;
+        alphabetical = catalog.alphabetical;
+        recent = await loadRecent();
+        lastApp = resolveLastApp(await loadLastApp(), agents);
+        await saveLastApp(lastApp);
+        paintPrimary();
+    };
+
     primary.addEventListener("click", () => {
         if (!launchEnabled || !handlers.canLaunch()) {
             return;
@@ -275,39 +331,14 @@ export function mountAgentLauncher(
     host.appendChild(primary);
     host.appendChild(chevron);
     paintPrimary();
-
-    void (async () => {
-        apps = await fetchAppNames();
-        lastApp = resolveLastApp(await loadLastApp(), apps);
-        await saveLastApp(lastApp);
-        paintPrimary();
-    })();
+    void reload();
 
     return {
         setLaunchEnabled(enabled: boolean) {
             launchEnabled = enabled;
             primary.disabled = !enabled;
         },
-        async refreshCatalog() {
-            apps = await fetchAppNames();
-            const next = resolveLastApp(await loadLastApp(), apps);
-            if (next !== lastApp) {
-                lastApp = next;
-                await saveLastApp(lastApp);
-            }
-            paintPrimary();
-        },
-        async getCreateOpts(size: TtyDimensions) {
-            apps = await fetchAppNames();
-            lastApp = resolveLastApp(await loadLastApp(), apps);
-            await saveLastApp(lastApp);
-            paintPrimary();
-            return optsFromAppId(lastApp, size);
-        },
-        async rememberApp(appId: string) {
-            lastApp = resolveLastApp(appId, apps.length ? apps : await fetchAppNames());
-            await saveLastApp(lastApp);
-            paintPrimary();
-        },
+        refreshCatalog: reload,
+        rememberApp: remember,
     };
 }

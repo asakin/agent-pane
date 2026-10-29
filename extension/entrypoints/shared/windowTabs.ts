@@ -9,10 +9,23 @@ import type {
 
 export const MAX_TABS = 8;
 
+export type WindowTab = {
+    id: string;
+    app: string;
+};
+
 export type WindowTabState = {
-    tabs: string[];
+    tabs: WindowTab[];
     activeId: string;
 };
+
+function isWindowTab(value: unknown): value is WindowTab {
+    if (!value || typeof value !== "object") {
+        return false;
+    }
+    const tab = value as WindowTab;
+    return typeof tab.id === "string" && tab.id !== "" && typeof tab.app === "string";
+}
 
 export function windowStateKey(windowId: number): string {
     return `agent-terminal.window.${windowId}`;
@@ -35,6 +48,12 @@ export async function loadWindowState(windowId: number): Promise<WindowTabState 
     const stored = await browser.storage.session.get<{ [key: string]: WindowTabState }>(key);
     const state = stored[key];
     if (!state || !Array.isArray(state.tabs) || typeof state.activeId !== "string") {
+        return null;
+    }
+    if (!state.tabs.every(isWindowTab)) {
+        return null;
+    }
+    if (!state.tabs.some((tab) => tab.id === state.activeId)) {
         return null;
     }
     return state;
@@ -134,13 +153,30 @@ export function shortTabLabel(id: string, title?: string): string {
 
 /** Drop a dead id; pick a new activeId. Returns null if tabs empty. */
 export function pruneTab(state: WindowTabState, deadId: string): WindowTabState | null {
-    const tabs = state.tabs.filter((id) => id !== deadId);
-    if (tabs.length === 0) {
+    const deadIndex = state.tabs.findIndex((tab) => tab.id === deadId);
+    const tabs = state.tabs.filter((tab) => tab.id !== deadId);
+    const fallback = tabs[0];
+    if (!fallback) {
         return null;
     }
-    const activeId = state.activeId === deadId
-        ? tabs[Math.max(0, state.tabs.indexOf(deadId) - 1)] ?? tabs[0]
-        : state.activeId;
-    const stillActive = tabs.includes(activeId) ? activeId : tabs[0];
-    return { tabs, activeId: stillActive };
+    let activeId = state.activeId;
+    if (activeId === deadId) {
+        const neighbor = state.tabs[deadIndex + 1] ?? state.tabs[deadIndex - 1];
+        activeId = neighbor && neighbor.id !== deadId ? neighbor.id : fallback.id;
+    }
+    if (!tabs.some((tab) => tab.id === activeId)) {
+        activeId = fallback.id;
+    }
+    return { tabs, activeId };
+}
+
+export function replaceTabId(state: WindowTabState, oldId: string, nextId: string): WindowTabState {
+    return {
+        tabs: state.tabs.map((tab) => tab.id === oldId ? { ...tab, id: nextId } : tab),
+        activeId: state.activeId === oldId ? nextId : state.activeId,
+    };
+}
+
+export function tabApp(state: WindowTabState, id: string): string {
+    return state.tabs.find((tab) => tab.id === id)?.app ?? "";
 }

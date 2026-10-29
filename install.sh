@@ -285,12 +285,38 @@ EOF
 	done
 }
 
+sync_agents() {
+	dest="$data_dir/agents"
+	rm -rf "$dest"
+	mkdir -p "$dest"
+	src=""
+	if [ -f "$0" ]; then
+		script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+		if [ -f "$script_dir/agents/enabled.json" ]; then
+			src="$script_dir/agents"
+		fi
+	fi
+	if [ -n "$src" ]; then
+		cp -R "$src/." "$dest/"
+	else
+		tmp=$(mktemp -d)
+		curl -fsSL "https://codeload.github.com/${repo}/tar.gz/refs/heads/main" -o "$tmp/src.tar.gz" || fail "could not download the agent catalog"
+		tar -xzf "$tmp/src.tar.gz" -C "$tmp" || fail "could not unpack the agent catalog"
+		src=$(find "$tmp" -maxdepth 2 -type d -name agents | head -n 1)
+		[ -n "$src" ] && [ -f "$src/enabled.json" ] || fail "the download has no agent catalog"
+		cp -R "$src/." "$dest/"
+		rm -rf "$tmp"
+	fi
+	[ -f "$dest/enabled.json" ] || fail "agents were not installed"
+}
+
 install_binary
 write_host
 write_manifests
 write_launchd
 ensure_path
 write_instructions
+sync_agents
 echo "agent-terminal: installed $dest"
 if [ -d "$data_dir/extensions/chrome" ]; then
 	echo "agent-terminal: load the extension from $data_dir/extensions/chrome"

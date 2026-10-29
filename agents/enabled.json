@@ -1,0 +1,10 @@
+{
+  "agents": {
+    "claude": { "enabled": true },
+    "codex": { "enabled": true },
+    "pi": { "enabled": true },
+    "opencode": { "enabled": true },
+    "goose": { "enabled": true },
+    "cursor-agent": { "enabled": false }
+  }
+}

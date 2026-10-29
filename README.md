@@ -61,8 +61,8 @@ It is a terminal in Chrome’s side panel: your shell, local files, `git`, langu
 ## Usage
 
 - **Tabs:** up to 8 terminals per Chrome window
-- **One-Click Agent Launcher:** `+` runs your last agent. The menu lists agent commands your shell can run (`pi`, `opencode`, `goose`, `claude`, `codex`), then any other script in `~/.config/agent-terminal/apps`, then Terminal
-- **Settings:** shell, theme, font size, and env in the Chrome extension options
+- **One-Click Agent Launcher:** the side panel opens a shell. `+` runs the last agent you chose. The menu lists enabled agents that are on your `PATH`, then Terminal. Opening one moves it to the top unless Settings is set to keep the menu alphabetical
+- **Settings:** shell, theme, font size, env, and which agents are on, in the Chrome extension options. Definitions live in `agents/` (see `agents/README.md`)
 
 Terminal editing follows VS Code/Cursor conventions. Shift+Enter inserts a newline in
 supporting agent CLIs; on macOS, Cmd+Enter does too. Cmd+Backspace deletes to the start
@@ -80,7 +80,7 @@ and Cursor's editor, pane, search and shell-integration commands are not remappe
 
 ## Features
 
-- **Session survival:** close the side panel and reopen later; the agent is still running
+- **Session survival:** hide the side panel and open it again; the same tabs are still running
 
 ## Contributing
 

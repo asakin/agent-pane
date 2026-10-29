@@ -110,10 +110,16 @@ export default defineBackground(() => {
     const legacyId = stored[legacyKey] as string | undefined;
 
     const ids = new Set<string>();
-    if (state?.tabs && Array.isArray(state.tabs)) {
-      for (const id of state.tabs) {
-        if (typeof id === "string" && id) {
-          ids.add(id);
+    const tabs = state?.tabs as unknown;
+    if (Array.isArray(tabs)) {
+      for (const tab of tabs) {
+        if (typeof tab === "string" && tab) {
+          ids.add(tab);
+        } else if (tab && typeof tab === "object" && typeof (tab as { id?: unknown }).id === "string") {
+          const id = (tab as { id: string }).id;
+          if (id) {
+            ids.add(id);
+          }
         }
       }
     }

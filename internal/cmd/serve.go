@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"embed"
@@ -298,14 +296,6 @@ func NewCmdServe() *cobra.Command {
 	return cmd
 }
 
-// CommandMetadata holds structured metadata extracted from script files.
-type CommandMetadata struct {
-	Title               string   `json:"title"`
-	Contexts            []string `json:"contexts"`
-	DocumentUrlPatterns []string `json:"documentUrlPatterns,omitempty"`
-	TargetUrlPatterns   []string `json:"targetUrlPatterns,omitempty"`
-}
-
 func NewMessagingHost(logger *slog.Logger, sessions *SessionManager) *jsonrpc.Host {
 	messagingHost := jsonrpc.NewHost(logger)
 
@@ -343,25 +333,16 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager) *jsonrpc.Ho
 		mode, app := params.Mode, params.App
 		switch mode {
 		case "shell":
-			// Explicit shell — never apply defaultApp.
 			mode, app = "", ""
 		case "app":
 			if !isSafeAppID(app) {
 				return nil, fmt.Errorf("invalid app id %q", app)
 			}
-			if !appExists(app) {
+			if _, ok := agentByID(app); !ok {
 				return nil, fmt.Errorf("unknown app %q", app)
 			}
 		default:
-			// Legacy bare create: optional defaultApp.
-			if mode == "" && app == "" {
-				if defaultApp := k.String("defaultApp"); defaultApp != "" && appExists(defaultApp) {
-					mode = "app"
-					app = defaultApp
-				}
-			} else if app != "" && !isSafeAppID(app) {
-				return nil, fmt.Errorf("invalid app id %q", app)
-			}
+			mode, app = "", ""
 		}
 
 		session, err := sessions.Create(func(tty pty.Pty, _ string) (*pty.Cmd, error) {
@@ -549,12 +530,10 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager) *jsonrpc.Ho
 			return nil, err
 		}
 		themes, _ := listThemeNames()
-		apps, _ := listAppNames()
-		apps = visibleApps(apps, userShellEnv())
 		return map[string]any{
 			"config": cfg,
 			"themes": themes,
-			"apps":   apps,
+			"agents": catalog(),
 			"path":   configPath(),
 		}, nil
 	})
@@ -598,138 +577,38 @@ func listThemeNames() ([]string, error) {
 	return names, nil
 }
 
-func listAppNames() ([]string, error) {
-	entries, err := os.ReadDir(appDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, nil
-		}
-		return nil, err
-	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		names = append(names, strings.TrimSuffix(name, filepath.Ext(name)))
-	}
-	return names, nil
-}
-
 var safeAppIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 func isSafeAppID(app string) bool {
 	return app != "" && safeAppIDRe.MatchString(app)
 }
 
-const agentAppMarker = "# agent-terminal-app:"
-
-func appScript(app string) (string, bool) {
-	if !isSafeAppID(app) {
-		return "", false
-	}
-	entrypoint := filepath.Join(appDir, app)
-	if info, err := os.Stat(entrypoint); err == nil && !info.IsDir() {
-		return entrypoint, true
-	}
-	entries, err := os.ReadDir(appDir)
-	if err != nil {
-		return "", false
-	}
-	for _, file := range entries {
-		if file.IsDir() {
-			continue
-		}
-		name := file.Name()
-		if strings.TrimSuffix(name, filepath.Ext(name)) == app {
-			return filepath.Join(appDir, name), true
-		}
-	}
-	return "", false
-}
-
-func managedAppScript(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	buf := make([]byte, 256)
-	n, _ := f.Read(buf)
-	return bytes.Contains(buf[:n], []byte(agentAppMarker))
-}
-
-func appExists(app string) bool {
-	script, ok := appScript(app)
-	if ok && !managedAppScript(script) {
-		return true
-	}
-	if isAgentCommand(app) {
-		if _, found := lookPathIn(userShellEnv(), app); found {
-			return true
-		}
-	}
-	return ok
-}
-
-func scriptCommand(tty pty.Pty, entrypoint string, args []string) (*pty.Cmd, error) {
-	stat, err := os.Stat(entrypoint)
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat app entrypoint: %w", err)
-	}
-	if stat.IsDir() {
-		return nil, fmt.Errorf("app entrypoint is a directory, expected a file: %s", entrypoint)
-	}
-	if stat.Mode()&0111 == 0 {
-		if err := os.Chmod(entrypoint, 0755); err != nil {
-			return nil, fmt.Errorf("failed to make app entrypoint executable: %w", err)
-		}
-	}
-	return tty.Command(entrypoint, args...), nil
-}
-
 func buildPtyCommand(tty pty.Pty, mode, app string, args []string, cwd string) (*pty.Cmd, error) {
 	var cmd *pty.Cmd
+	overlay := map[string]string{
+		"TERM":           "xterm-256color",
+		"TERM_PROGRAM":   "agent-terminal",
+		"AGENT_TERMINAL": "1",
+	}
 	if mode == "app" && app != "" {
-		script, hasScript := appScript(app)
-		custom := hasScript && !managedAppScript(script)
-		if custom {
-			var err error
-			cmd, err = scriptCommand(tty, script, args)
-			if err != nil {
-				return nil, err
-			}
-		} else if isAgentCommand(app) {
-			if bin, found := lookPathIn(userShellEnv(), app); found {
-				cmd = tty.Command("/bin/sh", agentLaunchArgv(bin, configuredShell(), args)...)
-			}
-		}
-		if cmd == nil && hasScript {
-			var err error
-			cmd, err = scriptCommand(tty, script, args)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if cmd == nil {
+		agent, ok := agentByID(app)
+		if !ok {
 			return nil, fmt.Errorf("unknown app %q", app)
 		}
+		shell := configuredShell()
+		argv := append([]string{agent.Bin}, agent.Args...)
+		argv = append(argv, args...)
+		cmd = tty.Command(shell, agentExecArgs(shell, argv)...)
+		overlay["AGENT_TERMINAL_AGENT"] = agent.ID
 	} else {
 		shell := k.String("command")
+		if shell == "" {
+			shell = getDefaultShell()
+		}
 		cmd = tty.Command(shell, loginShellArgs(shell, k.Strings("args"))...)
 	}
 
-	// The plain shell is a login shell, so it builds its own PATH from the
-	// host's environment the way a terminal app does.
-	base := os.Environ()
-	if mode == "app" && app != "" {
-		base = userShellEnv()
-	}
-	cmd.Env = mergePtyEnv(base, map[string]string{
-		"TERM":         "xterm-256color",
-		"TERM_PROGRAM": "agent-terminal",
-	}, k.StringMap("env"))
+	cmd.Env = mergePtyEnv(os.Environ(), overlay, k.StringMap("env"))
 
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -903,53 +782,4 @@ func listenLoopback() (net.Listener, error) {
 		return nil, fmt.Errorf("failed to listen on 127.0.0.1: %w", err)
 	}
 	return ln, nil
-}
-
-func ExtractMetadata(reader io.Reader) (CommandMetadata, error) {
-	var result CommandMetadata
-	scanner := bufio.NewScanner(reader)
-
-	metadataRegex := regexp.MustCompile(`^.*?@agent-terminal\.(\w+)\s+(.*)\s*$`)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		matches := metadataRegex.FindStringSubmatch(line)
-		if len(matches) < 3 {
-			continue
-		}
-
-		key := matches[1]
-		rawValue := matches[2]
-
-		switch key {
-		case "title":
-			result.Title = rawValue
-		case "contexts":
-			var contextsRaw []string
-			err := json.Unmarshal([]byte(rawValue), &contextsRaw)
-			if err != nil {
-				return CommandMetadata{}, fmt.Errorf("failed to parse 'contexts' as string array from '%s': %w", rawValue, err)
-			}
-			result.Contexts = contextsRaw
-		case "documentUrlPatterns":
-			var patternsRaw []string
-			if err := json.Unmarshal([]byte(rawValue), &patternsRaw); err != nil {
-				return CommandMetadata{}, fmt.Errorf("failed to parse 'documentUrlPatterns' as string array from '%s': %w", rawValue, err)
-			}
-			result.DocumentUrlPatterns = patternsRaw
-		case "targetUrlPatterns":
-			var patternsRaw []string
-			if err := json.Unmarshal([]byte(rawValue), &patternsRaw); err != nil {
-				return CommandMetadata{}, fmt.Errorf("failed to parse 'targetUrlPatterns' as string array from '%s': %w", rawValue, err)
-			}
-			result.TargetUrlPatterns = patternsRaw
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return CommandMetadata{}, err
-	}
-
-	return result, nil
 }

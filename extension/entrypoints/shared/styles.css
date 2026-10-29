@@ -230,7 +230,8 @@ body.at-options {
     }
 }
 
-.at-launcher__icon svg {
+.at-launcher__icon svg,
+.at-launcher__icon img {
     display: block;
     width: 16px;
     height: 16px;
@@ -416,6 +417,31 @@ body.at-options {
     font-size: 12px;
     font-weight: 600;
     margin-bottom: 6px;
+}
+
+.at-agents {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.at-agent,
+.at-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 400;
+}
+
+.at-agent input,
+.at-check input {
+    width: auto;
+}
+
+.at-agent__missing {
+    opacity: 0.65;
+    font-size: 12px;
+    font-weight: 400;
 }
 
 .at-field input,
