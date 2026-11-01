@@ -5,20 +5,20 @@ before:
     - go mod tidy
     - rm -rf completions
     - mkdir completions
-    - sh -c 'go run . completion "bash" >./completions/agent-terminal.bash'
-    - sh -c 'go run . completion "zsh" >./completions/agent-terminal.zsh'
-    - sh -c 'go run . completion "fish" >./completions/agent-terminal.fish'
+    - sh -c 'go run . completion "bash" >./completions/agent-pane.bash'
+    - sh -c 'go run . completion "zsh" >./completions/agent-pane.zsh'
+    - sh -c 'go run . completion "fish" >./completions/agent-pane.fish'
 changelog:
   disable: true
 builds:
-  - binary: agent-terminal
+  - binary: agent-pane
     env:
       - CGO_ENABLED=0
     goos:
       - linux
       - darwin
 archives:
-  - name_template: "agent-terminal-{{ .Version }}-{{ .Os }}_{{ .Arch }}"
+  - name_template: "agent-pane-{{ .Version }}-{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
         formats: ["zip"]
@@ -28,7 +28,7 @@ archives:
       - completions/*
       - src: extension/dist/chrome-mv3/*
         dst: extensions/chrome
-      - src: extension/dist/agent-terminal-{{ .Version }}-firefox.zip
+      - src: extension/dist/agent-pane-{{ .Version }}-firefox.zip
         dst: extensions/firefox.zip
 release:
   prerelease: auto

@@ -562,7 +562,7 @@ async function main() {
     terminal.onTitleChange((title) => {
         if (activeTtyId) {
             titles.set(activeTtyId, title);
-            document.title = `${title}  |  Agent Terminal`;
+            document.title = `${title}  |  Agent Pane`;
             refreshStrip();
         }
     });
@@ -755,7 +755,7 @@ async function runSingleTerminal(
         }
     };
     terminal.onTitleChange((title) => {
-        document.title = `${title}  |  Agent Terminal`;
+        document.title = `${title}  |  Agent Pane`;
     });
     globalThis.onfocus = () => {
         terminal.focus();

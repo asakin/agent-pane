@@ -12,9 +12,9 @@ agents/<id>/
 
 `enabled.json` is the shipped on/off list. It is not part of an agent folder. An id that is not listed is off. A pull request that only adds a folder stays off until that id is added here. An id in this file with no folder, or a broken `agent.json`, is ignored.
 
-`install.sh` copies this tree to `~/.local/share/agent-terminal/agents/` and replaces that copy on every run. It does not write `~/.config/agent-terminal/agents/`.
+`install.sh` copies this tree to `~/.local/share/agent-pane/agents/` and replaces that copy on every run. It does not write `~/.config/agent-pane/agents/`.
 
-A folder in `~/.config/agent-terminal/agents/<id>/` replaces the shipped definition for that id. An `enabled.json` in the user directory is ignored. On and off for a person is `~/.config/agent-terminal/config.json`:
+A folder in `~/.config/agent-pane/agents/<id>/` replaces the shipped definition for that id. An `enabled.json` in the user directory is ignored. On and off for a person is `~/.config/agent-pane/config.json`:
 
 ```json
 {

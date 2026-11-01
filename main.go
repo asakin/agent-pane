@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"agent-terminal/internal/cmd"
+	"agent-pane/internal/cmd"
 )
 
 var (

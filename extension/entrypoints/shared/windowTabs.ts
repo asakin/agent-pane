@@ -29,11 +29,11 @@ function isWindowTab(value: unknown): value is WindowTab {
 }
 
 export function windowStateKey(windowId: number): string {
-    return `agent-terminal.window.${windowId}`;
+    return `agent-pane.window.${windowId}`;
 }
 
 export function legacySessionKey(windowId: number): string {
-    return `agent-terminal.ttySession.${windowId}`;
+    return `agent-pane.ttySession.${windowId}`;
 }
 
 export async function resolveWindowId(): Promise<number> {

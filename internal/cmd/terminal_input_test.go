@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"agent-terminal/internal/scrollback"
+	"agent-pane/internal/scrollback"
 	"github.com/aymanbagabas/go-pty"
 	"github.com/gorilla/websocket"
 )
