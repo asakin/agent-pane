@@ -9,6 +9,14 @@ type Ring struct {
 	size int // capacity
 	len  int // bytes currently stored
 	pos  int // next write index
+	drop bool
+}
+
+// Dropped reports whether the oldest bytes have been overwritten.
+func (r *Ring) Dropped() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.drop
 }
 
 // New returns a ring that retains at most size bytes.
@@ -34,6 +42,7 @@ func (r *Ring) Write(p []byte) (int, error) {
 
 	if n >= r.size {
 		// Keep only the trailing window.
+		r.drop = r.drop || n > r.size || r.len > 0
 		copy(r.buf, p[n-r.size:])
 		r.len = r.size
 		r.pos = 0
@@ -45,6 +54,8 @@ func (r *Ring) Write(p []byte) (int, error) {
 		r.pos = (r.pos + 1) % r.size
 		if r.len < r.size {
 			r.len++
+		} else {
+			r.drop = true
 		}
 	}
 	return n, nil
