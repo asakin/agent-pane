@@ -25,9 +25,9 @@ var (
 	keepalivePingTimeout = 20 * time.Second
 )
 
-var configDir = filepath.Join(os.Getenv("HOME"), ".config", "agent-terminal")
-var cacheDir = filepath.Join(os.Getenv("HOME"), ".cache", "agent-terminal")
-var dataDir = filepath.Join(os.Getenv("HOME"), ".local", "share", "agent-terminal")
+var configDir = filepath.Join(os.Getenv("HOME"), ".config", "agent-pane")
+var cacheDir = filepath.Join(os.Getenv("HOME"), ".cache", "agent-pane")
+var dataDir = filepath.Join(os.Getenv("HOME"), ".local", "share", "agent-pane")
 var commandDir = filepath.Join(configDir, "commands")
 var shippedAgentsDir = filepath.Join(dataDir, "agents")
 var userAgentsDir = filepath.Join(configDir, "agents")
@@ -38,9 +38,9 @@ var legacyDataDir = filepath.Join(os.Getenv("HOME"), ".local", "share", "tweety"
 
 func NewCmdRoot(version string) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:          "agent-terminal",
+		Use:          "agent-pane",
 		SilenceUsage: true,
-		Short:        "An integrated terminal for your agent in your browser",
+		Short:        "Claude Code, Codex and Pi in a real terminal, in Chrome's side panel.",
 		Version:      version,
 		Args:         cobra.ArbitraryArgs,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
@@ -116,7 +116,7 @@ func loadConfig() error {
 	return nil
 }
 
-// migrateLegacyDirs renames old tweety XDG dirs to agent-terminal once.
+// migrateLegacyDirs renames old tweety XDG dirs to agent-pane once.
 func migrateLegacyDirs() {
 	migrateDir(legacyConfigDir, configDir)
 	migrateDir(legacyCacheDir, cacheDir)

@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="media/agent-terminal-logo.png" width="128" alt="Agent Terminal logo">
+  <img src="media/agent-pane-logo.png" width="128" alt="Agent Pane logo">
 </p>
 
-<h1 align="center">Agent Terminal</h1>
+<h1 align="center">Agent Pane</h1>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white" alt="Go"></a>
@@ -10,18 +10,18 @@
 </p>
 
 <p align="center">
-A local shell in Chrome’s side panel.
+Claude Code, Codex and Pi in a real terminal, in Chrome's side panel.
 </p>
 
-Each terminal is a local shell. An agent in that shell uses whatever browser tools it already has.
+For people who live in the TUI: each tab is a real local shell, not a chat box. An agent in that shell uses whatever browser tools it already has.
 
 **Note:** this project is experimental. Agents run shell commands on your machine. Use with care.
 
-## Why Agent Terminal
+## Why Agent Pane
 
 The side panel is a terminal next to the browser, in the same window.
 
-|                             | Agent Terminal                                   | IDE / Terminal.app alone                   |
+|                             | Agent Pane                                   | IDE / Terminal.app alone                   |
 | --------------------------- | ------------------------------------------------ | ------------------------------------------ |
 | Where the terminal sits     | Chrome side panel, beside the page               | A separate app                             |
 | You stay in the loop        | Same window                                      | You switch away to watch a terminal        |
@@ -32,7 +32,7 @@ The side panel is a terminal next to the browser, in the same window.
 Chrome, then:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/asakin/agent-terminal/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/asakin/agent-pane/main/install.sh | sh
 ```
 
 The script downloads the binary for this machine, puts `~/.local/bin` on `PATH`, and writes the native-messaging manifest Chrome needs. On macOS it also starts a LaunchAgent that launches the shell, so programs the agent runs are not children of Chrome. If that manifest is not written, the script exits with an error. Running it again writes the same files again.
@@ -41,16 +41,16 @@ Then load the extension in Chrome:
 
 1. Open `chrome://extensions`
 2. Turn on **Developer mode**
-3. Click **Load unpacked** and choose `~/.local/share/agent-terminal/extensions/chrome` (the installer copies it from the release), or `extension/dist/chrome-mv3` from a checkout
-4. Open the side panel from the Agent Terminal extension icon
+3. Click **Load unpacked** and choose `~/.local/share/agent-pane/extensions/chrome` (the installer copies it from the release), or `extension/dist/chrome-mv3` from a checkout
+4. Open the side panel from the Agent Pane extension icon
 
 From a checkout, build the binary and point the same script at it:
 
 ```sh
-git clone https://github.com/asakin/agent-terminal.git
-cd agent-terminal
-go build -o agent-terminal .
-AGENT_TERMINAL_BIN="$PWD/agent-terminal" ./install.sh
+git clone https://github.com/asakin/agent-pane.git
+cd agent-pane
+go build -o agent-pane .
+AGENT_PANE_BIN="$PWD/agent-pane" ./install.sh
 cd extension && npm install && npm run build
 ```
 

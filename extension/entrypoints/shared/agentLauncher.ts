@@ -2,8 +2,8 @@ import { iconMarkup } from "./agentIcons";
 import type { AgentInfo, RequestChooseFolder, RequestConfigGet, ResponseChooseFolder, ResponseConfigGet } from "./rpc";
 import type { CreateTTYOpts, TtyDimensions } from "./windowTabs";
 
-const LAST_APP_KEY = "agent-terminal.lastApp";
-const RECENT_KEY = "agent-terminal.menuRecent";
+const LAST_APP_KEY = "agent-pane.lastApp";
+const RECENT_KEY = "agent-pane.menuRecent";
 const SHELL_ID = "";
 
 export type LauncherController = {
@@ -246,7 +246,7 @@ export function mountAgentLauncher(
         try {
             picked = await chooseFolder();
         } catch (err) {
-            console.error("agent-terminal:", err);
+            console.error("agent-pane:", err);
             return;
         }
         if (!picked || !handlers.canLaunch()) {

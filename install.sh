@@ -1,20 +1,20 @@
 #!/bin/sh
-# Installs agent-terminal. Safe to run again: it writes the same files again.
+# Installs agent-pane. Safe to run again: it writes the same files again.
 # Exits non-zero if the native-messaging manifest was not written.
 set -eu
 
 fail() {
-	echo "agent-terminal: $*" >&2
+	echo "agent-pane: $*" >&2
 	exit 1
 }
 
 home=${HOME:?}
 bin_dir="$home/.local/bin"
-dest="$bin_dir/agent-terminal"
-data_dir="$home/.local/share/agent-terminal"
+dest="$bin_dir/agent-pane"
+data_dir="$home/.local/share/agent-pane"
 host="$data_dir/native_messaging_host"
-config_dir="$home/.config/agent-terminal"
-repo="asakin/agent-terminal"
+config_dir="$home/.config/agent-pane"
+repo="asakin/agent-pane"
 
 sh_quote() {
 	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
@@ -28,7 +28,7 @@ json_escape() {
 # kill the next exec with a codesign failure.
 place_binary() {
 	src=$1
-	staged=$(mktemp "$bin_dir/.agent-terminal.XXXXXX") || fail "could not create a temporary binary"
+	staged=$(mktemp "$bin_dir/.agent-pane.XXXXXX") || fail "could not create a temporary binary"
 	cp "$src" "$staged" || fail "could not copy the binary"
 	chmod 755 "$staged" || fail "could not make the binary executable"
 	mv -f "$staged" "$dest" || fail "could not install the binary"
@@ -36,9 +36,9 @@ place_binary() {
 
 install_binary() {
 	mkdir -p "$bin_dir"
-	if [ -n "${AGENT_TERMINAL_BIN:-}" ]; then
-		[ -f "$AGENT_TERMINAL_BIN" ] || fail "AGENT_TERMINAL_BIN is not a file: $AGENT_TERMINAL_BIN"
-		place_binary "$AGENT_TERMINAL_BIN"
+	if [ -n "${AGENT_PANE_BIN:-}" ]; then
+		[ -f "$AGENT_PANE_BIN" ] || fail "AGENT_PANE_BIN is not a file: $AGENT_PANE_BIN"
+		place_binary "$AGENT_PANE_BIN"
 	else
 		os=$(uname -s | tr '[:upper:]' '[:lower:]')
 		arch=$(uname -m)
@@ -58,8 +58,8 @@ install_binary() {
 		tmp=$(mktemp -d)
 		curl -fsSL -o "$tmp/archive.tar.gz" "$url" || fail "download failed: $url"
 		tar -xzf "$tmp/archive.tar.gz" -C "$tmp" || fail "could not unpack $url"
-		[ -f "$tmp/agent-terminal" ] || fail "archive has no agent-terminal binary"
-		place_binary "$tmp/agent-terminal"
+		[ -f "$tmp/agent-pane" ] || fail "archive has no agent-pane binary"
+		place_binary "$tmp/agent-pane"
 		if [ -d "$tmp/extensions/chrome" ]; then
 			rm -rf "$data_dir/extensions/chrome"
 			mkdir -p "$data_dir/extensions"
@@ -89,13 +89,13 @@ write_manifest() {
 	fi
 	mkdir -p "$dir"
 	rm -f "$dir/com.github.pomdtr.tweety.json"
-	path="$dir/com.agentterminal.native.json"
+	path="$dir/com.agentpane.native.json"
 	escaped=$(json_escape "$host")
 	if [ "$kind" = "chromium" ]; then
 		cat >"$path" <<EOF
 {
-    "name": "com.agentterminal.native",
-    "description": "An integrated terminal for your agent in your browser",
+    "name": "com.agentpane.native",
+    "description": "Claude Code, Codex and Pi in a real terminal, in Chrome's side panel.",
     "type": "stdio",
     "path": "${escaped}",
     "allowed_origins": [
@@ -106,12 +106,12 @@ EOF
 	else
 		cat >"$path" <<EOF
 {
-    "name": "com.agentterminal.native",
-    "description": "An integrated terminal for your agent in your browser",
+    "name": "com.agentpane.native",
+    "description": "Claude Code, Codex and Pi in a real terminal, in Chrome's side panel.",
     "type": "stdio",
     "path": "${escaped}",
     "allowed_extensions": [
-        "agent-terminal@agent-terminal.local"
+        "agent-pane@agent-pane.local"
     ]
 }
 EOF
@@ -119,7 +119,7 @@ EOF
 	[ -s "$path" ] || fail "manifest was not written: $path"
 	grep -F "$host" "$path" >/dev/null || fail "manifest does not point at the host: $path"
 	count=$((count + 1))
-	echo "agent-terminal: wrote $path"
+	echo "agent-pane: wrote $path"
 }
 
 write_manifests() {
@@ -159,29 +159,29 @@ ensure_path() {
 	*/bash) rc="$home/.bashrc" ;;
 	*/zsh) rc="$home/.zshrc" ;;
 	esac
-	if [ -f "$rc" ] && grep -q '# agent-terminal:path' "$rc"; then
+	if [ -f "$rc" ] && grep -q '# agent-pane:path' "$rc"; then
 		return 0
 	fi
-	printf '\n# agent-terminal:path\nexport PATH="$HOME/.local/bin:$PATH"\n' >>"$rc"
-	echo "agent-terminal: added ~/.local/bin to PATH in $rc"
+	printf '\n# agent-pane:path\nexport PATH="$HOME/.local/bin:$PATH"\n' >>"$rc"
+	echo "agent-pane: added ~/.local/bin to PATH in $rc"
 }
 
 agents_body() {
 	cat <<'EOF'
-<!-- agent-terminal:start -->
-# Agent Terminal
+<!-- agent-pane:start -->
+# Agent Pane
 
-You are in the Agent Terminal side panel: a local shell, not a browser page.
+You are in the Agent Pane side panel: a local shell, not a browser page.
 Browser automation is whatever CLI you already run, such as Playwright or Playwriter. This extension does not attach to a browser and does not choose one.
-<!-- agent-terminal:end -->
+<!-- agent-pane:end -->
 EOF
 }
 
 claude_body() {
 	cat <<'EOF'
-<!-- agent-terminal:start -->
+<!-- agent-pane:start -->
 @AGENTS.md
-<!-- agent-terminal:end -->
+<!-- agent-pane:end -->
 EOF
 }
 
@@ -193,28 +193,28 @@ upsert_managed() {
 		return 0
 	fi
 	if [ -L "$file" ]; then
-		echo "agent-terminal: $file is a symlink; left unchanged" >&2
+		echo "agent-pane: $file is a symlink; left unchanged" >&2
 		return 0
 	fi
-	if ! grep -q '<!-- agent-terminal:start -->' "$file"; then
-		echo "agent-terminal: $file has no Agent Terminal block; left unchanged" >&2
+	if ! grep -q '<!-- agent-pane:start -->' "$file"; then
+		echo "agent-pane: $file has no Agent Pane block; left unchanged" >&2
 		return 0
 	fi
-	if ! grep -q '<!-- agent-terminal:end -->' "$file"; then
+	if ! grep -q '<!-- agent-pane:end -->' "$file"; then
 		fail "$file has a start marker and no end marker"
 	fi
 	tmp=$(mktemp)
 	printf '%s\n' "$body" >"$tmp.body"
 	awk '
 		BEGIN { replaced = 0 }
-		$0 == "<!-- agent-terminal:start -->" && replaced == 0 {
+		$0 == "<!-- agent-pane:start -->" && replaced == 0 {
 			while ((getline line < body) > 0) print line
 			close(body)
 			replaced = 1
 			next
 		}
-		replaced == 1 && $0 != "<!-- agent-terminal:end -->" { next }
-		replaced == 1 && $0 == "<!-- agent-terminal:end -->" { replaced = 0; next }
+		replaced == 1 && $0 != "<!-- agent-pane:end -->" { next }
+		replaced == 1 && $0 == "<!-- agent-pane:end -->" { replaced = 0; next }
 		{ print }
 	' body="$tmp.body" "$file" >"$tmp"
 	mv "$tmp" "$file"
@@ -236,7 +236,7 @@ xml_escape() {
 
 write_launchd() {
 	[ "$(uname -s)" = Darwin ] || return 0
-	plist="$home/Library/LaunchAgents/com.agentterminal.spawn.plist"
+	plist="$home/Library/LaunchAgents/com.agentpane.spawn.plist"
 	mkdir -p "$(dirname "$plist")"
 	cat >"$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -244,7 +244,7 @@ write_launchd() {
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.agentterminal.spawn</string>
+	<string>com.agentpane.spawn</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>$(xml_escape "$dest")</string>
@@ -258,11 +258,11 @@ write_launchd() {
 </plist>
 EOF
 	[ -s "$plist" ] || fail "could not write $plist"
-	if [ -n "${AGENT_TERMINAL_SKIP_LAUNCHD:-}" ]; then
+	if [ -n "${AGENT_PANE_SKIP_LAUNCHD:-}" ]; then
 		return 0
 	fi
 	domain="gui/$(id -u)"
-	target="$domain/com.agentterminal.spawn"
+	target="$domain/com.agentpane.spawn"
 	launchctl bootout "$target" 2>/dev/null || true
 	# bootout returns before the job is gone. bootstrap during that window
 	# fails with "Bootstrap failed: 5: Input/output error".
@@ -317,7 +317,7 @@ write_launchd
 ensure_path
 write_instructions
 sync_agents
-echo "agent-terminal: installed $dest"
+echo "agent-pane: installed $dest"
 if [ -d "$data_dir/extensions/chrome" ]; then
-	echo "agent-terminal: load the extension from $data_dir/extensions/chrome"
+	echo "agent-pane: load the extension from $data_dir/extensions/chrome"
 fi

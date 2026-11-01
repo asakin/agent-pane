@@ -13,9 +13,9 @@
             }
         },
         {
-            "label": "install agent-terminal",
+            "label": "install agent-pane",
             "type": "shell",
-            "command": "mkdir -p bin && go build -o bin/agent-terminal .",
+            "command": "mkdir -p bin && go build -o bin/agent-pane .",
             "group": {
                 "kind": "build"
             }
@@ -24,7 +24,7 @@
             "label": "build",
             "dependsOn": [
                 "build extension",
-                "install agent-terminal"
+                "install agent-pane"
             ],
             "dependsOrder": "sequence",
             "group": {

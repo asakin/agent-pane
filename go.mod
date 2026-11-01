@@ -1,4 +1,4 @@
-module agent-terminal
+module agent-pane
 
 go 1.27.3
 

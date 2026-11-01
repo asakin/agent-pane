@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"agent-terminal/internal/jsonrpc"
-	"agent-terminal/internal/scrollback"
+	"agent-pane/internal/jsonrpc"
+	"agent-pane/internal/scrollback"
 	"github.com/aymanbagabas/go-pty"
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
@@ -630,8 +630,8 @@ func buildPtyCommand(tty pty.Pty, mode, app string, args []string, cwd string) (
 	var cmd *pty.Cmd
 	overlay := map[string]string{
 		"TERM":           "xterm-256color",
-		"TERM_PROGRAM":   "agent-terminal",
-		"AGENT_TERMINAL": "1",
+		"TERM_PROGRAM":   "agent-pane",
+		"AGENT_PANE": "1",
 	}
 	if mode == "app" && app != "" {
 		agent, ok := agentByID(app)
@@ -642,7 +642,7 @@ func buildPtyCommand(tty pty.Pty, mode, app string, args []string, cwd string) (
 		argv := append([]string{agent.Bin}, agent.Args...)
 		argv = append(argv, args...)
 		cmd = tty.Command(shell, agentExecArgs(shell, argv)...)
-		overlay["AGENT_TERMINAL_AGENT"] = agent.ID
+		overlay["AGENT_PANE_AGENT"] = agent.ID
 	} else {
 		shell := k.String("command")
 		if shell == "" {

@@ -4,11 +4,11 @@
 # oranda
 /public/
 
-/agent-terminal.json
+/agent-pane.json
 /dist/
 /completions/
 /bin/
-/agent-terminal
+/agent-pane
 
 # extension
 extension/node_modules/
