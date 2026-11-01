@@ -39,6 +39,8 @@ type Session struct {
 	ID  string
 	Pty pty.Pty
 	Buf *scrollback.Ring
+	// Modes restores the terminal modes the replay lost once Buf wraps.
+	Modes scrollback.Modes
 
 	mu           sync.Mutex
 	writeMu      sync.Mutex // serializes websocket writes (replay, live, ping)
@@ -187,7 +189,11 @@ func (s *Session) readLoop(logger *slog.Logger) {
 		n, err := s.Pty.Read(buf)
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
+			// Under writeMu so a replay sees Buf and Modes at the same point.
+			s.writeMu.Lock()
 			_, _ = s.Buf.Write(chunk)
+			s.Modes.Write(chunk)
+			s.writeMu.Unlock()
 
 			s.mu.Lock()
 			conn := s.client
@@ -629,9 +635,9 @@ func isSafeAppID(app string) bool {
 func buildPtyCommand(tty pty.Pty, mode, app string, args []string, cwd string) (*pty.Cmd, error) {
 	var cmd *pty.Cmd
 	overlay := map[string]string{
-		"TERM":           "xterm-256color",
-		"TERM_PROGRAM":   "agent-pane",
-		"AGENT_PANE": "1",
+		"TERM":         "xterm-256color",
+		"TERM_PROGRAM": "agent-pane",
+		"AGENT_PANE":   "1",
 	}
 	if mode == "app" && app != "" {
 		agent, ok := agentByID(app)
@@ -756,6 +762,10 @@ func HandleWebsocket(session *Session) http.HandlerFunc {
 		snapshot := session.Buf.Bytes()
 		if snapshot == nil {
 			snapshot = []byte{}
+		}
+		if session.Buf.Dropped() {
+			prefix, suffix := session.Modes.Restore()
+			snapshot = append(append([]byte(prefix), snapshot...), suffix...)
 		}
 		if err := connection.WriteMessage(websocket.BinaryMessage, snapshot); err != nil {
 			session.writeMu.Unlock()
