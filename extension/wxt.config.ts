@@ -1,5 +1,8 @@
 import { defineConfig } from 'wxt';
 
+// Node's process, read at build time; avoids a @types/node dependency.
+declare const process: { env: Record<string, string | undefined> };
+
 // See https://wxt.dev/api/config.html
 export default defineConfig({
     outDir: "dist",

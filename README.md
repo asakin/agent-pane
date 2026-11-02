@@ -86,6 +86,31 @@ and Cursor's editor, pane, search and shell-integration commands are not remappe
 
 PRs welcome. For large changes, open an issue first. Keep the extension free of page host permissions.
 
+### Checks
+
+Every pull request and every push to `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on Ubuntu. To run the same checks locally:
+
+**extension** (Node 26):
+
+```sh
+cd extension
+npm ci
+npm run compile
+npm test
+npm run build
+```
+
+**go** (the Go version in `go.mod`):
+
+```sh
+gofmt -l .        # prints nothing when formatting is clean
+go vet ./...
+go test -race ./...
+go build ./...
+```
+
+The extension job uploads `extension/dist/chrome-mv3` as the `extension-chrome-mv3` artifact, kept for 7 days. Download it from the workflow run's summary page, unzip it, and load the folder with **Load unpacked** in `chrome://extensions`.
+
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE). Based on [Tweety](https://github.com/pomdtr/tweety) by Achille Lacoin.
