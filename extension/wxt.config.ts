@@ -14,7 +14,8 @@ export default defineConfig({
         permissions: [
             "nativeMessaging",
             "sidePanel",
-            "storage"
+            "storage",
+            "tabs"
         ],
         side_panel: {
             default_path: "sidepanel.html",

@@ -6,10 +6,11 @@ import type {
     ResponseAttachTTY,
     ResponseCreateTTY,
 } from "./rpc";
+import { type TabLock, closeMissingLocks, isTabLock } from "./tabLock";
 
 export const MAX_TABS = 8;
 
-export type WindowTab = {
+export type WindowTab = TabLock & {
     id: string;
     app: string;
     cwd?: string;
@@ -25,7 +26,7 @@ function isWindowTab(value: unknown): value is WindowTab {
         return false;
     }
     const tab = value as WindowTab;
-    return typeof tab.id === "string" && tab.id !== "" && typeof tab.app === "string";
+    return typeof tab.id === "string" && tab.id !== "" && typeof tab.app === "string" && isTabLock(tab);
 }
 
 export function windowStateKey(windowId: number): string {
@@ -57,7 +58,21 @@ export async function loadWindowState(windowId: number): Promise<WindowTabState 
     if (!state.tabs.some((tab) => tab.id === state.activeId)) {
         return null;
     }
-    return state;
+    // Locked Chrome tabs may have closed while the side panel was shut.
+    const checked = await closeMissingLocks(state, chromeTabExists);
+    if (checked !== state) {
+        await saveWindowState(windowId, checked);
+    }
+    return checked;
+}
+
+async function chromeTabExists(tabId: number): Promise<boolean> {
+    try {
+        await browser.tabs.get(tabId);
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 export async function saveWindowState(windowId: number, state: WindowTabState): Promise<void> {
