@@ -126,6 +126,9 @@ func TestSessionDir(t *testing.T) {
 }
 
 func TestChooseFolderCancelIsEmpty(t *testing.T) {
+	if _, err := exec.LookPath("osascript"); err != nil {
+		t.Skip("osascript is macOS-only")
+	}
 	script := `try
 	error "User canceled." number -128
 on error errMsg number errNum
