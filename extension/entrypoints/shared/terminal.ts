@@ -4,9 +4,13 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { bindKeySequences } from "./terminalKeys";
 import type {
+    RequestConfigGet,
+    RequestConfigSet,
     RequestCreateTTY,
     RequestGetXtermConfig,
     RequestResizeTTY,
+    ResponseConfigGet,
+    ResponseConfigSet,
     ResponseCreateTTY,
     ResponseGetXtermConfig,
 } from "./rpc";
@@ -18,6 +22,7 @@ import {
 } from "./agentLauncher";
 import { NativeUnavailable } from "./nativeRpc";
 import { type PtyAttachHandle, attachPtySocket } from "./ptyAttach";
+import { canStepFontSize, clampFontSize, configWithFontSize, stepFontSize } from "./fontSize";
 
 const terminalFontFamily = "JetBrainsMono Nerd Font Mono";
 
@@ -149,6 +154,88 @@ function watchTerminalBox(
     new ResizeObserver(apply).observe(anchor);
 }
 
+async function saveFontSize(size: number) {
+    const current = await browser.runtime.sendMessage<RequestConfigGet, ResponseConfigGet>({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "config.get",
+        params: undefined,
+    });
+    if ("error" in current) {
+        throw new Error(current.error.message);
+    }
+    const resp = await browser.runtime.sendMessage<RequestConfigSet, ResponseConfigSet>({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "config.set",
+        params: { config: configWithFontSize(current.result.config, size) },
+    });
+    if ("error" in resp) {
+        throw new Error(resp.error.message);
+    }
+}
+
+/** Top-right −/+ buttons that change the terminal font size live. */
+function mountFontSizeControls(
+    host: HTMLElement,
+    terminal: Terminal,
+    fit: FitAddon,
+    xtermConfig: Record<string, unknown>,
+) {
+    host.className = "at-fontsize";
+
+    const makeButton = (label: string, title: string, delta: number) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "at-fontsize__button";
+        button.textContent = label;
+        button.title = title;
+        button.setAttribute("aria-label", title);
+        // Keep focus in the terminal instead of the button.
+        button.addEventListener("mousedown", (e) => e.preventDefault());
+        button.addEventListener("click", () => void change(delta));
+        host.appendChild(button);
+        return button;
+    };
+
+    const smaller = makeButton("−", "Decrease font size", -1);
+    const larger = makeButton("+", "Increase font size", 1);
+
+    let size = clampFontSize(terminal.options.fontSize);
+    let saveChain: Promise<void> = Promise.resolve();
+
+    const sync = () => {
+        smaller.disabled = !canStepFontSize(size, -1);
+        larger.disabled = !canStepFontSize(size, 1);
+    };
+
+    async function change(delta: number) {
+        const next = stepFontSize(size, delta);
+        if (next === size) {
+            terminal.focus();
+            return;
+        }
+        size = next;
+        sync();
+        await loadTerminalFont({ ...xtermConfig, fontSize: next });
+        if (size !== next) {
+            return;
+        }
+        terminal.options.fontSize = next;
+        // fit() resizes cols/rows; onResize then sends tty.resize.
+        fit.fit();
+        if (terminal.rows > 0) {
+            terminal.refresh(0, terminal.rows - 1);
+        }
+        terminal.focus();
+        saveChain = saveChain
+            .then(() => saveFontSize(next))
+            .catch((err) => console.error("font size save failed:", err));
+    }
+
+    sync();
+}
+
 function showSetup(message: string) {
     document.body.className = "at-setup-host";
     document.body.innerHTML = "";
@@ -255,6 +342,9 @@ async function main() {
         canLaunch: () => !!state && state.tabs.length < MAX_TABS,
     });
 
+    const fontSizeHost = document.createElement("div");
+    strip.appendChild(fontSizeHost);
+
     let state = await loadWindowState(windowId);
     if (state && state.tabs.length === 0) {
         state = null;
@@ -292,6 +382,8 @@ async function main() {
     } catch {
         // Canvas renderer remains the default.
     }
+
+    mountFontSizeControls(fontSizeHost, terminal, fitAddon, xtermResp.result);
 
     const refreshStrip = () => {
         renderTabList(list, state!, titles, {
