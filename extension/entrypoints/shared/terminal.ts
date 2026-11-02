@@ -23,6 +23,15 @@ import {
 import { NativeUnavailable } from "./nativeRpc";
 import { type PtyAttachHandle, attachPtySocket } from "./ptyAttach";
 import { canStepFontSize, clampFontSize, configWithFontSize, stepFontSize } from "./fontSize";
+import {
+    type ChromeTabLike,
+    concernsAgentTab,
+    type TabLifecycleEvent,
+    applyTabLifecycle,
+    statusView,
+    toggleLock,
+    trackedTabId,
+} from "./tabLock";
 
 const terminalFontFamily = "JetBrainsMono Nerd Font Mono";
 
@@ -42,6 +51,7 @@ async function loadTerminalFont(config: Record<string, unknown>) {
 }
 import {
     MAX_TABS,
+    type WindowTab,
     type WindowTabState,
     attachTTY,
     clearWindowState,
@@ -281,6 +291,20 @@ function renderTabList(
     }
 }
 
+function renderStatusBar(bar: HTMLElement, tab: WindowTab | undefined, chromeTab: ChromeTabLike | undefined) {
+    const view = statusView(tab, chromeTab);
+    bar.className = `at-status at-status--${view.mode}`;
+    bar.title = view.tooltip;
+    const icon = document.createElement("span");
+    icon.className = "at-status__icon";
+    icon.textContent = view.mode === "following" ? "\u{1F513}" : view.mode === "locked" ? "\u{1F512}" : "\u26A0";
+    const text = document.createElement("span");
+    text.className = "at-status__text";
+    text.textContent = view.text;
+    bar.replaceChildren(icon, text);
+    bar.setAttribute("aria-label", view.tooltip);
+}
+
 async function main() {
     const anchor = document.getElementById("terminal");
     if (!anchor) {
@@ -310,7 +334,8 @@ async function main() {
     }
 
     const strip = document.getElementById("tab-strip");
-    if (!strip) {
+    const statusBar = document.getElementById("status-bar");
+    if (!strip || !statusBar) {
         showSetup("Tab strip missing from side panel");
         return;
     }
@@ -344,6 +369,21 @@ async function main() {
 
     const fontSizeHost = document.createElement("div");
     strip.appendChild(fontSizeHost);
+
+    // Listen before reading saved locks, so a locked Chrome tab that closes or
+    // is replaced while the panel starts up is not missed. Events queue until
+    // the status bar below takes over.
+    let onTabLifecycle: ((event: TabLifecycleEvent) => void) | undefined;
+    const earlyTabEvents: TabLifecycleEvent[] = [];
+    const tabLifecycle = (event: TabLifecycleEvent) => {
+        if (onTabLifecycle) {
+            onTabLifecycle(event);
+        } else {
+            earlyTabEvents.push(event);
+        }
+    };
+    browser.tabs.onRemoved.addListener((tabId) => tabLifecycle({ removed: tabId }));
+    browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => tabLifecycle({ removed: removedTabId, added: addedTabId }));
 
     let state = await loadWindowState(windowId);
     if (state && state.tabs.length === 0) {
@@ -385,12 +425,105 @@ async function main() {
 
     mountFontSizeControls(fontSizeHost, terminal, fitAddon, xtermResp.result);
 
+    // Chrome tab tracking for the bottom status bar.
+    let activeChromeTabId: number | undefined;
+    let shownChromeTabId: number | undefined;
+    // Agent tab the bar currently shows. Lags state.activeId while a switch
+    // or lookup is in flight.
+    let shownAgentId: string | undefined;
+    let statusGen = 0;
+
+    const activeAgentTab = (): WindowTab | undefined =>
+        state?.tabs.find((tab) => tab.id === state!.activeId);
+
+    async function refreshStatus(known?: ChromeTabLike) {
+        const gen = ++statusGen;
+        const agentTab = activeAgentTab();
+        const id = trackedTabId(agentTab, activeChromeTabId);
+        let chromeTab: ChromeTabLike | undefined;
+        if (id !== undefined) {
+            if (known?.id === id) {
+                chromeTab = known;
+            } else {
+                try {
+                    chromeTab = await browser.tabs.get(id);
+                } catch {
+                    chromeTab = undefined;
+                }
+            }
+        }
+        if (gen !== statusGen) {
+            return;
+        }
+        shownChromeTabId = chromeTab?.id;
+        shownAgentId = agentTab?.id;
+        renderStatusBar(statusBar!, agentTab, chromeTab);
+    }
+
+    async function updateLocks(next: WindowTabState) {
+        if (next === state) {
+            return;
+        }
+        state = next;
+        await saveWindowState(windowId, state);
+    }
+
+    statusBar.hidden = false;
+    statusBar.addEventListener("click", () => {
+        if (!state) {
+            return;
+        }
+        // The bar still shows another agent tab: acting on it would apply that
+        // tab's lock to this one. Let the refresh catch up instead.
+        if (shownAgentId !== state.activeId) {
+            void refreshStatus();
+            return;
+        }
+        void updateLocks(toggleLock(state, state.activeId, shownChromeTabId)).then(() => refreshStatus());
+    });
+
+    browser.tabs.onActivated.addListener((info) => {
+        if (info.windowId !== windowId) {
+            return;
+        }
+        activeChromeTabId = info.tabId;
+        void refreshStatus();
+    });
+
+    browser.tabs.onUpdated.addListener((_tabId, _change, chromeTab) => {
+        if (concernsAgentTab(activeAgentTab(), windowId, activeChromeTabId, chromeTab)) {
+            void refreshStatus(chromeTab);
+        }
+    });
+
+    onTabLifecycle = (event) => {
+        if (activeChromeTabId === event.removed) {
+            activeChromeTabId = event.added;
+        }
+        if (state) {
+            void updateLocks(applyTabLifecycle(state, [event]));
+        }
+        void refreshStatus();
+    };
+    if (state && earlyTabEvents.length > 0) {
+        void updateLocks(applyTabLifecycle(state, earlyTabEvents.splice(0)));
+    }
+
+    try {
+        const [activeChromeTab] = await browser.tabs.query({ active: true, windowId });
+        activeChromeTabId = activeChromeTab?.id;
+    } catch {
+        activeChromeTabId = undefined;
+    }
+    void refreshStatus();
+
     const refreshStrip = () => {
         renderTabList(list, state!, titles, {
             onSelect: (id) => void switchTo(id),
             onClose: (id) => void closeTab(id),
         });
         launcher.setLaunchEnabled(state!.tabs.length < MAX_TABS);
+        void refreshStatus();
     };
 
     function hasTab(id: string): boolean {
