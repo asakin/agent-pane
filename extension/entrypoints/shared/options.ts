@@ -5,6 +5,7 @@ import type {
     ResponseConfigGet,
     ResponseConfigSet,
 } from "./rpc";
+import { clampFontSize } from "./fontSize";
 
 const form = document.getElementById("settings-form") as HTMLFormElement;
 const statusEl = document.getElementById("status") as HTMLDivElement;
@@ -116,14 +117,6 @@ function parseArgs(raw: string): string[] {
         .trim()
         .split(/\s+/)
         .filter(Boolean);
-}
-
-function clampFontSize(raw: unknown): number {
-    const n = typeof raw === "number" ? raw : Number(raw);
-    if (!Number.isFinite(n)) {
-        return 13;
-    }
-    return Math.min(28, Math.max(10, Math.round(n)));
 }
 
 async function load() {

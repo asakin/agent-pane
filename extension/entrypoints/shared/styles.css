@@ -65,6 +65,7 @@ body.at-options {
 /* Side-panel tab strip (hidden on terminal.html / popup) */
 .at-tabs {
     --at-launcher-width: 52px;
+    --at-fontsize-width: 44px;
     flex: 0 0 auto;
     display: flex;
     align-items: stretch;
@@ -82,11 +83,11 @@ body.at-options {
 }
 
 .at-tabs__list {
-    /* Shrink-wrap to tabs so launcher sits after the last tab; cap so launcher stays visible. */
+    /* Shrink-wrap to tabs so launcher sits after the last tab; cap so launcher and font-size buttons stay visible. */
     display: flex;
     flex: 0 1 auto;
     width: max-content;
-    max-width: calc(100% - var(--at-launcher-width));
+    max-width: calc(100% - var(--at-launcher-width) - var(--at-fontsize-width));
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
@@ -175,6 +176,49 @@ body.at-options {
     @media (prefers-color-scheme: dark) {
         border-left-color: rgba(255, 255, 255, 0.12);
     }
+}
+
+/* Font-size −/+ group, pinned to the right edge of the strip. */
+.at-fontsize {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: stretch;
+    width: var(--at-fontsize-width);
+    margin-left: auto;
+    border-left: 1px solid rgba(0, 0, 0, 0.12);
+
+    @media (prefers-color-scheme: dark) {
+        border-left-color: rgba(255, 255, 255, 0.12);
+    }
+}
+
+.at-fontsize__button {
+    flex: 1 1 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.at-fontsize__button:hover:not(:disabled) {
+    background: rgba(0, 0, 0, 0.06);
+
+    @media (prefers-color-scheme: dark) {
+        background: rgba(255, 255, 255, 0.08);
+    }
+}
+
+.at-fontsize__button:disabled {
+    opacity: 0.35;
+    cursor: default;
 }
 
 .at-launcher__primary,
