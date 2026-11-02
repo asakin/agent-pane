@@ -4,9 +4,13 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { bindKeySequences } from "./terminalKeys";
 import type {
+    RequestConfigGet,
+    RequestConfigSet,
     RequestCreateTTY,
     RequestGetXtermConfig,
     RequestResizeTTY,
+    ResponseConfigGet,
+    ResponseConfigSet,
     ResponseCreateTTY,
     ResponseGetXtermConfig,
 } from "./rpc";
@@ -18,11 +22,12 @@ import {
 } from "./agentLauncher";
 import { NativeUnavailable } from "./nativeRpc";
 import { type PtyAttachHandle, attachPtySocket } from "./ptyAttach";
+import { canStepFontSize, clampFontSize, configWithFontSize, stepFontSize } from "./fontSize";
 import {
     type ChromeTabLike,
     concernsAgentTab,
-    markLockedTabClosed,
-    replaceLockedTab,
+    type TabLifecycleEvent,
+    applyTabLifecycle,
     statusView,
     toggleLock,
     trackedTabId,
@@ -159,6 +164,88 @@ function watchTerminalBox(
     new ResizeObserver(apply).observe(anchor);
 }
 
+async function saveFontSize(size: number) {
+    const current = await browser.runtime.sendMessage<RequestConfigGet, ResponseConfigGet>({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "config.get",
+        params: undefined,
+    });
+    if ("error" in current) {
+        throw new Error(current.error.message);
+    }
+    const resp = await browser.runtime.sendMessage<RequestConfigSet, ResponseConfigSet>({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "config.set",
+        params: { config: configWithFontSize(current.result.config, size) },
+    });
+    if ("error" in resp) {
+        throw new Error(resp.error.message);
+    }
+}
+
+/** Top-right −/+ buttons that change the terminal font size live. */
+function mountFontSizeControls(
+    host: HTMLElement,
+    terminal: Terminal,
+    fit: FitAddon,
+    xtermConfig: Record<string, unknown>,
+) {
+    host.className = "at-fontsize";
+
+    const makeButton = (label: string, title: string, delta: number) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "at-fontsize__button";
+        button.textContent = label;
+        button.title = title;
+        button.setAttribute("aria-label", title);
+        // Keep focus in the terminal instead of the button.
+        button.addEventListener("mousedown", (e) => e.preventDefault());
+        button.addEventListener("click", () => void change(delta));
+        host.appendChild(button);
+        return button;
+    };
+
+    const smaller = makeButton("−", "Decrease font size", -1);
+    const larger = makeButton("+", "Increase font size", 1);
+
+    let size = clampFontSize(terminal.options.fontSize);
+    let saveChain: Promise<void> = Promise.resolve();
+
+    const sync = () => {
+        smaller.disabled = !canStepFontSize(size, -1);
+        larger.disabled = !canStepFontSize(size, 1);
+    };
+
+    async function change(delta: number) {
+        const next = stepFontSize(size, delta);
+        if (next === size) {
+            terminal.focus();
+            return;
+        }
+        size = next;
+        sync();
+        await loadTerminalFont({ ...xtermConfig, fontSize: next });
+        if (size !== next) {
+            return;
+        }
+        terminal.options.fontSize = next;
+        // fit() resizes cols/rows; onResize then sends tty.resize.
+        fit.fit();
+        if (terminal.rows > 0) {
+            terminal.refresh(0, terminal.rows - 1);
+        }
+        terminal.focus();
+        saveChain = saveChain
+            .then(() => saveFontSize(next))
+            .catch((err) => console.error("font size save failed:", err));
+    }
+
+    sync();
+}
+
 function showSetup(message: string) {
     document.body.className = "at-setup-host";
     document.body.innerHTML = "";
@@ -280,6 +367,24 @@ async function main() {
         canLaunch: () => !!state && state.tabs.length < MAX_TABS,
     });
 
+    const fontSizeHost = document.createElement("div");
+    strip.appendChild(fontSizeHost);
+
+    // Listen before reading saved locks, so a locked Chrome tab that closes or
+    // is replaced while the panel starts up is not missed. Events queue until
+    // the status bar below takes over.
+    let onTabLifecycle: ((event: TabLifecycleEvent) => void) | undefined;
+    const earlyTabEvents: TabLifecycleEvent[] = [];
+    const tabLifecycle = (event: TabLifecycleEvent) => {
+        if (onTabLifecycle) {
+            onTabLifecycle(event);
+        } else {
+            earlyTabEvents.push(event);
+        }
+    };
+    browser.tabs.onRemoved.addListener((tabId) => tabLifecycle({ removed: tabId }));
+    browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => tabLifecycle({ removed: removedTabId, added: addedTabId }));
+
     let state = await loadWindowState(windowId);
     if (state && state.tabs.length === 0) {
         state = null;
@@ -318,9 +423,14 @@ async function main() {
         // Canvas renderer remains the default.
     }
 
+    mountFontSizeControls(fontSizeHost, terminal, fitAddon, xtermResp.result);
+
     // Chrome tab tracking for the bottom status bar.
     let activeChromeTabId: number | undefined;
     let shownChromeTabId: number | undefined;
+    // Agent tab the bar currently shows. Lags state.activeId while a switch
+    // or lookup is in flight.
+    let shownAgentId: string | undefined;
     let statusGen = 0;
 
     const activeAgentTab = (): WindowTab | undefined =>
@@ -346,6 +456,7 @@ async function main() {
             return;
         }
         shownChromeTabId = chromeTab?.id;
+        shownAgentId = agentTab?.id;
         renderStatusBar(statusBar!, agentTab, chromeTab);
     }
 
@@ -360,6 +471,12 @@ async function main() {
     statusBar.hidden = false;
     statusBar.addEventListener("click", () => {
         if (!state) {
+            return;
+        }
+        // The bar still shows another agent tab: acting on it would apply that
+        // tab's lock to this one. Let the refresh catch up instead.
+        if (shownAgentId !== state.activeId) {
+            void refreshStatus();
             return;
         }
         void updateLocks(toggleLock(state, state.activeId, shownChromeTabId)).then(() => refreshStatus());
@@ -379,25 +496,18 @@ async function main() {
         }
     });
 
-    browser.tabs.onRemoved.addListener((tabId) => {
-        if (activeChromeTabId === tabId) {
-            activeChromeTabId = undefined;
+    onTabLifecycle = (event) => {
+        if (activeChromeTabId === event.removed) {
+            activeChromeTabId = event.added;
         }
         if (state) {
-            void updateLocks(markLockedTabClosed(state, tabId));
+            void updateLocks(applyTabLifecycle(state, [event]));
         }
         void refreshStatus();
-    });
-
-    browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
-        if (activeChromeTabId === removedTabId) {
-            activeChromeTabId = addedTabId;
-        }
-        if (state) {
-            void updateLocks(replaceLockedTab(state, addedTabId, removedTabId));
-        }
-        void refreshStatus();
-    });
+    };
+    if (state && earlyTabEvents.length > 0) {
+        void updateLocks(applyTabLifecycle(state, earlyTabEvents.splice(0)));
+    }
 
     try {
         const [activeChromeTab] = await browser.tabs.query({ active: true, windowId });

@@ -103,10 +103,27 @@ export function markLockedTabClosed<S extends LockState>(state: S, chromeTabId: 
         tab.lockedTabId === chromeTabId && !tab.lockedTabClosed ? { ...tab, lockedTabClosed: true } : tab);
 }
 
-/** tabs.onReplaced: move locks from removedTabId to addedTabId. */
+/**
+ * tabs.onReplaced: move locks from removedTabId to addedTabId. A replaced tab
+ * never closed, so a closed mark on it (from a reload check that ran during
+ * the swap) is cleared too.
+ */
 export function replaceLockedTab<S extends LockState>(state: S, addedTabId: number, removedTabId: number): S {
     return mapTabs(state, (tab) =>
-        tab.lockedTabId === removedTabId && !tab.lockedTabClosed ? { ...tab, lockedTabId: addedTabId } : tab);
+        tab.lockedTabId === removedTabId ? { ...withoutLock(tab), lockedTabId: addedTabId } : tab);
+}
+
+/** A tabs.onRemoved (no added) or tabs.onReplaced event. */
+export type TabLifecycleEvent = {
+    removed: number;
+    added?: number;
+};
+
+/** Applies onRemoved / onReplaced events, oldest first. */
+export function applyTabLifecycle<S extends LockState>(state: S, events: TabLifecycleEvent[]): S {
+    return events.reduce((next, event) => event.added === undefined
+        ? markLockedTabClosed(next, event.removed)
+        : replaceLockedTab(next, event.added, event.removed), state);
 }
 
 /** After a side-panel reload: locks whose Chrome tab no longer exists become closed. */
