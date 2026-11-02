@@ -18,6 +18,15 @@ import {
 } from "./agentLauncher";
 import { NativeUnavailable } from "./nativeRpc";
 import { type PtyAttachHandle, attachPtySocket } from "./ptyAttach";
+import {
+    type ChromeTabLike,
+    concernsAgentTab,
+    markLockedTabClosed,
+    replaceLockedTab,
+    statusView,
+    toggleLock,
+    trackedTabId,
+} from "./tabLock";
 
 const terminalFontFamily = "JetBrainsMono Nerd Font Mono";
 
@@ -37,6 +46,7 @@ async function loadTerminalFont(config: Record<string, unknown>) {
 }
 import {
     MAX_TABS,
+    type WindowTab,
     type WindowTabState,
     attachTTY,
     clearWindowState,
@@ -194,6 +204,20 @@ function renderTabList(
     }
 }
 
+function renderStatusBar(bar: HTMLElement, tab: WindowTab | undefined, chromeTab: ChromeTabLike | undefined) {
+    const view = statusView(tab, chromeTab);
+    bar.className = `at-status at-status--${view.mode}`;
+    bar.title = view.tooltip;
+    const icon = document.createElement("span");
+    icon.className = "at-status__icon";
+    icon.textContent = view.mode === "following" ? "\u{1F513}" : view.mode === "locked" ? "\u{1F512}" : "\u26A0";
+    const text = document.createElement("span");
+    text.className = "at-status__text";
+    text.textContent = view.text;
+    bar.replaceChildren(icon, text);
+    bar.setAttribute("aria-label", view.tooltip);
+}
+
 async function main() {
     const anchor = document.getElementById("terminal");
     if (!anchor) {
@@ -223,7 +247,8 @@ async function main() {
     }
 
     const strip = document.getElementById("tab-strip");
-    if (!strip) {
+    const statusBar = document.getElementById("status-bar");
+    if (!strip || !statusBar) {
         showSetup("Tab strip missing from side panel");
         return;
     }
@@ -293,12 +318,102 @@ async function main() {
         // Canvas renderer remains the default.
     }
 
+    // Chrome tab tracking for the bottom status bar.
+    let activeChromeTabId: number | undefined;
+    let shownChromeTabId: number | undefined;
+    let statusGen = 0;
+
+    const activeAgentTab = (): WindowTab | undefined =>
+        state?.tabs.find((tab) => tab.id === state!.activeId);
+
+    async function refreshStatus(known?: ChromeTabLike) {
+        const gen = ++statusGen;
+        const agentTab = activeAgentTab();
+        const id = trackedTabId(agentTab, activeChromeTabId);
+        let chromeTab: ChromeTabLike | undefined;
+        if (id !== undefined) {
+            if (known?.id === id) {
+                chromeTab = known;
+            } else {
+                try {
+                    chromeTab = await browser.tabs.get(id);
+                } catch {
+                    chromeTab = undefined;
+                }
+            }
+        }
+        if (gen !== statusGen) {
+            return;
+        }
+        shownChromeTabId = chromeTab?.id;
+        renderStatusBar(statusBar!, agentTab, chromeTab);
+    }
+
+    async function updateLocks(next: WindowTabState) {
+        if (next === state) {
+            return;
+        }
+        state = next;
+        await saveWindowState(windowId, state);
+    }
+
+    statusBar.hidden = false;
+    statusBar.addEventListener("click", () => {
+        if (!state) {
+            return;
+        }
+        void updateLocks(toggleLock(state, state.activeId, shownChromeTabId)).then(() => refreshStatus());
+    });
+
+    browser.tabs.onActivated.addListener((info) => {
+        if (info.windowId !== windowId) {
+            return;
+        }
+        activeChromeTabId = info.tabId;
+        void refreshStatus();
+    });
+
+    browser.tabs.onUpdated.addListener((_tabId, _change, chromeTab) => {
+        if (concernsAgentTab(activeAgentTab(), windowId, activeChromeTabId, chromeTab)) {
+            void refreshStatus(chromeTab);
+        }
+    });
+
+    browser.tabs.onRemoved.addListener((tabId) => {
+        if (activeChromeTabId === tabId) {
+            activeChromeTabId = undefined;
+        }
+        if (state) {
+            void updateLocks(markLockedTabClosed(state, tabId));
+        }
+        void refreshStatus();
+    });
+
+    browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+        if (activeChromeTabId === removedTabId) {
+            activeChromeTabId = addedTabId;
+        }
+        if (state) {
+            void updateLocks(replaceLockedTab(state, addedTabId, removedTabId));
+        }
+        void refreshStatus();
+    });
+
+    try {
+        const [activeChromeTab] = await browser.tabs.query({ active: true, windowId });
+        activeChromeTabId = activeChromeTab?.id;
+    } catch {
+        activeChromeTabId = undefined;
+    }
+    void refreshStatus();
+
     const refreshStrip = () => {
         renderTabList(list, state!, titles, {
             onSelect: (id) => void switchTo(id),
             onClose: (id) => void closeTab(id),
         });
         launcher.setLaunchEnabled(state!.tabs.length < MAX_TABS);
+        void refreshStatus();
     };
 
     function hasTab(id: string): boolean {
