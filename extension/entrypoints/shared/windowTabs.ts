@@ -61,7 +61,13 @@ export async function loadWindowState(windowId: number): Promise<WindowTabState 
     // Locked Chrome tabs may have closed while the side panel was shut.
     const checked = await closeMissingLocks(state, chromeTabExists);
     if (checked !== state) {
-        await saveWindowState(windowId, checked);
+        // The closed marks are also held in memory and saved with the next
+        // state change, so a failed write must not block restoring terminals.
+        try {
+            await saveWindowState(windowId, checked);
+        } catch (err) {
+            console.warn("saving closed tab locks failed:", err);
+        }
     }
     return checked;
 }

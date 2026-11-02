@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+    applyTabLifecycle,
     chromeTabUrl,
     closeMissingLocks,
     concernsAgentTab,
@@ -63,6 +64,23 @@ test("tabs.onReplaced moves the lock to the replacement tab id", () => {
     assert.equal(trackMode(next.tabs[0]), "locked");
     assert.equal(next.tabs[1].lockedTabId, 8);
     assert.equal(trackMode(markLockedTabClosed(next, 7).tabs[0]), "locked");
+});
+
+test("a replacement clears a closed mark the reload check set during the swap", () => {
+    const s = state(tab("a", { lockedTabId: 7, lockedTabClosed: true }));
+    const next = replaceLockedTab(s, 70, 7);
+    assert.deepEqual(next.tabs[0], tab("a", { lockedTabId: 70 }));
+    assert.equal(trackMode(next.tabs[0]), "locked");
+});
+
+test("tab events queued during startup apply in order", () => {
+    const s = state(tab("a", { lockedTabId: 7 }), tab("b", { lockedTabId: 8 }), tab("c"));
+    const next = applyTabLifecycle(s, [{ removed: 7, added: 70 }, { removed: 8 }, { removed: 70 }]);
+    assert.deepEqual(next.tabs[0], tab("a", { lockedTabId: 70, lockedTabClosed: true }));
+    assert.equal(trackMode(next.tabs[1]), "closed");
+    assert.equal(trackMode(next.tabs[2]), "following");
+    assert.equal(applyTabLifecycle(s, []), s);
+    assert.equal(applyTabLifecycle(s, [{ removed: 99 }]), s);
 });
 
 test("reload marks locks whose Chrome tab is gone as closed", async () => {
