@@ -20,8 +20,18 @@ import (
 // allow replaces the executable the helper accepts.
 func startSpawnHelper(t *testing.T, name, allow string) (string, *exec.Cmd) {
 	t.Helper()
-	sock := filepath.Join("/tmp", "at-"+name+"-"+strconv.Itoa(os.Getpid())+".sock")
-	t.Cleanup(func() { _ = os.Remove(sock) })
+	// The helper makes the socket's folder 0700, so give it its own. Short,
+	// because unix socket paths are limited to 104 bytes.
+	dir, err := os.MkdirTemp("/tmp", "at-"+name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	// Start from an older install's 0755 folder; the helper must tighten it.
+	if err := os.Chmod(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "s.sock")
 
 	helper := exec.Command(os.Args[0], "-test.run=^TestSpawnHelperProcess$")
 	helper.Env = append(os.Environ(), "SPAWN_SOCK="+sock, "SPAWN_ALLOW="+allow)
@@ -42,6 +52,9 @@ func startSpawnHelper(t *testing.T, name, allow string) (string, *exec.Cmd) {
 			t.Fatal("spawn socket did not appear")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0700 {
+		t.Fatalf("socket folder mode: %v %v", info.Mode().Perm(), err)
 	}
 	return sock, helper
 }

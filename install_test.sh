@@ -11,14 +11,25 @@ printf '#!/bin/sh\necho agent-pane\n' >"$bin"
 chmod 755 "$bin"
 
 home="$tmp/home"
-mkdir -p "$home/Library/Application Support/Google/Chrome"
+if [ "$(uname -s)" = Darwin ]; then
+	chrome="$home/Library/Application Support/Google/Chrome"
+	chrome_hosts="$chrome/NativeMessagingHosts"
+else
+	chrome="$home/.config/google-chrome"
+	chrome_hosts="$chrome/native-messaging-hosts"
+fi
+mkdir -p "$chrome"
 HOME="$home" SHELL=/bin/zsh AGENT_PANE_BIN="$bin" "$root/install.sh" >/dev/null
 
-manifest="$home/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.agentpane.native.json"
+manifest="$chrome_hosts/com.agentpane.native.json"
 host="$home/.local/share/agent-pane/native_messaging_host"
 [ -s "$manifest" ]
 grep -F 'chrome-extension://eakooboihfgnikdhdldcmoiafgioeglm/' "$manifest" >/dev/null
 grep -F "$host" "$manifest" >/dev/null
+if grep -F 'allowed_extensions' "$manifest" >/dev/null; then
+	echo "manifest names a non-Chromium extension" >&2
+	exit 1
+fi
 [ -x "$host" ]
 grep -F "$home/.local/bin/agent-pane" "$host" >/dev/null
 [ -x "$home/.local/bin/agent-pane" ]
@@ -40,6 +51,7 @@ grep -q 'Playwright' "$home/AGENTS.md"
 [ -f "$home/.local/share/agent-pane/agents/claude/agent.json" ]
 [ -f "$home/.local/share/agent-pane/agents/goose/icon.png" ]
 [ ! -e "$home/.config/agent-pane/agents" ]
+ls -ld "$home/.local/share/agent-pane" | grep -q '^drwx------'
 
 if [ "$(uname -s)" = Darwin ]; then
 	plist="$home/Library/LaunchAgents/com.agentpane.spawn.plist"

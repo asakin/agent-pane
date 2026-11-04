@@ -17,6 +17,9 @@ export function attachPtySocket(
     options?: {
         /** Return false to ignore late write callbacks after tab switch / detach. */
         isCurrent?: () => boolean;
+        /** The replay frame arrived: the host accepted this socket. */
+        onReady?: () => void;
+        /** Called once, on the socket's first error or close event. */
         onClose?: () => void;
     },
 ): PtyAttachHandle {
@@ -71,6 +74,7 @@ export function attachPtySocket(
         const bytes = new Uint8Array(ev.data);
         if (!sawFirstBinary) {
             sawFirstBinary = true;
+            options?.onReady?.();
             if (bytes.byteLength === 0) {
                 enableInput();
                 return;
@@ -83,10 +87,14 @@ export function attachPtySocket(
         terminal.write(bytes);
     };
 
+    // A failed socket fires error and then close; reattach once, not twice,
+    // or the two attaches supersede each other's tokens.
+    let closed = false;
     const onClose = () => {
-        if (disposed) {
+        if (disposed || closed) {
             return;
         }
+        closed = true;
         options?.onClose?.();
     };
 

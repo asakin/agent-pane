@@ -27,7 +27,7 @@ jobs:
       - name: Set manifest version
         run: echo "MANIFEST_VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')" >> "$GITHUB_ENV"
       - name: Build extension
-        run: npm ci && npm run build && npm run zip:firefox
+        run: npm ci && npm run build
         working-directory: extension
       - uses: actions/setup-go@v7
         with:

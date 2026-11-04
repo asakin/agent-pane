@@ -28,8 +28,6 @@ archives:
       - completions/*
       - src: extension/dist/chrome-mv3/*
         dst: extensions/chrome
-      - src: extension/dist/agent-pane-{{ .Version }}-firefox.zip
-        dst: extensions/firefox.zip
 release:
   prerelease: auto
 checksum:

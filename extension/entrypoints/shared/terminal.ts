@@ -25,6 +25,7 @@ import {
 } from "./agentLauncher";
 import { NativeUnavailable } from "./nativeRpc";
 import { type PtyAttachHandle, attachPtySocket } from "./ptyAttach";
+import { RECONNECT_GAVE_UP, createReconnectBackoff } from "./reconnect";
 import { canStepFontSize, clampFontSize, configWithFontSize, stepFontSize } from "./fontSize";
 import {
     type ChromeTabLike,
@@ -428,6 +429,7 @@ async function main() {
     const scheduleResize = createResizeSender();
     let ws: WebSocket | null = null;
     let ptyAttach: PtyAttachHandle | null = null;
+    const reconnect = createReconnectBackoff();
 
     await loadTerminalFont(xtermResp.result);
     const terminal = new Terminal(xtermResp.result);
@@ -644,6 +646,7 @@ async function main() {
         const attachGen = gen;
         ptyAttach = attachPtySocket(terminal, ws, {
             isCurrent: () => attachGen === switchGen && ws?.readyState === WebSocket.OPEN,
+            onReady: () => reconnect.succeeded(),
             onClose: () => {
                 if (gen !== switchGen || !state) {
                     return;
@@ -651,18 +654,23 @@ async function main() {
                 if (!hasTab(attachedId) || state.activeId !== attachedId) {
                     return;
                 }
-                void (async () => {
-                    if (gen !== switchGen) {
-                        return;
-                    }
-                    try {
-                        await attachActive(gen);
-                    } catch (err) {
-                        if (gen === switchGen) {
-                            showSetup((err as Error).message);
+                const retrying = reconnect.schedule(() => {
+                    void (async () => {
+                        if (gen !== switchGen) {
+                            return;
                         }
-                    }
-                })();
+                        try {
+                            await attachActive(gen);
+                        } catch (err) {
+                            if (gen === switchGen) {
+                                showSetup((err as Error).message);
+                            }
+                        }
+                    })();
+                });
+                if (!retrying) {
+                    showSetup(RECONNECT_GAVE_UP);
+                }
             },
         });
 
@@ -930,6 +938,7 @@ async function runSingleTerminal(
 
     let ws: WebSocket | null = null;
     let ptyAttach: PtyAttachHandle | null = null;
+    const reconnect = createReconnectBackoff();
     let ephemeralUnloading = false;
     let booting = false;
 
@@ -939,41 +948,51 @@ async function runSingleTerminal(
         activeTtyId = id;
         ptyAttach = attachPtySocket(terminal, socket, {
             isCurrent: () => !ephemeralUnloading && ws === socket,
+            onReady: () => reconnect.succeeded(),
             onClose: () => {
                 if (ephemeralUnloading) {
                     return;
                 }
-                void (async () => {
-                    try {
-                        const again = await attachTTY(id);
-                        if (again && !ephemeralUnloading) {
-                            bindSocket(new WebSocket(again.url), again.id);
-                            fitAddon.fit();
-                            terminal.focus();
-                            return;
-                        }
-                    } catch {
-                        // fall through
-                    }
-                    if (ephemeralUnloading) {
-                        return;
-                    }
-                    try {
-                        const size = fitAddon.proposeDimensions();
-                        if (!size) {
-                            return;
-                        }
-                        const app = new URLSearchParams(location.search).get("app") || "";
-                        const created = await createTTY(optsFromAppId(app, size));
-                        bindSocket(new WebSocket(created.url), created.id);
-                        scheduleResize({ tty: created.id, cols: size.cols, rows: size.rows });
-                        terminal.focus();
-                    } catch (err) {
-                        console.error("shell recover failed:", err);
-                    }
-                })();
+                if (!reconnect.schedule(() => recover(id))) {
+                    showSetup(RECONNECT_GAVE_UP);
+                }
             },
         });
+    };
+
+    const recover = (id: string) => {
+        if (ephemeralUnloading) {
+            return;
+        }
+        void (async () => {
+            try {
+                const again = await attachTTY(id);
+                if (again && !ephemeralUnloading) {
+                    bindSocket(new WebSocket(again.url), again.id);
+                    fitAddon.fit();
+                    terminal.focus();
+                    return;
+                }
+            } catch {
+                // fall through
+            }
+            if (ephemeralUnloading) {
+                return;
+            }
+            try {
+                const size = fitAddon.proposeDimensions();
+                if (!size) {
+                    return;
+                }
+                const app = new URLSearchParams(location.search).get("app") || "";
+                const created = await createTTY(optsFromAppId(app, size));
+                bindSocket(new WebSocket(created.url), created.id);
+                scheduleResize({ tty: created.id, cols: size.cols, rows: size.rows });
+                terminal.focus();
+            } catch (err) {
+                console.error("shell recover failed:", err);
+            }
+        })();
     };
 
     watchTerminalBox(anchor, terminal, fitAddon, () => {

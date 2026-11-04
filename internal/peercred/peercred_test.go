@@ -78,6 +78,13 @@ func TestAllowRejectsDifferentUID(t *testing.T) {
 	}
 }
 
+func TestEmptyPolicyRejectsEveryone(t *testing.T) {
+	self := Peer{UID: os.Getuid(), PID: os.Getpid()}
+	if err := (Policy{}).Allow(self); !errors.Is(err, ErrRejected) {
+		t.Fatalf("err %v, want ErrRejected", err)
+	}
+}
+
 func TestAllowAncestry(t *testing.T) {
 	self := Peer{UID: os.Getuid(), PID: os.Getpid()}
 	if err := (Policy{Ancestor: os.Getpid()}).Allow(self); err != nil {

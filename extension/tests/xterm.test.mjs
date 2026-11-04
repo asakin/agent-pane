@@ -51,3 +51,18 @@ test("PTY replay suppresses old terminal replies, then forwards live control byt
     terminal.input("detached input");
     assert.equal(sent.length, 2);
 });
+
+test("a refused socket reports one close, and a replay reports ready", (t) => {
+    const socket = new EventTarget();
+    const terminal = new Terminal();
+    let ready = 0;
+    let closes = 0;
+    const attachment = attachPtySocket(terminal, socket, { onReady: () => ready++, onClose: () => closes++ });
+    t.after(() => { attachment.dispose(); terminal.dispose(); });
+
+    socket.dispatchEvent(new MessageEvent("message", { data: new ArrayBuffer(0) }));
+    assert.equal(ready, 1);
+    socket.dispatchEvent(new Event("error"));
+    socket.dispatchEvent(new Event("close"));
+    assert.equal(closes, 1, "error then close must reattach once, not twice");
+});
