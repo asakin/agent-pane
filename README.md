@@ -98,7 +98,7 @@ A local build reports version `dev`, which passes the side panel's version check
 
 1. Open `chrome://extensions`
 2. Turn on **Developer mode**
-3. Click **Load unpacked** and choose `extension/dist/chrome-mv3` from the checkout (or `~/.local/share/agent-pane/extensions/chrome`, which the installer copies from the release)
+3. Click **Load unpacked** and choose `extension/dist/chrome-mv3` from the checkout
 4. Open the side panel from the Agent Pane extension icon
 
 ### Checks

@@ -255,7 +255,7 @@ function showSetup(message: string) {
     document.body.appendChild(renderSetupScreen(message));
 }
 
-function showUpdate(found: string, needed: number) {
+function showUpdate(found: string, needed: string) {
     document.body.className = "at-setup-host";
     document.body.innerHTML = "";
     document.body.appendChild(renderUpdateScreen(found, needed, async () => {
@@ -340,7 +340,7 @@ async function main() {
     }
     const host = checkHost(hostResp.result);
     if (!host.ok) {
-        showUpdate(host.version, host.needed);
+        showUpdate(host.version, host.neededVersion);
         return;
     }
 

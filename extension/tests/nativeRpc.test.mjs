@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { checkHost, MIN_HOST_PROTOCOL } from "../entrypoints/shared/hostVersion.ts";
+import { checkHost, MIN_HOST_PROTOCOL, MIN_HOST_VERSION } from "../entrypoints/shared/hostVersion.ts";
 import { CHOOSE_FOLDER_TIMEOUT_MS, errorFromResponse, NATIVE_RPC_TIMEOUT_MS, nativeTimeoutMs, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
 
 function fakePort() {
@@ -99,20 +99,22 @@ test("a host at the current protocol passes", () => {
 });
 
 test("a host at an older protocol is blocked", () => {
-    assert.deepEqual(checkHost({ version: "v1.0.0", protocol: 1 }, 2), {
+    assert.deepEqual(checkHost({ version: "1.0.0", protocol: 1 }, 2, "2.0.0"), {
         ok: false,
-        version: "v1.0.0",
+        version: "1.0.0",
         protocol: 1,
         needed: 2,
+        neededVersion: "2.0.0",
     });
 });
 
 test("a released host that answers {} is blocked", () => {
     assert.deepEqual(checkHost({}), {
         ok: false,
-        version: "unknown",
+        version: "",
         protocol: null,
         needed: MIN_HOST_PROTOCOL,
+        neededVersion: MIN_HOST_VERSION,
     });
     assert.equal(checkHost(undefined).ok, false);
     assert.equal(checkHost({ version: "v0.9.0", protocol: "1" }).ok, false);

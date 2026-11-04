@@ -305,7 +305,8 @@ func NewCmdServe(version string) *cobra.Command {
 }
 
 // protocolVersion is raised whenever the extension needs something an older
-// host does not have. The extension refuses terminals from a lower protocol.
+// host does not have, including a new extension origin the host must accept.
+// The extension refuses terminals from a lower protocol.
 const protocolVersion = 1
 
 type initializeResult struct {
