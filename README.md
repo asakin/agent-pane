@@ -29,30 +29,26 @@ The side panel is a terminal next to the browser, in the same window.
 
 ## Install
 
-Chrome, then:
+1. Add Agent Pane from the Chrome Web Store: <!-- TODO: replace with the Chrome Web Store listing link once it exists --> **[Chrome Web Store link: coming soon]**
+2. Install the program the extension talks to:
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/asakin/agent-pane/main/install.sh | sh
+   ```
+
+3. Open the side panel from the Agent Pane extension icon
+
+The script downloads the binary for this machine, puts `~/.local/bin` on `PATH`, and writes the native-messaging manifest Chrome needs. On macOS it also starts a LaunchAgent that launches the shell, so programs the agent runs are not children of Chrome. If that manifest is not written, the script exits with an error. Running it again writes the same files again.
+
+## Updating
+
+The Chrome Web Store updates the extension by itself. The program is updated by running the same command again:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/asakin/agent-pane/main/install.sh | sh
 ```
 
-The script downloads the binary for this machine, puts `~/.local/bin` on `PATH`, and writes the native-messaging manifest Chrome needs. On macOS it also starts a LaunchAgent that launches the shell, so programs the agent runs are not children of Chrome. If that manifest is not written, the script exits with an error. Running it again writes the same files again.
-
-Then load the extension in Chrome:
-
-1. Open `chrome://extensions`
-2. Turn on **Developer mode**
-3. Click **Load unpacked** and choose `~/.local/share/agent-pane/extensions/chrome` (the installer copies it from the release), or `extension/dist/chrome-mv3` from a checkout
-4. Open the side panel from the Agent Pane extension icon
-
-From a checkout, build the binary and point the same script at it:
-
-```sh
-git clone https://github.com/asakin/agent-pane.git
-cd agent-pane
-go build -o agent-pane .
-AGENT_PANE_BIN="$PWD/agent-pane" ./install.sh
-cd extension && npm install && npm run build
-```
+When the two are out of step, the side panel shows an update screen with that command instead of opening a terminal. Run it, then click **Retry**.
 
 ## How it works
 
@@ -85,6 +81,25 @@ and Cursor's editor, pane, search and shell-integration commands are not remappe
 ## Contributing
 
 PRs welcome. For large changes, open an issue first. Keep the extension free of page host permissions.
+
+### Run a checkout
+
+Build the binary and point the install script at it, then build the extension:
+
+```sh
+git clone https://github.com/asakin/agent-pane.git
+cd agent-pane
+go build -o agent-pane .
+AGENT_PANE_BIN="$PWD/agent-pane" ./install.sh
+cd extension && npm install && npm run build
+```
+
+A local build reports version `dev`, which passes the side panel's version check. Load the extension in Chrome:
+
+1. Open `chrome://extensions`
+2. Turn on **Developer mode**
+3. Click **Load unpacked** and choose `extension/dist/chrome-mv3` from the checkout
+4. Open the side panel from the Agent Pane extension icon
 
 ### Checks
 

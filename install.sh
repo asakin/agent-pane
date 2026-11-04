@@ -318,6 +318,4 @@ ensure_path
 write_instructions
 sync_agents
 echo "agent-pane: installed $dest"
-if [ -d "$data_dir/extensions/chrome" ]; then
-	echo "agent-pane: load the extension from $data_dir/extensions/chrome"
-fi
+echo "agent-pane: open the side panel from the Agent Pane extension icon (add the extension from the Chrome Web Store if it is not installed)"
