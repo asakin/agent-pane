@@ -16,15 +16,14 @@ export default defineConfig({
         version: process.env.MANIFEST_VERSION || "0.0.0",
         // Page code runs only via scripting.executeScript from an extension
         // action. No content_scripts and no externally_connectable (AGENTS.md).
-        // Page access is Chrome only.
         permissions: [
             "nativeMessaging",
-            ...(browser == "chrome" ? ["scripting"] : []),
+            "scripting",
             "sidePanel",
             "storage",
             "tabs"
         ],
-        host_permissions: browser == "chrome" ? ["<all_urls>"] : undefined,
+        host_permissions: ["<all_urls>"],
         side_panel: {
             default_path: "sidepanel.html",
         },
@@ -32,10 +31,5 @@ export default defineConfig({
             page: "options.html",
             open_in_tab: true,
         },
-        browser_specific_settings: browser == "firefox" ? {
-            gecko: {
-                id: "agent-pane@agent-pane.local"
-            }
-        } : undefined,
     })
 });

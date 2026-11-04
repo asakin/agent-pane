@@ -85,7 +85,6 @@ write_host() {
 write_manifest() {
 	parent=$1
 	dir=$2
-	kind=$3
 	if [ ! -d "$parent" ]; then
 		return 0
 	fi
@@ -93,8 +92,7 @@ write_manifest() {
 	rm -f "$dir/com.github.pomdtr.tweety.json"
 	path="$dir/com.agentpane.native.json"
 	escaped=$(json_escape "$host")
-	if [ "$kind" = "chromium" ]; then
-		cat >"$path" <<EOF
+	cat >"$path" <<EOF
 {
     "name": "com.agentpane.native",
     "description": "Claude Code, Codex and Pi in a real terminal, in Chrome's side panel.",
@@ -105,19 +103,6 @@ write_manifest() {
     ]
 }
 EOF
-	else
-		cat >"$path" <<EOF
-{
-    "name": "com.agentpane.native",
-    "description": "Claude Code, Codex and Pi in a real terminal, in Chrome's side panel.",
-    "type": "stdio",
-    "path": "${escaped}",
-    "allowed_extensions": [
-        "agent-pane@agent-pane.local"
-    ]
-}
-EOF
-	fi
 	[ -s "$path" ] || fail "manifest was not written: $path"
 	grep -F "$host" "$path" >/dev/null || fail "manifest does not point at the host: $path"
 	count=$((count + 1))
@@ -129,24 +114,20 @@ write_manifests() {
 	case "$(uname -s)" in
 	Darwin)
 		support="$home/Library/Application Support"
-		write_manifest "$support/Google/Chrome" "$support/Google/Chrome/NativeMessagingHosts" chromium
-		write_manifest "$support/Chromium" "$support/Chromium/NativeMessagingHosts" chromium
-		write_manifest "$support/BraveSoftware/Brave-Browser" "$support/BraveSoftware/Brave-Browser/NativeMessagingHosts" chromium
-		write_manifest "$support/Vivaldi" "$support/Vivaldi/NativeMessagingHosts" chromium
-		write_manifest "$support/net.imput.helium" "$support/net.imput.helium/NativeMessagingHosts" chromium
-		write_manifest "$support/Microsoft/Edge" "$support/Microsoft/Edge/NativeMessagingHosts" chromium
-		write_manifest "$support/Mozilla" "$support/Mozilla/NativeMessagingHosts" gecko
-		write_manifest "$support/zen" "$support/zen/NativeMessagingHosts" gecko
+		write_manifest "$support/Google/Chrome" "$support/Google/Chrome/NativeMessagingHosts"
+		write_manifest "$support/Chromium" "$support/Chromium/NativeMessagingHosts"
+		write_manifest "$support/BraveSoftware/Brave-Browser" "$support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+		write_manifest "$support/Vivaldi" "$support/Vivaldi/NativeMessagingHosts"
+		write_manifest "$support/net.imput.helium" "$support/net.imput.helium/NativeMessagingHosts"
+		write_manifest "$support/Microsoft/Edge" "$support/Microsoft/Edge/NativeMessagingHosts"
 		;;
 	Linux)
-		write_manifest "$home/.config/google-chrome" "$home/.config/google-chrome/native-messaging-hosts" chromium
-		write_manifest "$home/.config/chromium" "$home/.config/chromium/native-messaging-hosts" chromium
-		write_manifest "$home/.config/microsoft-edge" "$home/.config/microsoft-edge/native-messaging-hosts" chromium
-		write_manifest "$home/.config/brave" "$home/.config/brave/native-messaging-hosts" chromium
-		write_manifest "$home/.config/vivaldi" "$home/.config/vivaldi/native-messaging-hosts" chromium
-		write_manifest "$home/.config/helium" "$home/.config/helium/native-messaging-hosts" chromium
-		write_manifest "$home/.mozilla" "$home/.mozilla/native-messaging-hosts" gecko
-		write_manifest "$home/.config/zen" "$home/.config/zen/native-messaging-hosts" gecko
+		write_manifest "$home/.config/google-chrome" "$home/.config/google-chrome/native-messaging-hosts"
+		write_manifest "$home/.config/chromium" "$home/.config/chromium/native-messaging-hosts"
+		write_manifest "$home/.config/microsoft-edge" "$home/.config/microsoft-edge/native-messaging-hosts"
+		write_manifest "$home/.config/brave" "$home/.config/brave/native-messaging-hosts"
+		write_manifest "$home/.config/vivaldi" "$home/.config/vivaldi/native-messaging-hosts"
+		write_manifest "$home/.config/helium" "$home/.config/helium/native-messaging-hosts"
 		;;
 	*)
 		fail "unsupported operating system: $(uname -s)"
