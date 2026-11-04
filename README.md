@@ -78,9 +78,48 @@ and Cursor's editor, pane, search and shell-integration commands are not remappe
 
 - **Session survival:** hide the side panel and open it again; the same tabs are still running
 
+## Security
+
+**What the extension can access, and why.** On Chrome it asks for `scripting` and access to all sites (`<all_urls>`), so that a terminal agent can be given the focused tab, a selection, or a page you are logged in to. Both are required at install, so Chrome asks once. The extension has no content scripts and no page listeners: page code runs only when you act in the panel, in Chrome's isolated world, and returns what it read once. It also uses `nativeMessaging` to talk to the local `agent-pane` host, and `tabs`, `sidePanel` and `storage` for the panel itself.
+
+**How the parts talk.**
+
+```mermaid
+flowchart LR
+  user((You))
+  page["Web page"]
+  ext["Extension<br/>(background + side panel)"]
+  host["agent-pane host<br/>(native messaging + PTY server)"]
+  spawn["Spawn agent (macOS)"]
+  term["Terminal process<br/>(shell, coding agent)"]
+
+  user -- "clicks or approves in the panel" --> ext
+  ext -- "scripting.executeScript only,<br/>started by you" --> page
+  ext <-- "Chrome native-messaging pipe (stdio)" --> host
+  ext <-- "loopback WebSocket:<br/>origin check + one-time attach token" --> host
+  host -- "spawn.sock: peer-checked,<br/>agent-pane binary only" --> spawn
+  spawn --> term
+  term -. "page-content socket (planned):<br/>peer-checked by ancestry, approved by you" .-> host
+```
+
+| Channel | Who can reach it | Who cannot |
+| --- | --- | --- |
+| Web page and extension | The extension, through `executeScript` after you act in the panel | Pages: there are no content scripts, no `externally_connectable`, and the background ignores messages that do not come from the extension's own pages |
+| Extension and host | Chrome, which starts the host and owns its stdin/stdout | Pages and other processes: there is no listening port for this channel |
+| Side panel and host | The extension's own origin, holding an attach token it got over native messaging | Pages (wrong origin) and local processes (no `Origin`, no token). A terminal id alone grants nothing |
+| Host and spawn agent | The `agent-pane` binary running as you | Other users, and any other program running as you |
+| Terminal process and host | A process descended from a live Agent Pane terminal, for a read you started or approved | Other processes running as you, and other users |
+
+**What it protects against.**
+
+- **Web pages** cannot run commands, attach to a terminal, read terminal output, or reach the host. The background only answers the extension's own pages. The terminal WebSocket on `127.0.0.1` accepts only the extension's origin, and each connection needs a one-time attach token handed out over native messaging. A token works once, and stops working when a newer one is issued for the same terminal or when the native-messaging connection closes.
+- **Other processes running as you** cannot attach to a terminal with a terminal id alone, and on macOS cannot use the spawn helper's socket: it checks the connecting process's user and executable and accepts only `agent-pane` itself.
+
+**What it does not protect against.** A process running as your user that reads Chrome's profile, or debugs other processes (Chrome, the host, a shell), can see what they see. Agent Pane cannot stop that; it only adds no new way in.
+
 ## Contributing
 
-PRs welcome. For large changes, open an issue first. Keep the extension free of page host permissions.
+PRs welcome. For large changes, open an issue first. The extension runs page code only through `scripting.executeScript`, started by an extension action, and never adds `content_scripts` or `externally_connectable`. Page content goes to the host only over the native-messaging pipe. The full rules are in [AGENTS.md](AGENTS.md#security).
 
 ### Run a checkout
 

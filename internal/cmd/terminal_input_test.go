@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ func TestWebSocketPreservesTerminalControlBytes(t *testing.T) {
 	session := &Session{Pty: capture, Buf: scrollback.New(1024)}
 	server := httptest.NewServer(HandleWebsocket(session))
 	defer server.Close()
-	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), http.Header{"Origin": {extensionOrigins[0]}})
 	if err != nil {
 		t.Fatal(err)
 	}
