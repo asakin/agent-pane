@@ -51,7 +51,7 @@ func NewCmdRoot(version string) *cobra.Command {
 	cmd.Flags().SetInterspersed(true)
 
 	cmd.AddCommand(
-		NewCmdServe(),
+		NewCmdServe(version),
 		NewCmdRun(),
 		NewCmdSpawn(),
 	)

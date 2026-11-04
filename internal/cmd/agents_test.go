@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -178,5 +181,36 @@ func TestResolveCommandRelativeToFolder(t *testing.T) {
 	got, ok := resolveCommand(dir, "bin/wrap", nil)
 	if !ok || got != wrapper {
 		t.Fatalf("got %q %v", got, ok)
+	}
+}
+
+func TestInitializeReportsVersionAndProtocol(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := initializeHandler(logger, "v1.2.3")
+
+	result, err := handler([]byte(`{"version":"1.2.3","browserId":"abc"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["version"] != "v1.2.3" {
+		t.Fatalf("version = %v", got["version"])
+	}
+	if got["protocol"] != float64(protocolVersion) || protocolVersion < 1 {
+		t.Fatalf("protocol = %v", got["protocol"])
+	}
+}
+
+func TestInitializeRejectsBadParams(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if _, err := initializeHandler(logger, "dev")([]byte(`{`)); err == nil {
+		t.Fatal("expected error for malformed params")
 	}
 }

@@ -238,7 +238,7 @@ func (s *Session) detach(conn *websocket.Conn) {
 	}
 }
 
-func NewCmdServe() *cobra.Command {
+func NewCmdServe(version string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "serve",
 		Hidden:       true,
@@ -265,7 +265,7 @@ func NewCmdServe() *cobra.Command {
 			port := ln.Addr().(*net.TCPAddr).Port
 
 			sessions := NewSessionManager(port, logger)
-			messagingHost := NewMessagingHost(logger, sessions)
+			messagingHost := NewMessagingHost(logger, sessions, version)
 
 			handler := NewWebSocketHandler(sessions)
 
@@ -304,10 +304,18 @@ func NewCmdServe() *cobra.Command {
 	return cmd
 }
 
-func NewMessagingHost(logger *slog.Logger, sessions *SessionManager) *jsonrpc.Host {
-	messagingHost := jsonrpc.NewHost(logger)
+// protocolVersion is raised whenever the extension needs something an older
+// host does not have, including a new extension origin the host must accept.
+// The extension refuses terminals from a lower protocol.
+const protocolVersion = 1
 
-	messagingHost.HandleRequest("initialize", func(input []byte) (any, error) {
+type initializeResult struct {
+	Version  string `json:"version"`
+	Protocol int    `json:"protocol"`
+}
+
+func initializeHandler(logger *slog.Logger, version string) jsonrpc.RequestHandlerFunc {
+	return func(input []byte) (any, error) {
 		var params struct {
 			Version   string `json:"version"`
 			BrowserID string `json:"browserId"`
@@ -318,8 +326,14 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager) *jsonrpc.Ho
 		}
 
 		logger.Info("Received initialize notification", "version", params.Version, "browserId", params.BrowserID)
-		return map[string]any{}, nil
-	})
+		return initializeResult{Version: version, Protocol: protocolVersion}, nil
+	}
+}
+
+func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version string) *jsonrpc.Host {
+	messagingHost := jsonrpc.NewHost(logger)
+
+	messagingHost.HandleRequest("initialize", initializeHandler(logger, version))
 
 	messagingHost.HandleRequest("tty.create", func(input []byte) (any, error) {
 		var params struct {

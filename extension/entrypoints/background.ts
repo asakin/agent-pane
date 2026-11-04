@@ -1,87 +1,30 @@
-import { nativeTimeoutMs, requestNative } from "~/entrypoints/shared/nativeRpc"
+import { createHostConnection, type HostPort } from "~/entrypoints/shared/hostConnection"
+import { requestNative } from "~/entrypoints/shared/nativeRpc"
 import type { RequestDestroyTTY } from "~/entrypoints/shared/rpc"
 import {
   type WindowTabState,
   legacySessionKey,
   windowStateKey,
 } from "~/entrypoints/shared/windowTabs"
-import { type Browser } from 'wxt/browser';
 
 export default defineBackground(() => {
-  let _nativePort: Browser.runtime.Port | null = null;
-
-  async function getNativePort(): Promise<Browser.runtime.Port | null> {
-    if (_nativePort) {
-      return _nativePort;
-    }
-
-    const port = browser.runtime.connectNative("com.agentpane.native");
-
-    const connected = await new Promise<boolean>((resolve) => {
-      const onDisconnect = () => {
-        port.onDisconnect.removeListener(onDisconnect);
-
-        if (browser.runtime.lastError) {
-          console.warn("Failed to connect:", browser.runtime.lastError.message);
-          resolve(false);
-        } else {
-          console.warn("Disconnected from native messaging host");
-          resolve(false);
-        }
-      };
-
-      port.onDisconnect.addListener(onDisconnect);
-
-      // Give the port a small window to disconnect if the host doesn't exist.
-      setTimeout(() => {
-        // Still connected after timeout — assume success
-        resolve(true);
-      }, 100); // 100ms is enough — disconnect happens almost instantly on failure
-    });
-
-    if (!connected) {
-      return null;
-    }
-
-    _nativePort = port;
-
-    _nativePort.onDisconnect.addListener(() => {
-      _nativePort = null;
-      if (browser.runtime.lastError) {
-        console.warn("Port disconnected:", browser.runtime.lastError.message);
-      } else {
-        console.warn("Native messaging host disconnected");
+  const host = createHostConnection({
+    connectNative: () => browser.runtime.connectNative("com.agentpane.native"),
+    browserId: async () => {
+      let { browserId } = await browser.storage.local.get<{ browserId?: string }>("browserId");
+      if (!browserId) {
+        browserId = generateSecureId(12);
+        await browser.storage.local.set({ browserId });
       }
-    });
-
-    let { browserId } = await browser.storage.local.get<{ browserId?: string }>("browserId");
-    if (!browserId) {
-      browserId = generateSecureId(12);
-      await browser.storage.local.set({ browserId });
-    }
-
-    // Handshake only. The host answers other calls without it, so a stalled
-    // initialize must not hold the port.
-    void initialize(_nativePort, browserId);
-
-    return _nativePort;
-  }
-
-  function initialize(port: Browser.runtime.Port, browserId: string) {
-    return requestNative(port, {
-      jsonrpc: "2.0",
-      method: "initialize",
-      id: crypto.randomUUID(),
-      params: {
-        browserId,
-        version: browser.runtime.getManifest().version,
-      },
-    });
-  }
+      return browserId;
+    },
+    extensionVersion: browser.runtime.getManifest().version,
+    lastError: () => browser.runtime.lastError?.message,
+  });
 
   browser.runtime.onInstalled.addListener(async () => {
     browser.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true });
-    await getNativePort();
+    await host.getPort();
   });
 
   // Ensure panel-on-click is set even if the extension was already installed.
@@ -92,7 +35,7 @@ export default defineBackground(() => {
     void destroyWindowSession(windowId);
   });
 
-  async function destroyTTYViaNative(nativePort: Browser.runtime.Port, ttyId: string) {
+  async function destroyTTYViaNative(nativePort: HostPort, ttyId: string) {
     const msg: RequestDestroyTTY = {
       jsonrpc: "2.0",
       id: crypto.randomUUID(),
@@ -133,7 +76,7 @@ export default defineBackground(() => {
       return;
     }
 
-    const nativePort = await getNativePort();
+    const nativePort = await host.getPort();
     if (!nativePort) {
       return;
     }
@@ -161,33 +104,7 @@ export default defineBackground(() => {
       return true;
     }
 
-    getNativePort().then(async (nativePort) => {
-      if (!nativePort) {
-        sendResponse({
-          jsonrpc: "2.0",
-          id,
-          error: {
-            code: -32001,
-            message: "Native host is not connected",
-          }
-        });
-        return;
-      }
-
-      const method = msg && typeof msg.method === "string" ? msg.method : "";
-      const res = await requestNative(nativePort, msg, nativeTimeoutMs(method));
-      sendResponse(res);
-    }).catch((err: unknown) => {
-      sendResponse({
-        jsonrpc: "2.0",
-        id,
-        error: {
-          code: -32001,
-          message: err instanceof Error ? err.message : "Native host is not connected",
-        }
-      });
-    })
-
+    host.handle({ ...msg, id }).then(sendResponse);
     return true
   })
 
