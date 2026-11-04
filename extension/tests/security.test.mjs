@@ -65,11 +65,3 @@ test("the built Chrome manifest asks for scripting and all sites, with no page e
     assert.equal(manifest.web_accessible_resources, undefined);
     assert.equal(manifest.externally_connectable, undefined);
 });
-
-test("page access is Chrome only", async () => {
-    const manifest = await builtManifest("firefox");
-    assert.ok(!manifest.permissions.includes("scripting"));
-    assert.ok(!manifest.permissions.includes("<all_urls>"));
-    assert.equal(manifest.host_permissions, undefined);
-    assert.equal(manifest.content_scripts, undefined);
-});

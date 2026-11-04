@@ -80,7 +80,7 @@ and Cursor's editor, pane, search and shell-integration commands are not remappe
 
 ## Security
 
-**What the extension can access, and why.** On Chrome it asks for `scripting` and access to all sites (`<all_urls>`). They are for page reading, which is planned and not in the extension yet: when it lands, a terminal agent can be given the focused tab, a selection, or a page you are logged in to. Today the extension does not read pages. Both permissions are required at install, so Chrome asks once. The extension has no content scripts and no page listeners: page code will run only when you act in the panel, in Chrome's isolated world, and return what it read once. The Firefox build is not supported: it gets no page access and the host does not accept its origin. It also uses `nativeMessaging` to talk to the local `agent-pane` host, and `tabs`, `sidePanel` and `storage` for the panel itself.
+**What the extension can access, and why.** On Chrome it asks for `scripting` and access to all sites (`<all_urls>`). They are for page reading, which is planned and not in the extension yet: when it lands, a terminal agent can be given the focused tab, a selection, or a page you are logged in to. Today the extension does not read pages. Both permissions are required at install, so Chrome asks once. The extension has no content scripts and no page listeners: page code will run only when you act in the panel, in Chrome's isolated world, and return what it read once. It also uses `nativeMessaging` to talk to the local `agent-pane` host, and `tabs`, `sidePanel` and `storage` for the panel itself.
 
 **How the parts talk.**
 
