@@ -21,9 +21,15 @@ type Peer struct {
 // When both are set, either one is enough. The zero Policy allows no one, so
 // every socket has to say what it accepts.
 //
-// The peer is read once, when it connects. A process that connects and then
-// execs, or hands the socket to a child, is judged as it was at connect time,
-// and the ancestry walk follows parent pids, which can be reused.
+// Check binds the peer to one process before judging it, so a pid that is
+// reused, or a process that execs, partway through the check makes the check
+// fail rather than judge a different process: on Linux through the pidfd from
+// SO_PEERPIDFD, on macOS through the pid version in the LOCAL_PEERTOKEN audit
+// token. A peer that execs after it connects is judged as the image it runs
+// at check time. On Linux kernels without SO_PEERPIDFD (before 6.5), Check
+// refuses Ancestor policies. Ancestry cannot see descendants that daemonise,
+// such as a tmux server started from an Agent Pane terminal: its parent
+// becomes init or launchd, so it is refused.
 type Policy struct {
 	Executables []string
 	Ancestor    int
@@ -34,31 +40,55 @@ var ErrRejected = errors.New("peer rejected")
 
 // Get returns the uid and pid of the process on the other end of conn.
 func Get(conn *net.UnixConn) (Peer, error) {
+	peer, proc, err := get(conn)
+	if err != nil {
+		return Peer{}, err
+	}
+	proc.close()
+	return peer, nil
+}
+
+func get(conn *net.UnixConn) (Peer, *process, error) {
 	raw, err := conn.SyscallConn()
 	if err != nil {
-		return Peer{}, err
+		return Peer{}, nil, err
 	}
 	var peer Peer
+	var proc *process
 	var credErr error
 	if err := raw.Control(func(fd uintptr) {
-		peer, credErr = peerOf(int(fd))
+		peer, proc, credErr = peerOf(int(fd))
 	}); err != nil {
-		return Peer{}, err
+		return Peer{}, nil, err
 	}
-	return peer, credErr
+	return peer, proc, credErr
 }
 
-// Check gets the peer of conn and applies p to it.
+// Check gets the peer of conn and applies p to the process bound to it.
 func Check(conn *net.UnixConn, p Policy) (Peer, error) {
-	peer, err := Get(conn)
+	peer, proc, err := get(conn)
 	if err != nil {
 		return Peer{}, err
 	}
-	return peer, p.Allow(peer)
+	defer proc.close()
+	return peer, p.allow(peer, proc)
 }
 
-// Allow applies p to peer.
+// Allow applies p to peer, looking its pid up now. Check is stronger: it
+// judges the process that is on the socket, not whoever holds the pid.
 func (p Policy) Allow(peer Peer) error {
+	if peer.UID != os.Getuid() {
+		return fmt.Errorf("%w: different user", ErrRejected)
+	}
+	proc, err := processOf(peer.PID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrRejected, err)
+	}
+	defer proc.close()
+	return p.allow(peer, proc)
+}
+
+func (p Policy) allow(peer Peer, proc *process) error {
 	if peer.UID != os.Getuid() {
 		return fmt.Errorf("%w: different user", ErrRejected)
 	}
@@ -66,12 +96,17 @@ func (p Policy) Allow(peer Peer) error {
 		return fmt.Errorf("%w: no peers allowed", ErrRejected)
 	}
 	if len(p.Executables) > 0 {
-		if exe, err := executable(peer.PID); err == nil && matchesAny(exe, p.Executables) {
+		if exe, err := proc.executable(); err == nil && matchesAny(exe, p.Executables) {
 			return nil
 		}
 	}
-	if p.Ancestor > 0 && descends(peer.PID, p.Ancestor) {
-		return nil
+	if p.Ancestor > 0 {
+		if err := proc.ancestryErr(); err != nil {
+			return fmt.Errorf("%w: %v", ErrRejected, err)
+		}
+		if descends(proc, p.Ancestor) {
+			return nil
+		}
 	}
 	return fmt.Errorf("%w: process not allowed", ErrRejected)
 }
@@ -93,17 +128,35 @@ func canonical(path string) string {
 	return filepath.Clean(path)
 }
 
-// descends reports whether pid is ancestor or one of its descendants.
-func descends(pid, ancestor int) bool {
-	for depth := 0; pid > 1 && depth < 512; depth++ {
+// descends reports whether proc is ancestor or one of its descendants. Each
+// step's parent is checked to be the process that is still that child's
+// parent, so a reused parent pid ends the walk.
+func descends(proc *process, ancestor int) bool {
+	cur := proc
+	defer func() {
+		if cur != proc {
+			cur.close()
+		}
+	}()
+	for depth := 0; depth < 512; depth++ {
+		pid := cur.pid()
 		if pid == ancestor {
 			return true
 		}
-		parent, err := parentOf(pid)
-		if err != nil || parent == pid {
+		if pid <= 1 {
 			return false
 		}
-		pid = parent
+		parent, err := cur.parent()
+		if err != nil || parent.pid() == pid {
+			if parent != nil {
+				parent.close()
+			}
+			return false
+		}
+		if cur != proc {
+			cur.close()
+		}
+		cur = parent
 	}
-	return pid == ancestor
+	return false
 }

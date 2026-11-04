@@ -8,7 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func connPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
@@ -107,4 +111,125 @@ func TestAllowAncestry(t *testing.T) {
 	if err := (Policy{Ancestor: child.Process.Pid}).Allow(self); !errors.Is(err, ErrRejected) {
 		t.Fatalf("parent is not a descendant of its child: err %v", err)
 	}
+}
+
+// startSleep runs sleep as a child and returns it, reaped at cleanup.
+func startSleep(t *testing.T) *exec.Cmd {
+	t.Helper()
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _, _ = child.Process.Wait() })
+	return child
+}
+
+// A process bound before its pid is freed must not be judged by whoever gets
+// that pid next.
+func TestBoundProcessFailsAfterPidIsFreed(t *testing.T) {
+	child := startSleep(t)
+	proc, err := processOf(child.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proc.close()
+	if _, err := proc.executable(); err != nil {
+		t.Fatalf("live child: %v", err)
+	}
+	_ = child.Process.Kill()
+	_, _ = child.Process.Wait()
+	if exe, err := proc.executable(); err == nil {
+		t.Fatalf("executable of a freed pid: %q", exe)
+	}
+	if descends(proc, os.Getpid()) {
+		t.Fatal("a freed pid still descends from its old parent")
+	}
+}
+
+// The test binary re-runs itself as a child that connects, then execs sleep.
+// Check judges the image the peer runs now, not the one that connected.
+func TestCheckRefusesPeerThatExecedAfterConnect(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp("/tmp", "peercred")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s")
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	child := exec.Command(self, "-test.run=^TestExecAfterConnectHelper$")
+	child.Env = append(os.Environ(), "PEERCRED_SOCK="+sock, "PEERCRED_EXEC="+sleep)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _, _ = child.Process.Wait() })
+	conn, err := ln.AcceptUnix()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// The helper writes a byte once it has connected and is about to exec.
+	if _, err := conn.Read(make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	waitForExec(t, child.Process.Pid, self)
+
+	if _, err := Check(conn, Policy{Executables: []string{self}}); !errors.Is(err, ErrRejected) {
+		t.Fatalf("a peer that execed into sleep passed as the test binary: err %v", err)
+	}
+}
+
+// waitForExec waits until pid no longer runs exe.
+func waitForExec(t *testing.T, pid int, exe string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		proc, err := processOf(pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := proc.executable()
+		proc.close()
+		if err == nil && !matchesAny(got, []string{exe}) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("helper did not exec")
+}
+
+func TestExecAfterConnectHelper(t *testing.T) {
+	sock := os.Getenv("PEERCRED_SOCK")
+	if sock == "" {
+		t.Skip()
+	}
+	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: sock, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := conn.File()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the socket open across exec, as a hand-off would.
+	if _, err := unix.FcntlInt(f.Fd(), unix.F_SETFD, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	sleep := os.Getenv("PEERCRED_EXEC")
+	t.Fatal(syscall.Exec(sleep, []string{sleep, "30"}, os.Environ()))
 }
