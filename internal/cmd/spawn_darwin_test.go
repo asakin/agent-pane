@@ -12,22 +12,36 @@ import (
 	"testing"
 	"time"
 
+	"agent-pane/internal/peercred"
 	"github.com/aymanbagabas/go-pty"
 )
 
-func TestSpawnChildParentIsHelper(t *testing.T) {
-	sock := filepath.Join("/tmp", "at-spawn-"+strconv.Itoa(os.Getpid())+".sock")
-	t.Cleanup(func() { _ = os.Remove(sock) })
+// startSpawnHelper runs serveSpawnSocket in a child test process. A non-empty
+// allow replaces the executable the helper accepts.
+func startSpawnHelper(t *testing.T, name, allow string) (string, *exec.Cmd) {
+	t.Helper()
+	// The helper makes the socket's folder 0700, so give it its own. Short,
+	// because unix socket paths are limited to 104 bytes.
+	dir, err := os.MkdirTemp("/tmp", "at-"+name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	// Start from an older install's 0755 folder; the helper must tighten it.
+	if err := os.Chmod(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "s.sock")
 
 	helper := exec.Command(os.Args[0], "-test.run=^TestSpawnHelperProcess$")
-	helper.Env = append(os.Environ(), "SPAWN_SOCK="+sock)
+	helper.Env = append(os.Environ(), "SPAWN_SOCK="+sock, "SPAWN_ALLOW="+allow)
 	if err := helper.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		_ = helper.Process.Kill()
 		_, _ = helper.Process.Wait()
-	}()
+	})
 
 	deadline := time.Now().Add(3 * time.Second)
 	for {
@@ -39,6 +53,33 @@ func TestSpawnChildParentIsHelper(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0700 {
+		t.Fatalf("socket folder mode: %v %v", info.Mode().Perm(), err)
+	}
+	return sock, helper
+}
+
+func TestSpawnRefusesOtherExecutable(t *testing.T) {
+	sock, _ := startSpawnHelper(t, "spawn-refuse", "/usr/bin/true")
+
+	tty, err := pty.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tty.Close()
+
+	marker := filepath.Join(t.TempDir(), "ran")
+	cmd := tty.Command("/bin/sh", "-c", "touch "+marker)
+	if _, err := dialSpawn(sock, tty, cmd); err == nil {
+		t.Fatal("spawn accepted a client that is not the allowed executable")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("spawn ran the command for a refused client")
+	}
+}
+
+func TestSpawnChildParentIsHelper(t *testing.T) {
+	sock, helper := startSpawnHelper(t, "spawn", "")
 
 	tty, err := pty.New()
 	if err != nil {
@@ -87,7 +128,13 @@ func TestSpawnHelperProcess(t *testing.T) {
 	if sock == "" {
 		t.Skip()
 	}
-	if err := serveSpawnSocket(context.Background(), sock); err != nil {
+	var err error
+	if allow := os.Getenv("SPAWN_ALLOW"); allow != "" {
+		err = serveSpawnSocketFor(context.Background(), sock, peercred.Policy{Executables: []string{allow}})
+	} else {
+		err = serveSpawnSocket(context.Background(), sock)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 }

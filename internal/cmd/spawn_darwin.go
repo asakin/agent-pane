@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"syscall"
 
+	"agent-pane/internal/peercred"
 	"github.com/aymanbagabas/go-pty"
 	"github.com/spf13/cobra"
 )
@@ -115,8 +116,24 @@ func dialSpawn(path string, tty pty.Pty, cmd *pty.Cmd) (func() error, error) {
 	}, nil
 }
 
+// serveSpawnSocket accepts only the agent-pane binary itself (the serve host)
+// running as this user.
 func serveSpawnSocket(ctx context.Context, path string) error {
-	if err := os.MkdirAll(dirOf(path), 0700); err != nil {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return serveSpawnSocketFor(ctx, path, peercred.Policy{Executables: []string{self}})
+}
+
+func serveSpawnSocketFor(ctx context.Context, path string, policy peercred.Policy) error {
+	// MkdirAll leaves an existing folder's mode alone, and older installs
+	// made it 0755.
+	dir := dirOf(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
 		return err
 	}
 	_ = os.Remove(path)
@@ -140,6 +157,10 @@ func serveSpawnSocket(ctx context.Context, path string) error {
 		uc, ok := conn.(*net.UnixConn)
 		if !ok {
 			conn.Close()
+			continue
+		}
+		if _, err := peercred.Check(uc, policy); err != nil {
+			uc.Close()
 			continue
 		}
 		go handleSpawnConn(uc)

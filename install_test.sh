@@ -40,6 +40,7 @@ grep -q 'Playwright' "$home/AGENTS.md"
 [ -f "$home/.local/share/agent-pane/agents/claude/agent.json" ]
 [ -f "$home/.local/share/agent-pane/agents/goose/icon.png" ]
 [ ! -e "$home/.config/agent-pane/agents" ]
+ls -ld "$home/.local/share/agent-pane" | grep -q '^drwx------'
 
 if [ "$(uname -s)" = Darwin ]; then
 	plist="$home/Library/LaunchAgents/com.agentpane.spawn.plist"

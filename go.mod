@@ -10,6 +10,7 @@ require (
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/v2 v2.4.1
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/sys v0.49.0
 )
 
 require (
@@ -26,5 +27,4 @@ require (
 	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/u-root/u-root v0.16.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
 )
