@@ -8,13 +8,16 @@ import type {
     RequestConfigSet,
     RequestCreateTTY,
     RequestGetXtermConfig,
+    RequestInitialize,
     RequestResizeTTY,
     ResponseConfigGet,
     ResponseConfigSet,
     ResponseCreateTTY,
     ResponseGetXtermConfig,
+    ResponseInitialize,
 } from "./rpc";
-import { renderSetupScreen } from "./setup";
+import { renderSetupScreen, renderUpdateScreen } from "./setup";
+import { checkHost } from "./hostVersion";
 import {
     type LauncherController,
     mountAgentLauncher,
@@ -252,6 +255,23 @@ function showSetup(message: string) {
     document.body.appendChild(renderSetupScreen(message));
 }
 
+function showUpdate(found: string, needed: number) {
+    document.body.className = "at-setup-host";
+    document.body.innerHTML = "";
+    document.body.appendChild(renderUpdateScreen(found, needed, async () => {
+        await initializeHost(true);
+    }));
+}
+
+function initializeHost(reconnect = false) {
+    return browser.runtime.sendMessage<RequestInitialize, ResponseInitialize>({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "initialize",
+        params: { reconnect },
+    });
+}
+
 /** Rebuild tab list only — launcher host is a stable sibling. */
 function renderTabList(
     list: HTMLElement,
@@ -309,6 +329,18 @@ async function main() {
     const anchor = document.getElementById("terminal");
     if (!anchor) {
         console.error("terminal element not found");
+        return;
+    }
+
+    // No terminal is created or attached until the host is new enough.
+    const hostResp = await initializeHost();
+    if ("error" in hostResp) {
+        showSetup(hostResp.error.message);
+        return;
+    }
+    const host = checkHost(hostResp.result);
+    if (!host.ok) {
+        showUpdate(host.version, host.needed);
         return;
     }
 

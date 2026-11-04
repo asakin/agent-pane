@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { checkHost, MIN_HOST_PROTOCOL } from "../entrypoints/shared/hostVersion.ts";
 import { CHOOSE_FOLDER_TIMEOUT_MS, errorFromResponse, NATIVE_RPC_TIMEOUT_MS, nativeTimeoutMs, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
 
 function fakePort() {
@@ -90,4 +91,34 @@ test("no response resolves with an error and a late reply is ignored", async () 
     assert.equal(port.listenerCount(), 0);
     port.emit(ok("a"));
     assert.equal(response.error.message, "Native host did not respond");
+});
+
+test("a host at the current protocol passes", () => {
+    assert.deepEqual(checkHost({ version: "v1.0.0", protocol: MIN_HOST_PROTOCOL }), { ok: true });
+    assert.deepEqual(checkHost({ version: "v1.0.0", protocol: MIN_HOST_PROTOCOL + 1 }), { ok: true });
+});
+
+test("a host at an older protocol is blocked", () => {
+    assert.deepEqual(checkHost({ version: "v1.0.0", protocol: 1 }, 2), {
+        ok: false,
+        version: "v1.0.0",
+        protocol: 1,
+        needed: 2,
+    });
+});
+
+test("a released host that answers {} is blocked", () => {
+    assert.deepEqual(checkHost({}), {
+        ok: false,
+        version: "unknown",
+        protocol: null,
+        needed: MIN_HOST_PROTOCOL,
+    });
+    assert.equal(checkHost(undefined).ok, false);
+    assert.equal(checkHost({ version: "v0.9.0", protocol: "1" }).ok, false);
+});
+
+test("a dev host always passes", () => {
+    assert.deepEqual(checkHost({ version: "dev" }), { ok: true });
+    assert.deepEqual(checkHost({ version: "dev", protocol: 0 }, 5), { ok: true });
 });

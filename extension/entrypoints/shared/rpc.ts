@@ -12,6 +12,13 @@ type JSONRPCRequestBase<M extends string, P extends Record<string, any> | undefi
     params?: P
 }
 
+export type RequestInitialize = JSONRPCRequestBase<"initialize", {
+    browserId?: string;
+    version?: string;
+    /** Drop the current host process and connect again (side panel Retry). */
+    reconnect?: boolean;
+}>
+
 export type RequestResizeTTY = JSONRPCRequestBase<"tty.resize", {
     tty: string;
     cols: number;
@@ -77,6 +84,12 @@ export type JSONRPCResponse = {
         data?: Record<string, any>;
     };
 }
+
+/** Hosts released before the protocol check answer `{}`. */
+export type ResponseInitialize = JSONRPCResponseBase<{
+    version?: string;
+    protocol?: number;
+}>
 
 export type ResponseGetXtermConfig = JSONRPCResponseBase
 

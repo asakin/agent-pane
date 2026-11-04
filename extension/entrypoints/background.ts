@@ -1,5 +1,5 @@
 import { nativeTimeoutMs, requestNative } from "~/entrypoints/shared/nativeRpc"
-import type { RequestDestroyTTY } from "~/entrypoints/shared/rpc"
+import type { JSONRPCResponse, RequestDestroyTTY } from "~/entrypoints/shared/rpc"
 import {
   type WindowTabState,
   legacySessionKey,
@@ -9,6 +9,8 @@ import { type Browser } from 'wxt/browser';
 
 export default defineBackground(() => {
   let _nativePort: Browser.runtime.Port | null = null;
+  // The host's answer to this port's initialize; the side panel gates terminals on it.
+  let _handshake: Promise<JSONRPCResponse> | null = null;
 
   async function getNativePort(): Promise<Browser.runtime.Port | null> {
     if (_nativePort) {
@@ -46,7 +48,10 @@ export default defineBackground(() => {
     _nativePort = port;
 
     _nativePort.onDisconnect.addListener(() => {
-      _nativePort = null;
+      if (_nativePort === port) {
+        _nativePort = null;
+        _handshake = null;
+      }
       if (browser.runtime.lastError) {
         console.warn("Port disconnected:", browser.runtime.lastError.message);
       } else {
@@ -62,7 +67,7 @@ export default defineBackground(() => {
 
     // Handshake only. The host answers other calls without it, so a stalled
     // initialize must not hold the port.
-    void initialize(_nativePort, browserId);
+    _handshake = initialize(_nativePort, browserId);
 
     return _nativePort;
   }
@@ -77,6 +82,37 @@ export default defineBackground(() => {
         version: browser.runtime.getManifest().version,
       },
     });
+  }
+
+  // Retry on the update screen: the old host process keeps running until its
+  // port closes, so drop it and start whatever binary is installed now.
+  function dropNativePort() {
+    const port = _nativePort;
+    _nativePort = null;
+    _handshake = null;
+    port?.disconnect();
+  }
+
+  async function handshake(id: string, reconnect: boolean): Promise<JSONRPCResponse> {
+    if (reconnect) {
+      dropNativePort();
+    }
+    const port = await getNativePort();
+    const pending = _handshake;
+    if (!port || !pending) {
+      return {
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32001, message: "Native host is not connected" },
+      };
+    }
+    const res = await pending;
+    if (res.error) {
+      // A stalled or failed handshake must not stick to this port; the next
+      // call starts the host again.
+      dropNativePort();
+    }
+    return { ...res, id };
   }
 
   browser.runtime.onInstalled.addListener(async () => {
@@ -158,6 +194,11 @@ export default defineBackground(() => {
           message: "id is required",
         },
       });
+      return true;
+    }
+
+    if (msg.method === "initialize") {
+      handshake(id, msg.params?.reconnect === true).then(sendResponse);
       return true;
     }
 
