@@ -28,10 +28,5 @@ export default defineConfig({
             page: "options.html",
             open_in_tab: true,
         },
-        browser_specific_settings: browser == "firefox" ? {
-            gecko: {
-                id: "agent-pane@agent-pane.local"
-            }
-        } : undefined,
     })
 });

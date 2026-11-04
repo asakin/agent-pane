@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-pane/internal/scrollback"
+	"github.com/aymanbagabas/go-pty"
 	"github.com/gorilla/websocket"
 )
 
@@ -174,4 +175,23 @@ func TestWebSocketTokenForUnknownTTY(t *testing.T) {
 	h := newWSHarness(t)
 	token := h.token(t, "zzz")
 	expectRefused(t, h, "zzz", token, extOrigin)
+}
+
+func TestDestroyDropsTokens(t *testing.T) {
+	h := newWSHarness(t, "aaa", "bbb")
+	tty, err := pty.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.sessions.sessions["aaa"].Pty = tty
+	h.token(t, "aaa")
+	h.token(t, "bbb")
+	if err := h.sessions.Destroy("aaa"); err != nil {
+		t.Fatal(err)
+	}
+	h.sessions.tokenMu.Lock()
+	defer h.sessions.tokenMu.Unlock()
+	if len(h.sessions.tokens) != 1 || h.sessions.tokens[0].ttyID != "bbb" {
+		t.Fatalf("tokens after destroy: %+v", h.sessions.tokens)
+	}
 }

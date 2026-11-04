@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import config from "../wxt.config.ts";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { build } from "wxt";
 import { isOwnExtensionPage } from "../entrypoints/shared/sender.ts";
 
+const extensionRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ID = "eakooboihfgnikdhdldcmoiafgioeglm";
 const ORIGIN = `chrome-extension://${ID}/`;
 
@@ -31,12 +36,32 @@ test("other extensions and look-alike origins are ignored", () => {
     assert.equal(isOwnExtensionPage({ id: ID, url: ORIGIN }, ID, ORIGIN.slice(0, -1)), false);
 });
 
-test("the Chrome manifest asks for scripting and all sites, with no page entry points", () => {
-    const manifest = config.manifest({ browser: "chrome" });
+// Build for real: WXT adds content_scripts and web_accessible_resources by
+// itself when an entrypoint asks for them, which wxt.config.ts never shows.
+async function builtManifest(browser) {
+    const outDir = mkdtempSync(join(tmpdir(), "agent-pane-wxt-"));
+    try {
+        const quiet = () => {};
+        await build({
+            root: extensionRoot,
+            outDir,
+            browser,
+            logger: { debug: quiet, info: quiet, log: quiet, success: quiet, warn: console.warn, error: console.error, fatal: console.error, level: 0 },
+        });
+        const dir = readdirSync(outDir).find((d) => d.startsWith(browser + "-"));
+        return JSON.parse(readFileSync(join(outDir, dir, "manifest.json"), "utf8"));
+    } finally {
+        rmSync(outDir, { recursive: true, force: true });
+    }
+}
+
+test("the built Chrome manifest asks for scripting and all sites, with no page entry points", async () => {
+    const manifest = await builtManifest("chrome");
     assert.ok(manifest.permissions.includes("scripting"));
     assert.deepEqual(manifest.host_permissions, ["<all_urls>"]);
     assert.equal(manifest.optional_permissions, undefined);
     assert.equal(manifest.optional_host_permissions, undefined);
     assert.equal(manifest.content_scripts, undefined);
+    assert.equal(manifest.web_accessible_resources, undefined);
     assert.equal(manifest.externally_connectable, undefined);
 });
