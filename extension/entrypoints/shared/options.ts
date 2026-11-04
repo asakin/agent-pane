@@ -64,7 +64,7 @@ function fillSelect(select: HTMLSelectElement, values: string[], selected?: stri
     if (selected !== undefined && values.includes(selected)) {
         select.value = selected;
     } else if (values.length > 0) {
-        select.value = values[0];
+        select.value = values[0]!;
     }
 }
 
