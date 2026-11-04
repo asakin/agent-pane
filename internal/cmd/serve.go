@@ -95,13 +95,8 @@ func (m *SessionManager) issueToken(id string) (string, error) {
 	}
 	m.tokenMu.Lock()
 	defer m.tokenMu.Unlock()
-	live := m.tokens[:0]
-	for _, t := range m.tokens {
-		if t.ttyID != id {
-			live = append(live, t)
-		}
-	}
-	m.tokens = append(live, attachToken{value: raw, ttyID: id})
+	m.dropTokensLocked(id)
+	m.tokens = append(m.tokens, attachToken{value: raw, ttyID: id})
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
@@ -126,6 +121,23 @@ func (m *SessionManager) redeemToken(id, token string) bool {
 	t := m.tokens[found]
 	m.tokens = append(m.tokens[:found], m.tokens[found+1:]...)
 	return subtle.ConstantTimeCompare([]byte(t.ttyID), []byte(id)) == 1
+}
+
+// dropTokens drops the unused attach tokens for a tty that is gone.
+func (m *SessionManager) dropTokens(id string) {
+	m.tokenMu.Lock()
+	defer m.tokenMu.Unlock()
+	m.dropTokensLocked(id)
+}
+
+func (m *SessionManager) dropTokensLocked(id string) {
+	live := m.tokens[:0]
+	for _, t := range m.tokens {
+		if t.ttyID != id {
+			live = append(live, t)
+		}
+	}
+	m.tokens = live
 }
 
 // revokeTokens drops every unused attach token. It runs when the
@@ -224,6 +236,7 @@ func (m *SessionManager) Destroy(id string) error {
 	if !ok {
 		return fmt.Errorf("invalid tty ID")
 	}
+	m.dropTokens(id)
 	session.finalize()
 	return nil
 }
@@ -239,6 +252,7 @@ func (m *SessionManager) reap(id string) {
 	if !ok {
 		return
 	}
+	m.dropTokens(id)
 	session.finalize()
 }
 
@@ -327,6 +341,11 @@ func NewCmdServe() *cobra.Command {
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Keep other same-user processes from opening this process's
+			// stdin/stdout through /proc and speaking native messaging.
+			if err := hardenHost(); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(cacheDir, 0755); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create log directory: %v\n", err)
 				os.Exit(1)

@@ -72,6 +72,8 @@ install_binary() {
 
 write_host() {
 	mkdir -p "$data_dir"
+	# spawn.sock lives here; only this user may reach it (AGENTS.md).
+	chmod 700 "$data_dir" || fail "could not restrict $data_dir"
 	{
 		echo "#!/bin/sh"
 		echo "exec $(sh_quote "$dest") serve"

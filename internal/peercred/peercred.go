@@ -18,7 +18,12 @@ type Peer struct {
 // Policy says which peers may connect. A peer must always have the caller's
 // uid. When Executables is set, the peer's executable must be one of them.
 // When Ancestor is set, the peer must be that pid or one of its descendants.
-// When both are set, either one is enough.
+// When both are set, either one is enough. The zero Policy allows no one, so
+// every socket has to say what it accepts.
+//
+// The peer is read once, when it connects. A process that connects and then
+// execs, or hands the socket to a child, is judged as it was at connect time,
+// and the ancestry walk follows parent pids, which can be reused.
 type Policy struct {
 	Executables []string
 	Ancestor    int
@@ -58,7 +63,7 @@ func (p Policy) Allow(peer Peer) error {
 		return fmt.Errorf("%w: different user", ErrRejected)
 	}
 	if len(p.Executables) == 0 && p.Ancestor == 0 {
-		return nil
+		return fmt.Errorf("%w: no peers allowed", ErrRejected)
 	}
 	if len(p.Executables) > 0 {
 		if exe, err := executable(peer.PID); err == nil && matchesAny(exe, p.Executables) {

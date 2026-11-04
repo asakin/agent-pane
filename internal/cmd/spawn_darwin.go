@@ -127,7 +127,13 @@ func serveSpawnSocket(ctx context.Context, path string) error {
 }
 
 func serveSpawnSocketFor(ctx context.Context, path string, policy peercred.Policy) error {
-	if err := os.MkdirAll(dirOf(path), 0700); err != nil {
+	// MkdirAll leaves an existing folder's mode alone, and older installs
+	// made it 0755.
+	dir := dirOf(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
 		return err
 	}
 	_ = os.Remove(path)

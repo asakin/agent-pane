@@ -16,14 +16,15 @@ export default defineConfig({
         version: process.env.MANIFEST_VERSION || "0.0.0",
         // Page code runs only via scripting.executeScript from an extension
         // action. No content_scripts and no externally_connectable (AGENTS.md).
+        // Page access is Chrome only.
         permissions: [
             "nativeMessaging",
-            "scripting",
+            ...(browser == "chrome" ? ["scripting"] : []),
             "sidePanel",
             "storage",
             "tabs"
         ],
-        host_permissions: ["<all_urls>"],
+        host_permissions: browser == "chrome" ? ["<all_urls>"] : undefined,
         side_panel: {
             default_path: "sidepanel.html",
         },
