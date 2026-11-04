@@ -1,5 +1,6 @@
 import { nativeTimeoutMs, requestNative } from "~/entrypoints/shared/nativeRpc"
 import type { RequestDestroyTTY } from "~/entrypoints/shared/rpc"
+import { isOwnExtensionPage } from "~/entrypoints/shared/sender"
 import {
   type WindowTabState,
   legacySessionKey,
@@ -143,10 +144,21 @@ export default defineBackground(() => {
     }
   }
 
+  const fromOwnPage = (sender: Browser.runtime.MessageSender) =>
+    isOwnExtensionPage(sender, browser.runtime.id, browser.runtime.getURL("/"));
+
+  // No port protocol yet: refuse ports from anything but this extension's pages.
+  browser.runtime.onConnect.addListener((port) => {
+    if (!fromOwnPage(port.sender ?? {})) {
+      port.disconnect();
+    }
+  });
+
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (sender.id !== browser.runtime.id) {
-      console.warn("Received message from unknown sender:", sender.id);
-      return false; // Ignore messages from unknown senders
+    // Content scripts and injected page code carry this extension's id but a
+    // web page's URL; only the extension's own pages may reach the host.
+    if (!fromOwnPage(sender)) {
+      return false;
     }
 
     const id = msg && typeof msg.id === "string" ? msg.id : "";

@@ -14,12 +14,16 @@ export default defineConfig({
         name: "Agent Pane",
         description: "Claude Code, Codex and Pi in a real terminal, in Chrome's side panel.",
         version: process.env.MANIFEST_VERSION || "0.0.0",
+        // Page code runs only via scripting.executeScript from an extension
+        // action. No content_scripts and no externally_connectable (AGENTS.md).
         permissions: [
             "nativeMessaging",
+            "scripting",
             "sidePanel",
             "storage",
             "tabs"
         ],
+        host_permissions: ["<all_urls>"],
         side_panel: {
             default_path: "sidepanel.html",
         },

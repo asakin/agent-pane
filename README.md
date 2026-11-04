@@ -82,9 +82,20 @@ and Cursor's editor, pane, search and shell-integration commands are not remappe
 
 - **Session survival:** hide the side panel and open it again; the same tabs are still running
 
+## Security
+
+**What the extension can access, and why.** On Chrome it asks for `scripting` and access to all sites (`<all_urls>`), so that a terminal agent can be given the focused tab, a selection, or a page you are logged in to. Both are required at install, so Chrome asks once. The extension has no content scripts and no page listeners: page code runs only when you act in the panel, in Chrome's isolated world, and returns what it read once. It also uses `nativeMessaging` to talk to the local `agent-pane` host, and `tabs`, `sidePanel` and `storage` for the panel itself.
+
+**What it protects against.**
+
+- **Web pages** cannot run commands, attach to a terminal, read terminal output, or reach the host. The background only answers the extension's own pages. The terminal WebSocket on `127.0.0.1` accepts only the extension's origin, and each connection needs a one-time attach token that lasts 10 seconds and is handed out over native messaging.
+- **Other processes running as you** cannot attach to a terminal with a terminal id alone, and on macOS cannot use the spawn helper's socket: it checks the connecting process's user and executable and accepts only `agent-pane` itself.
+
+**What it does not protect against.** A process running as your user that reads Chrome's profile, or debugs other processes (Chrome, the host, a shell), can see what they see. Agent Pane cannot stop that; it only adds no new way in.
+
 ## Contributing
 
-PRs welcome. For large changes, open an issue first. Keep the extension free of page host permissions.
+PRs welcome. For large changes, open an issue first. The extension runs page code only through `scripting.executeScript`, started by an extension action, and never adds `content_scripts` or `externally_connectable`. Page content goes to the host only over the native-messaging pipe. The full rules are in [AGENTS.md](AGENTS.md#security).
 
 ### Checks
 

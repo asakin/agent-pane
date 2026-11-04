@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,11 +54,31 @@ type Session struct {
 	manager      *SessionManager
 }
 
+// extensionOrigins are the only origins that may open a PTY WebSocket. Add the
+// Chrome Web Store build's origin here once it has an id.
+var extensionOrigins = []string{
+	"chrome-extension://eakooboihfgnikdhdldcmoiafgioeglm", // unpacked dev build (manifest key)
+}
+
+const attachTokenTTL = 10 * time.Second
+
+// attachToken lets one WebSocket attach to one tty, once, shortly after the
+// extension asked for it over native messaging.
+type attachToken struct {
+	value   []byte
+	ttyID   string
+	expires time.Time
+}
+
 type SessionManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
 	port     int
 	logger   *slog.Logger
+
+	tokenMu sync.Mutex
+	tokens  []attachToken
+	now     func() time.Time
 }
 
 func NewSessionManager(port int, logger *slog.Logger) *SessionManager {
@@ -64,7 +86,70 @@ func NewSessionManager(port int, logger *slog.Logger) *SessionManager {
 		sessions: make(map[string]*Session),
 		port:     port,
 		logger:   logger,
+		now:      time.Now,
 	}
+}
+
+// issueToken returns a new one-time attach token for the tty id.
+func (m *SessionManager) issueToken(id string) (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	now := m.now()
+	m.tokenMu.Lock()
+	defer m.tokenMu.Unlock()
+	m.pruneTokens(now)
+	m.tokens = append(m.tokens, attachToken{value: raw, ttyID: id, expires: now.Add(attachTokenTTL)})
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// redeemToken reports whether token is a live attach token for the tty id.
+// A matching token is used up, whether or not it was for this tty.
+func (m *SessionManager) redeemToken(id, token string) bool {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(raw) != 32 {
+		return false
+	}
+	now := m.now()
+	m.tokenMu.Lock()
+	defer m.tokenMu.Unlock()
+	m.pruneTokens(now)
+	found := -1
+	for i, t := range m.tokens {
+		if subtle.ConstantTimeCompare(t.value, raw) == 1 {
+			found = i
+		}
+	}
+	if found < 0 {
+		return false
+	}
+	t := m.tokens[found]
+	m.tokens = append(m.tokens[:found], m.tokens[found+1:]...)
+	return subtle.ConstantTimeCompare([]byte(t.ttyID), []byte(id)) == 1
+}
+
+func (m *SessionManager) pruneTokens(now time.Time) {
+	live := m.tokens[:0]
+	for _, t := range m.tokens {
+		if now.Before(t.expires) {
+			live = append(live, t)
+		}
+	}
+	m.tokens = live
+}
+
+// endpoint is the tty.create / tty.attach result: the id and a WebSocket URL
+// that carries a fresh attach token.
+func (m *SessionManager) endpoint(id string) (map[string]string, error) {
+	token, err := m.issueToken(id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create attach token: %w", err)
+	}
+	return map[string]string{
+		"url": m.wsURL(id, token),
+		"id":  id,
+	}, nil
 }
 
 func (m *SessionManager) Get(id string) (*Session, bool) {
@@ -89,8 +174,8 @@ func (m *SessionManager) List() []string {
 	return ids
 }
 
-func (m *SessionManager) wsURL(id string) string {
-	return fmt.Sprintf("ws://127.0.0.1:%d/tty/%s", m.port, id)
+func (m *SessionManager) wsURL(id, token string) string {
+	return fmt.Sprintf("ws://127.0.0.1:%d/tty/%s?token=%s", m.port, id, token)
 }
 
 func (m *SessionManager) Create(cmdFactory func(tty pty.Pty, id string) (*pty.Cmd, error)) (*Session, error) {
@@ -140,7 +225,7 @@ func (m *SessionManager) Destroy(id string) error {
 	}
 	m.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("invalid tty ID: %s", id)
+		return fmt.Errorf("invalid tty ID")
 	}
 	session.finalize()
 	return nil
@@ -363,10 +448,7 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager) *jsonrpc.Ho
 			return nil, err
 		}
 
-		return map[string]string{
-			"url": sessions.wsURL(session.ID),
-			"id":  session.ID,
-		}, nil
+		return sessions.endpoint(session.ID)
 	})
 
 	messagingHost.HandleRequest("tty.attach", func(input []byte) (any, error) {
@@ -382,19 +464,13 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager) *jsonrpc.Ho
 
 		session, ok := sessions.Get(params.ID)
 		if !ok {
-			return nil, fmt.Errorf("invalid tty ID: %s", params.ID)
+			return nil, fmt.Errorf("invalid tty ID")
 		}
-		session.mu.Lock()
-		closed := session.closed
-		session.mu.Unlock()
-		if closed {
-			return nil, fmt.Errorf("tty session is closed: %s", params.ID)
+		if session.isClosed() {
+			return nil, fmt.Errorf("tty session is closed")
 		}
 
-		return map[string]string{
-			"url": sessions.wsURL(session.ID),
-			"id":  session.ID,
-		}, nil
+		return sessions.endpoint(session.ID)
 	})
 
 	messagingHost.HandleRequest("tty.list", func(input []byte) (any, error) {
@@ -431,7 +507,7 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager) *jsonrpc.Ho
 
 		session, ok := sessions.Get(requestParams.TTY)
 		if !ok {
-			return nil, fmt.Errorf("invalid tty ID: %s", requestParams.TTY)
+			return nil, fmt.Errorf("invalid tty ID")
 		}
 
 		if err := session.Pty.Resize(requestParams.Cols, requestParams.Rows); err != nil {
@@ -728,16 +804,23 @@ func mergePtyEnv(base []string, overlays ...map[string]string) []string {
 	return out
 }
 
+// NewWebSocketHandler serves /tty/<id>?token=<attach token>. The origin and the
+// token are checked before the session is looked up or any replay is sent, and
+// refusals do not say which check failed or echo the id or token.
 func NewWebSocketHandler(sessions *SessionManager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ttyID := strings.TrimPrefix(r.URL.Path, "/tty/")
-		session, ok := sessions.Get(ttyID)
-		if !ok {
-			http.Error(w, fmt.Sprintf("invalid terminal ID: %s", ttyID), http.StatusBadRequest)
+		if !allowedOrigin(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		if session.isClosed() {
-			http.Error(w, fmt.Sprintf("tty session is closed: %s", ttyID), http.StatusGone)
+		ttyID, ok := strings.CutPrefix(r.URL.Path, "/tty/")
+		if !ok || !sessions.redeemToken(ttyID, r.URL.Query().Get("token")) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		session, ok := sessions.Get(ttyID)
+		if !ok || session.isClosed() {
+			http.Error(w, "terminal is gone", http.StatusGone)
 			return
 		}
 
@@ -833,13 +916,23 @@ func getConnectionUpgrader(
 	maxBufferSizeBytes int,
 ) websocket.Upgrader {
 	return websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
+		CheckOrigin:      allowedOrigin,
 		HandshakeTimeout: 0,
 		ReadBufferSize:   maxBufferSizeBytes,
 		WriteBufferSize:  maxBufferSizeBytes,
 	}
+}
+
+// allowedOrigin accepts only the extension's own origins. A request with no
+// Origin header (a local process, not a browser page) is refused too.
+func allowedOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	for _, allowed := range extensionOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // listenLoopback binds the PTY socket on 127.0.0.1. The side panel is given that address.
