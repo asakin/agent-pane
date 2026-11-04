@@ -60,14 +60,12 @@ var extensionOrigins = []string{
 	"chrome-extension://eakooboihfgnikdhdldcmoiafgioeglm", // unpacked dev build (manifest key)
 }
 
-const attachTokenTTL = 10 * time.Second
-
-// attachToken lets one WebSocket attach to one tty, once, shortly after the
-// extension asked for it over native messaging.
+// attachToken lets one WebSocket attach to one tty, once. It stays valid until
+// it is used, a newer token is issued for the same tty, or the native-messaging
+// connection that asked for it closes.
 type attachToken struct {
-	value   []byte
-	ttyID   string
-	expires time.Time
+	value []byte
+	ttyID string
 }
 
 type SessionManager struct {
@@ -78,7 +76,6 @@ type SessionManager struct {
 
 	tokenMu sync.Mutex
 	tokens  []attachToken
-	now     func() time.Time
 }
 
 func NewSessionManager(port int, logger *slog.Logger) *SessionManager {
@@ -86,35 +83,37 @@ func NewSessionManager(port int, logger *slog.Logger) *SessionManager {
 		sessions: make(map[string]*Session),
 		port:     port,
 		logger:   logger,
-		now:      time.Now,
 	}
 }
 
-// issueToken returns a new one-time attach token for the tty id.
+// issueToken returns a new one-time attach token for the tty id and drops any
+// earlier token for it.
 func (m *SessionManager) issueToken(id string) (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
 	}
-	now := m.now()
 	m.tokenMu.Lock()
 	defer m.tokenMu.Unlock()
-	m.pruneTokens(now)
-	m.tokens = append(m.tokens, attachToken{value: raw, ttyID: id, expires: now.Add(attachTokenTTL)})
+	live := m.tokens[:0]
+	for _, t := range m.tokens {
+		if t.ttyID != id {
+			live = append(live, t)
+		}
+	}
+	m.tokens = append(live, attachToken{value: raw, ttyID: id})
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-// redeemToken reports whether token is a live attach token for the tty id.
+// redeemToken reports whether token is the live attach token for the tty id.
 // A matching token is used up, whether or not it was for this tty.
 func (m *SessionManager) redeemToken(id, token string) bool {
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil || len(raw) != 32 {
 		return false
 	}
-	now := m.now()
 	m.tokenMu.Lock()
 	defer m.tokenMu.Unlock()
-	m.pruneTokens(now)
 	found := -1
 	for i, t := range m.tokens {
 		if subtle.ConstantTimeCompare(t.value, raw) == 1 {
@@ -129,14 +128,12 @@ func (m *SessionManager) redeemToken(id, token string) bool {
 	return subtle.ConstantTimeCompare([]byte(t.ttyID), []byte(id)) == 1
 }
 
-func (m *SessionManager) pruneTokens(now time.Time) {
-	live := m.tokens[:0]
-	for _, t := range m.tokens {
-		if now.Before(t.expires) {
-			live = append(live, t)
-		}
-	}
-	m.tokens = live
+// revokeTokens drops every unused attach token. It runs when the
+// native-messaging connection that issued them closes.
+func (m *SessionManager) revokeTokens() {
+	m.tokenMu.Lock()
+	m.tokens = nil
+	m.tokenMu.Unlock()
 }
 
 // endpoint is the tty.create / tty.attach result: the id and a WebSocket URL
@@ -363,6 +360,9 @@ func NewCmdServe() *cobra.Command {
 			done := make(chan error, 1)
 
 			go func() {
+				// Chrome starts one host per native-messaging connection, so
+				// once it closes no attach token it handed out may be used.
+				defer sessions.revokeTokens()
 				if err := messagingHost.Listen(); err != nil {
 					logger.Error("Messaging host listen loop exited", "error", err)
 					done <- err

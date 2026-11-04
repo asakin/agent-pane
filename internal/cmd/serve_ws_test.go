@@ -17,14 +17,12 @@ import (
 type wsHarness struct {
 	sessions *SessionManager
 	server   *httptest.Server
-	clock    time.Time
 }
 
 func newWSHarness(t *testing.T, ids ...string) *wsHarness {
 	t.Helper()
-	h := &wsHarness{clock: time.Unix(1_700_000_000, 0)}
+	h := &wsHarness{}
 	h.sessions = NewSessionManager(0, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	h.sessions.now = func() time.Time { return h.clock }
 	for _, id := range ids {
 		s := &Session{ID: id, Buf: scrollback.New(1024), manager: h.sessions}
 		_, _ = s.Buf.Write([]byte("replay-" + id))
@@ -135,9 +133,23 @@ func TestWebSocketRejectsBadTokens(t *testing.T) {
 		conn.Close()
 		expectRefused(t, h, "aaa", token, extOrigin)
 	})
-	t.Run("expired", func(t *testing.T) {
+	t.Run("superseded", func(t *testing.T) {
+		old := h.token(t, "aaa")
+		other := h.token(t, "bbb")
+		newer := h.token(t, "aaa")
+		expectRefused(t, h, "aaa", old, extOrigin)
+		for id, token := range map[string]string{"aaa": newer, "bbb": other} {
+			conn, _, err := h.dial(id, token, extOrigin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expectReplay(t, conn, id)
+			conn.Close()
+		}
+	})
+	t.Run("native messaging closed", func(t *testing.T) {
 		token := h.token(t, "aaa")
-		h.clock = h.clock.Add(attachTokenTTL)
+		h.sessions.revokeTokens()
 		expectRefused(t, h, "aaa", token, extOrigin)
 	})
 	t.Run("other tty", func(t *testing.T) {

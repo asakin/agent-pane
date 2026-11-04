@@ -27,7 +27,7 @@ Threat model:
 
 How the channels are locked down:
 
-- **PTY WebSocket** (`internal/cmd/serve.go`): `allowedOrigin` accepts only `extensionOrigins` and refuses a missing `Origin`. `tty.create` and `tty.attach` return a URL with a one-time attach token (32 bytes from `crypto/rand`, 10 seconds, bound to one tty id), checked in constant time before any replay. Errors do not echo the id or token.
+- **PTY WebSocket** (`internal/cmd/serve.go`): `allowedOrigin` accepts only `extensionOrigins` and refuses a missing `Origin`. `tty.create` and `tty.attach` return a URL with a one-time attach token (32 bytes from `crypto/rand`, bound to one tty id, no timer: it stops working once used, when a newer `tty.attach` is issued for the same tty, or when the native-messaging connection that asked for it closes), checked in constant time before any replay. Errors do not echo the id or token.
 - **Unix sockets:** check the peer with `internal/peercred` (same uid, plus an allowed executable or ancestry). `spawn.sock` accepts only the `agent-pane` binary.
 
 Rules for any endpoint that returns page content:
