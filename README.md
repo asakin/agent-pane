@@ -5,7 +5,8 @@
 <h1 align="center">Agent Pane</h1>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white" alt="Go"></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/github/go-mod/go-version/asakin/agent-pane?logo=go" alt="Go version"></a>
+  <a href="https://github.com/asakin/agent-pane/actions/workflows/ci.yml"><img src="https://github.com/asakin/agent-pane/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://developer.chrome.com/docs/extensions/mv3/"><img src="https://img.shields.io/badge/Chrome-MV3-4285F4?logo=googlechrome&logoColor=white" alt="Chrome"></a>
 </p>
 
@@ -14,6 +15,8 @@ Claude Code, Codex and Pi in a real terminal, in Chrome's side panel.
 </p>
 
 For people who live in the TUI: each tab is a real local shell, not a chat box. An agent in that shell uses whatever browser tools it already has.
+
+Agent Pane started from [Agent Terminal](https://github.com/rishiskhare/agent-terminal) and is now developed independently with a different focus. See [Origins and license](#origins-and-license) for attribution.
 
 **Note:** this project is experimental. Agents run shell commands on your machine. Use with care.
 
@@ -28,6 +31,8 @@ The side panel is a terminal next to the browser, in the same window.
 | One-click agents            | The agent commands your shell can already run    | Manual shells and PATH                     |
 
 ## Install
+
+**For the current Agent Pane code, [run a checkout](#run-a-checkout).** The Chrome Web Store listing is not available yet. The preserved `v0.1.x` and `v0.2.0` releases are historical Agent Terminal builds, not releases of the current Agent Pane code. The release installation flow below will apply once an Agent Pane release is published.
 
 1. Add Agent Pane from the Chrome Web Store: <!-- TODO: replace with the Chrome Web Store listing link once it exists --> **[Chrome Web Store link: coming soon]**
 2. Install the program the extension talks to:
@@ -125,6 +130,8 @@ Agent Pane cannot stop these; it only adds no new way in.
 
 ## Contributing
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution process and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations. Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
+
 PRs welcome. For large changes, open an issue first. The extension runs page code only through `scripting.executeScript`, started by an extension action, and never adds `content_scripts` or `externally_connectable`. Page content goes to the host only over the native-messaging pipe. The full rules are in [AGENTS.md](AGENTS.md#security).
 
 ### Run a checkout
@@ -148,7 +155,7 @@ A local build reports version `dev`, which passes the side panel's version check
 
 ### Checks
 
-Every pull request and every push to `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on Ubuntu. To run the same checks locally:
+Every pull request and every push to `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml): extension and Go checks on Ubuntu, plus Go vet and race tests on macOS. To run the suite manually, open **Actions** → **ci** → **Run workflow**. To run the same checks locally:
 
 **extension** (Node 26):
 
@@ -171,6 +178,10 @@ go build ./...
 
 The extension job uploads `extension/dist/chrome-mv3` as the `extension-chrome-mv3` artifact, kept for 7 days. Download it from the workflow run's summary page, unzip it, and load the folder with **Load unpacked** in `chrome://extensions`.
 
-## License
+## Origins and license
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE). Based on [Tweety](https://github.com/pomdtr/tweety) by Achille Lacoin.
+Agent Pane is an independently maintained project derived from [Agent Terminal](https://github.com/rishiskhare/agent-terminal) by Rishi Khare, itself based on [Tweety](https://github.com/pomdtr/tweety) by Achille Lacoin. Thank you to both projects and their contributors for the foundation.
+
+Agent Pane follows its own development direction and is not an official release of either predecessor. The original Git history and copyright notices are preserved. Earlier issues and pull request discussions remain in the [archived development fork](https://github.com/asakin/agent-terminal); new contributions belong in this repository.
+
+Distributed under the [MIT License](LICENSE).

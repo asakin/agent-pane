@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible problem with Agent Pane.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "For vulnerabilities, use [private reporting](https://github.com/asakin/agent-pane/security/advisories/new). Remove secrets and private page or terminal content from logs."
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Chrome version, Agent Pane version or commit, and installation method.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the command or agent involved, if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Optional; redact secrets and personal information.
