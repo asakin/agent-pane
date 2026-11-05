@@ -3,6 +3,13 @@ import { requestNative } from "~/entrypoints/shared/nativeRpc"
 import type { RequestDestroyTTY } from "~/entrypoints/shared/rpc"
 import { isOwnExtensionPage } from "~/entrypoints/shared/sender"
 import {
+  type ApproveMessage,
+  type ReadNotice,
+  approvalChoice,
+  readTab,
+  resolveTab,
+} from "~/entrypoints/shared/pageAccess"
+import {
   type WindowTabState,
   legacySessionKey,
   windowStateKey,
@@ -21,7 +28,66 @@ export default defineBackground(() => {
     },
     extensionVersion: browser.runtime.getManifest().version,
     lastError: () => browser.runtime.lastError?.message,
+    onHostRequest: answerHost,
   });
+
+  const pageApis = {
+    storageSession: browser.storage.session,
+    tabs: browser.tabs,
+    scripting: browser.scripting,
+  };
+
+  // Requests from the host for a terminal's `agent-pane page` command. The
+  // host decides when to ask the person; the side panel holding that terminal
+  // answers the prompt.
+  async function answerHost(method: string, params: unknown): Promise<Record<string, unknown>> {
+    const p = (params ?? {}) as Record<string, unknown>;
+    const tty = typeof p.tty === "string" ? p.tty : "";
+    if (!tty) {
+      throw new Error("tty is required");
+    }
+    switch (method) {
+      case "page.resolve":
+        return await resolveTab(pageApis, tty);
+      case "page.approve": {
+        const ask: ApproveMessage = {
+          type: "agent-pane.page-approve",
+          tty,
+          agent: typeof p.agent === "string" ? p.agent : "",
+          tabId: Number(p.tabId),
+          title: typeof p.title === "string" ? p.title : "",
+          url: typeof p.url === "string" ? p.url : "",
+        };
+        // No panel holding this terminal (closed, or a terminal in its own
+        // window) means nobody can approve: deny.
+        let answer: unknown;
+        try {
+          answer = await browser.runtime.sendMessage(ask);
+        } catch {
+          answer = undefined;
+        }
+        if (answer === undefined) {
+          throw new Error("denied: open the Agent Pane side panel for this terminal to approve the read");
+        }
+        return { choice: approvalChoice(answer) };
+      }
+      case "page.read": {
+        const tabId = Number(p.tabId);
+        const content = await readTab(pageApis, tabId, String(p.format ?? ""), p.full === true);
+        const tab = await browser.tabs.get(tabId).catch(() => undefined);
+        const notice: ReadNotice = {
+          type: "agent-pane.page-read",
+          tty,
+          title: tab?.title ?? "",
+          url: tab?.url ?? "",
+        };
+        browser.runtime.sendMessage(notice).catch(() => {});
+        return { content };
+      }
+      default:
+        throw new Error(`Method not found: ${method}`);
+    }
+  }
 
   browser.runtime.onInstalled.addListener(async () => {
     browser.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true });

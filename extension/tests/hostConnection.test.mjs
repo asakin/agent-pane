@@ -79,6 +79,7 @@ function setup(installed, opts) {
         },
         browserId: () => env.browserId(),
         extensionVersion: "1.0.0",
+        onHostRequest: opts?.onHostRequest,
         timers,
     });
     return { host, timers, env };
@@ -210,4 +211,29 @@ test("a timeout from a crashed host's handshake leaves the new host alone", asyn
     assert.equal(t.env.ports[1].alive, true);
     assert.equal((await t.host.handle(create("c"))).result.ok, true);
     assert.equal(t.env.ports.length, 2);
+});
+
+test("requests from the host are answered on the same port, errors included", async () => {
+    const asked = [];
+    const t = setup(CURRENT, {
+        onHostRequest: async (method, params) => {
+            asked.push([method, params]);
+            if (method === "page.read") throw new Error("Chrome does not let extensions read chrome:// pages");
+            return { tabId: 7, title: "T", url: "https://example.com/" };
+        },
+    });
+    await run(t, t.host.handle(init("a")));
+    const port = t.env.ports[0];
+    const before = port.sent.length;
+    port.onMessage.emit({ jsonrpc: "2.0", id: "host-1", method: "page.resolve", params: { tty: "x" } });
+    port.onMessage.emit({ jsonrpc: "2.0", id: "host-2", method: "page.read", params: { tty: "x", tabId: 7 } });
+    // A response to one of our own calls is not a request.
+    port.onMessage.emit({ jsonrpc: "2.0", id: "host-3", method: "page.read", result: {} });
+    await flush();
+    assert.deepEqual(asked, [["page.resolve", { tty: "x" }], ["page.read", { tty: "x", tabId: 7 }]]);
+    const replies = port.sent.slice(before);
+    assert.deepEqual(replies[0], { jsonrpc: "2.0", id: "host-1", result: { tabId: 7, title: "T", url: "https://example.com/" } });
+    assert.equal(replies[1].id, "host-2");
+    assert.equal(replies[1].error.message, "Chrome does not let extensions read chrome:// pages");
+    assert.equal(replies.length, 2);
 });

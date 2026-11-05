@@ -162,19 +162,32 @@ func (h *Host) Listen() error {
 }
 
 func (h *Host) SendRequest(request JSONRPCRequest) (JSONRPCResponse, error) {
+	return h.SendRequestTimeout(request, 5*time.Second)
+}
+
+// SendRequestTimeout sends a request to the extension and waits up to timeout
+// for its answer. A late answer is dropped without blocking the listen loop.
+func (h *Host) SendRequestTimeout(request JSONRPCRequest, timeout time.Duration) (JSONRPCResponse, error) {
 	h.mu.Lock()
-	responseChan := make(chan JSONRPCResponse)
+	responseChan := make(chan JSONRPCResponse, 1)
 	h.clientChannels[request.ID] = responseChan
 	h.mu.Unlock()
+	forget := func() {
+		h.mu.Lock()
+		delete(h.clientChannels, request.ID)
+		h.mu.Unlock()
+	}
 
 	if err := writeMessage(request); err != nil {
+		forget()
 		return JSONRPCResponse{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	select {
 	case response := <-responseChan:
 		return response, nil
-	case <-time.After(5 * time.Second):
+	case <-time.After(timeout):
+		forget()
 		return JSONRPCResponse{}, fmt.Errorf("timeout waiting for response")
 	}
 }

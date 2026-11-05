@@ -46,11 +46,13 @@ func NewCmdSpawn() *cobra.Command {
 	}
 }
 
-func startPty(tty pty.Pty, cmd *pty.Cmd) (func() error, error) {
-	return dialSpawn(spawnSocketPath(), tty, cmd)
+func startPty(tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() error, error) {
+	return dialSpawn(spawnSocketPath(), tty, cmd, extra)
 }
 
-func dialSpawn(path string, tty pty.Pty, cmd *pty.Cmd) (func() error, error) {
+// dialSpawn hands the terminal, and the page channel when there is one, to
+// the spawn agent, which starts cmd with them as its tty and fd 3.
+func dialSpawn(path string, tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() error, error) {
 	// The helper writes the child's stdout through this fd, so it has to be
 	// writable. O_NOCTTY keeps the host from adopting the slave.
 	slave, err := os.OpenFile(tty.Name(), os.O_RDWR|syscall.O_NOCTTY, 0)
@@ -69,7 +71,11 @@ func dialSpawn(path string, tty pty.Pty, cmd *pty.Cmd) (func() error, error) {
 		return nil, fmt.Errorf("spawn agent is not running; re-run the installer")
 	}
 
-	rights := syscall.UnixRights(int(slave.Fd()))
+	fds := []int{int(slave.Fd())}
+	if extra != nil {
+		fds = append(fds, int(extra.Fd()))
+	}
+	rights := syscall.UnixRights(fds...)
 	if _, _, err := uc.WriteMsgUnix([]byte{0}, rights, nil); err != nil {
 		conn.Close()
 		return nil, err
@@ -179,7 +185,7 @@ func dirOf(path string) string {
 func handleSpawnConn(conn *net.UnixConn) {
 	defer conn.Close()
 	buf := make([]byte, 1)
-	oob := make([]byte, syscall.CmsgSpace(4))
+	oob := make([]byte, syscall.CmsgSpace(2*4))
 	_, oobn, _, _, err := conn.ReadMsgUnix(buf, oob)
 	if err != nil {
 		return
@@ -196,6 +202,14 @@ func handleSpawnConn(conn *net.UnixConn) {
 	}
 	slave := os.NewFile(uintptr(fds[0]), "slave")
 	defer slave.Close()
+	var extra []*os.File
+	for i, fd := range fds[1:] {
+		f := os.NewFile(uintptr(fd), "page")
+		defer f.Close()
+		if i == 0 {
+			extra = append(extra, f)
+		}
+	}
 
 	var req spawnRequest
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
@@ -216,6 +230,7 @@ func handleSpawnConn(conn *net.UnixConn) {
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
+	cmd.ExtraFiles = extra
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 	if err := cmd.Start(); err != nil {
 		_ = json.NewEncoder(conn).Encode(spawnAck{Error: err.Error()})

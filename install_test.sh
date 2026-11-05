@@ -47,6 +47,8 @@ grep -qx 'hello' "$home/AGENTS.md"
 grep -qx 'bye' "$home/AGENTS.md"
 grep -c 'agent-pane:start' "$home/AGENTS.md" | grep -qx 1
 grep -q 'Playwright' "$home/AGENTS.md"
+grep -q 'agent-pane page' "$home/AGENTS.md"
+grep -q 'untrusted' "$home/AGENTS.md"
 [ -f "$home/.local/share/agent-pane/agents/enabled.json" ]
 [ -f "$home/.local/share/agent-pane/agents/claude/agent.json" ]
 [ -f "$home/.local/share/agent-pane/agents/goose/icon.png" ]

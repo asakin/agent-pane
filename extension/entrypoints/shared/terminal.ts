@@ -36,6 +36,11 @@ import {
     toggleLock,
     trackedTabId,
 } from "./tabLock";
+import type { PageFormat } from "./pageContent";
+import { isApproveMessage, isReadNotice, pasteBytes, readTab } from "./pageAccess";
+import { createApprovalPrompts, createReadNotice, mountSendTab } from "./pagePanel";
+import { isOwnExtensionPage } from "./sender";
+import { describeUrl } from "./tabLock";
 
 const terminalFontFamily = "JetBrainsMono Nerd Font Mono";
 
@@ -367,7 +372,10 @@ async function main() {
 
     const strip = document.getElementById("tab-strip");
     const statusBar = document.getElementById("status-bar");
-    if (!strip || !statusBar) {
+    const sendTabHost = document.getElementById("send-tab");
+    const approveHost = document.getElementById("page-approve");
+    const noticeHost = document.getElementById("page-notice");
+    if (!strip || !statusBar || !sendTabHost || !approveHost || !noticeHost) {
         showSetup("Tab strip missing from side panel");
         return;
     }
@@ -541,6 +549,55 @@ async function main() {
     if (state && earlyTabEvents.length > 0) {
         void updateLocks(applyTabLifecycle(state, earlyTabEvents.splice(0)));
     }
+
+    // Page reading. Send tab is the person's own action, so it needs no
+    // prompt; reads an agent asks for are approved here, per terminal.
+    const notice = createReadNotice(noticeHost);
+    const terminalName = (tty: string) => titles.get(tty) || tabApp(state ?? { tabs: [], activeId: "" }, tty) || "Terminal";
+    const prompts = createApprovalPrompts(approveHost, terminalName);
+
+    async function sendTab(format: PageFormat) {
+        const agentTab = activeAgentTab();
+        if (!state || !agentTab || shownAgentId !== agentTab.id) {
+            return;
+        }
+        const tabId = trackedTabId(agentTab, activeChromeTabId);
+        if (tabId === undefined) {
+            notice("No tab to send: the locked tab was closed", true);
+            return;
+        }
+        const tty = agentTab.id;
+        try {
+            const content = await readTab(browser, tabId, format, false);
+            if (!state || state.activeId !== tty || activeTtyId !== tty) {
+                return;
+            }
+            const tab = await browser.tabs.get(tabId).catch(() => undefined);
+            terminal.input(pasteBytes(content, terminal.modes.bracketedPasteMode), true);
+            terminal.focus();
+            notice(`Sent ${tab?.title || describeUrl(tab?.url ?? "")}`);
+        } catch (err) {
+            notice((err as Error).message, true);
+        }
+    }
+
+    mountSendTab(sendTabHost, (format) => void sendTab(format));
+    sendTabHost.hidden = false;
+
+    browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+        if (!isOwnExtensionPage(sender, browser.runtime.id, browser.runtime.getURL("/"))) {
+            return false;
+        }
+        // Only the panel holding the terminal answers for it.
+        if (isApproveMessage(msg) && hasTab(msg.tty)) {
+            void prompts.ask(msg).then((choice) => sendResponse({ choice }));
+            return true;
+        }
+        if (isReadNotice(msg) && hasTab(msg.tty)) {
+            notice(`${terminalName(msg.tty)} read ${msg.title || describeUrl(msg.url)}`);
+        }
+        return false;
+    });
 
     try {
         const [activeChromeTab] = await browser.tabs.query({ active: true, windowId });
