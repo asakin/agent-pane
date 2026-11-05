@@ -3,6 +3,7 @@
 package peercred
 
 import (
+	"errors"
 	"os"
 	"testing"
 
@@ -26,12 +27,28 @@ func TestBindRefusesReusedPid(t *testing.T) {
 	}
 }
 
+// Without SO_PEERPIDFD, every policy with Ancestor is refused, even when its
+// executable would match.
 func TestAncestryNeedsPidfd(t *testing.T) {
 	self := Peer{UID: os.Getuid(), PID: os.Getpid()}
-	proc := &process{num: self.PID, pidfd: -1, dir: -1}
-	err := (Policy{Ancestor: os.Getpid()}).allow(self, proc)
-	if err == nil {
-		t.Fatal("ancestry passed without a pidfd")
+	proc, err := processOf(self.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proc.close()
+	proc.late = true
+	if err := (Policy{Ancestor: os.Getpid()}).allow(self, proc); !errors.Is(err, ErrRejected) {
+		t.Fatalf("ancestry without SO_PEERPIDFD: err %v", err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (Policy{Executables: []string{exe}, Ancestor: os.Getpid()}).allow(self, proc); !errors.Is(err, ErrRejected) {
+		t.Fatalf("executable and ancestry without SO_PEERPIDFD: err %v", err)
+	}
+	if err := (Policy{Executables: []string{exe}}).allow(self, proc); err != nil {
+		t.Fatalf("executable alone without SO_PEERPIDFD: %v", err)
 	}
 }
 
@@ -42,7 +59,13 @@ func TestCheckHoldsPidfd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer proc.close()
-	if proc.pidfd < 0 {
+	if proc.late {
 		t.Skip("kernel has no SO_PEERPIDFD")
+	}
+	if proc.pidfd < 0 || proc.dir < 0 {
+		t.Fatalf("process %+v holds no pidfd or folder", *proc)
+	}
+	if _, err := proc.executable(); err != nil {
+		t.Fatal(err)
 	}
 }

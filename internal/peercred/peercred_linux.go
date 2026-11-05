@@ -15,12 +15,16 @@ var errNoPidfd = errors.New("this kernel has no SO_PEERPIDFD (Linux 6.5 or later
 
 // process is one process, held by a pidfd so a reused pid is noticed. dir is
 // its /proc/<pid> folder, opened while the pidfd showed the process alive, so
-// reads through it stay on that process. Without a pidfd (older kernels) the
-// process is only a pid, and ancestry is refused.
+// reads through it stay on that process. The pidfd and the folder both
+// survive exec, so reads see the image the process runs now. late is set when
+// the kernel has no SO_PEERPIDFD and the pidfd was opened from the peer's pid
+// after the fact, which a quick enough pid reuse can defeat; ancestry is
+// refused then.
 type process struct {
 	num   int
 	pidfd int
 	dir   int
+	late  bool
 }
 
 func peerOf(fd int) (Peer, *process, error) {
@@ -31,7 +35,12 @@ func peerOf(fd int) (Peer, *process, error) {
 	peer := Peer{UID: int(cred.Uid), PID: int(cred.Pid)}
 	pidfd, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_PEERPIDFD)
 	if errors.Is(err, unix.ENOPROTOOPT) {
-		return peer, &process{num: peer.PID, pidfd: -1, dir: -1}, nil
+		proc, err := processOf(peer.PID)
+		if err != nil {
+			return Peer{}, nil, err
+		}
+		proc.late = true
+		return peer, proc, nil
 	}
 	if err != nil {
 		return Peer{}, nil, err
@@ -60,39 +69,44 @@ func bind(pid, pidfd int) (*process, error) {
 		unix.Close(pidfd)
 		return nil, fmt.Errorf("process %d is gone: %w", pid, err)
 	}
-	if err := unix.PidfdSendSignal(pidfd, 0, nil, 0); err != nil {
-		unix.Close(dir)
-		unix.Close(pidfd)
-		return nil, fmt.Errorf("process %d is gone: %w", pid, err)
+	proc := &process{num: pid, pidfd: pidfd, dir: dir}
+	if err := proc.alive(); err != nil {
+		proc.close()
+		return nil, err
 	}
-	return &process{num: pid, pidfd: pidfd, dir: dir}, nil
+	return proc, nil
 }
 
 func (p *process) close() {
 	if p == nil {
 		return
 	}
-	if p.dir >= 0 {
-		unix.Close(p.dir)
-	}
-	if p.pidfd >= 0 {
-		unix.Close(p.pidfd)
-	}
+	unix.Close(p.dir)
+	unix.Close(p.pidfd)
 }
 
 func (p *process) pid() int { return p.num }
 
 func (p *process) ancestryErr() error {
-	if p.pidfd < 0 {
+	if p.late {
 		return errNoPidfd
 	}
 	return nil
 }
 
-func (p *process) executable() (string, error) {
-	if p.dir < 0 {
-		return readlinkat(unix.AT_FDCWD, "/proc/"+strconv.Itoa(p.num)+"/exe")
+// alive reports an error unless p's process is still running. A zombie has
+// exited, so it is gone too, even though its pid is not free yet.
+func (p *process) alive() error {
+	if err := unix.PidfdSendSignal(p.pidfd, 0, nil, 0); err != nil {
+		return fmt.Errorf("process %d is gone: %w", p.num, err)
 	}
+	if state, _, err := stat(p.dir); err != nil || state == "Z" {
+		return fmt.Errorf("process %d is gone", p.num)
+	}
+	return nil
+}
+
+func (p *process) executable() (string, error) {
 	return readlinkat(p.dir, "exe")
 }
 
@@ -100,10 +114,7 @@ func (p *process) executable() (string, error) {
 // p's parent pid; when both reads agree, the pidfd is p's real parent, since a
 // parent that exits before its child is replaced as the child's parent.
 func (p *process) parent() (*process, error) {
-	if p.dir < 0 {
-		return nil, errNoPidfd
-	}
-	ppid, err := parentPid(p.dir)
+	_, ppid, err := stat(p.dir)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +122,7 @@ func (p *process) parent() (*process, error) {
 	if err != nil {
 		return nil, fmt.Errorf("no process %d: %w", ppid, err)
 	}
-	if again, err := parentPid(p.dir); err != nil || again != ppid {
+	if _, again, err := stat(p.dir); err != nil || again != ppid {
 		unix.Close(pidfd)
 		return nil, fmt.Errorf("parent of %d changed", p.num)
 	}
@@ -127,27 +138,29 @@ func readlinkat(dir int, path string) (string, error) {
 	return string(buf[:n]), nil
 }
 
-func parentPid(dir int) (int, error) {
+// stat returns the state and parent pid from the stat file in dir.
+func stat(dir int) (string, int, error) {
 	fd, err := unix.Openat(dir, "stat", unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 	defer unix.Close(fd)
 	buf := make([]byte, 4096)
 	n, err := unix.Read(fd, buf)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 	raw := string(buf[:n])
 	// The command name is in parentheses and may hold spaces; the fields
 	// after the last ')' are state, then ppid.
 	end := strings.LastIndexByte(raw, ')')
 	if end < 0 {
-		return 0, fmt.Errorf("malformed stat")
+		return "", 0, fmt.Errorf("malformed stat")
 	}
 	fields := strings.Fields(raw[end+1:])
 	if len(fields) < 2 {
-		return 0, fmt.Errorf("malformed stat")
+		return "", 0, fmt.Errorf("malformed stat")
 	}
-	return strconv.Atoi(fields[1])
+	ppid, err := strconv.Atoi(fields[1])
+	return fields[0], ppid, err
 }

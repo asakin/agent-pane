@@ -26,6 +26,9 @@ func TestStaleVersionIsRefused(t *testing.T) {
 	if descends(&stale, os.Getppid()) {
 		t.Fatal("ancestry passed with a stale pid version")
 	}
+	if descends(&stale, os.Getpid()) {
+		t.Fatal("a stale pid version matched itself as the ancestor")
+	}
 	reused := *proc
 	reused.uniqueID++
 	if _, err := reused.executable(); !errors.Is(err, errChanged) {

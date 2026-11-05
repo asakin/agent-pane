@@ -25,13 +25,17 @@ const (
 	auditTokenEUID             = 1
 	auditTokenPidVersion       = 7
 	auditTokenWords            = 8
+	uniqIdentifierUUID         = 0
 	uniqIdentifierUniqueID     = 16
 	uniqIdentifierParentUnique = 24
 	uniqIdentifierIDVersion    = 32
 	bsdShortInfoPpid           = 4
 )
 
-var errChanged = errors.New("process changed during the check")
+var (
+	errChanged  = errors.New("process changed during the check")
+	errExecuted = errors.New("process has exec'd since it last used the socket")
+)
 
 // process is one process image. The kernel gives every fork and every exec a
 // new pid version, and every fork a new unique id, and never hands either out
@@ -44,13 +48,17 @@ type process struct {
 }
 
 type uniqInfo struct {
+	uuid           [16]byte
 	uniqueID       uint64
 	parentUniqueID uint64
 	version        int32
 }
 
 // peerOf reads the peer from LOCAL_PEERTOKEN, the audit token of the process
-// that last used the socket, which names its pid version.
+// that last used the socket, which names its pid version. The token is looked
+// up live, so after an exec it carries the new pid version; LOCAL_PEERUUID,
+// the executable UUID the socket recorded at that last use, does not follow
+// the exec, so a peer whose image has changed since is refused.
 func peerOf(fd int) (Peer, *process, error) {
 	cred, err := unix.GetsockoptXucred(fd, unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
 	if err != nil {
@@ -68,6 +76,15 @@ func peerOf(fd int) (Peer, *process, error) {
 	if token[auditTokenEUID] != cred.Uid {
 		return Peer{}, nil, errChanged
 	}
+	var uuid [16]byte
+	size = uint32(len(uuid))
+	if _, _, errno := unix.Syscall6(unix.SYS_GETSOCKOPT, uintptr(fd), unix.SOL_LOCAL, unix.LOCAL_PEERUUID,
+		uintptr(unsafe.Pointer(&uuid)), uintptr(unsafe.Pointer(&size)), 0); errno != 0 {
+		return Peer{}, nil, errno
+	}
+	if size != uint32(len(uuid)) {
+		return Peer{}, nil, fmt.Errorf("short peer uuid")
+	}
 	pid := int(token[auditTokenPid])
 	info, err := uniqInfoOf(pid)
 	if err != nil {
@@ -76,6 +93,9 @@ func peerOf(fd int) (Peer, *process, error) {
 	proc := &process{num: pid, version: int32(token[auditTokenPidVersion]), uniqueID: info.uniqueID}
 	if info.version != proc.version {
 		return Peer{}, nil, errChanged
+	}
+	if info.uuid != uuid {
+		return Peer{}, nil, errExecuted
 	}
 	return Peer{UID: int(cred.Uid), PID: pid}, proc, nil
 }
@@ -93,6 +113,11 @@ func (p *process) close() {}
 func (p *process) pid() int { return p.num }
 
 func (p *process) ancestryErr() error { return nil }
+
+func (p *process) alive() error {
+	_, err := p.same()
+	return err
+}
 
 // same reports an error unless p's pid still names p's image.
 func (p *process) same() (uniqInfo, error) {
@@ -160,11 +185,13 @@ func uniqInfoOf(pid int) (uniqInfo, error) {
 	if err := procPidinfo(pid, procPidUniqIdentifierInfo, buf); err != nil {
 		return uniqInfo{}, err
 	}
-	return uniqInfo{
+	info := uniqInfo{
 		uniqueID:       *(*uint64)(unsafe.Pointer(&buf[uniqIdentifierUniqueID])),
 		parentUniqueID: *(*uint64)(unsafe.Pointer(&buf[uniqIdentifierParentUnique])),
 		version:        *(*int32)(unsafe.Pointer(&buf[uniqIdentifierIDVersion])),
-	}, nil
+	}
+	copy(info.uuid[:], buf[uniqIdentifierUUID:])
+	return info, nil
 }
 
 func procPidinfo(pid, flavor int, buf []byte) error {
