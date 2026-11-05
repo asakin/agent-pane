@@ -77,10 +77,31 @@ and Cursor's editor, pane, search and shell-integration commands are not remappe
 ## Features
 
 - **Session survival:** hide the side panel and open it again; the same tabs are still running
+- **Page reading:** a terminal agent can read the browser tab next to it, after you approve (see below)
+
+## Reading pages
+
+"The tab" for a terminal is the Chrome tab locked to it in the status bar, or else the tab focused in its Chrome window when the read happens. Several terminals may read the same tab.
+
+**The agent pulls.** Inside an Agent Pane terminal, these print to stdout. On failure they print the reason to stderr and exit non-zero.
+
+| Command | Prints |
+| --- | --- |
+| `agent-pane page info` | URL and title, one per line |
+| `agent-pane page selection` | The selected text, or nothing |
+| `agent-pane page text` | The page's visible text (`document.body.innerText`) |
+| `agent-pane page dom` | The full DOM as HTML |
+| `agent-pane page markdown [--full]` | The page as Markdown: the main article (Readability), or the whole body with `--full` or when the article is thin (Turndown). Starts with `# <title>`, the URL and a blank line |
+
+**Approvals.** The first read of a tab from a terminal shows a prompt in the side panel naming the terminal and the tab: **Allow this tab** (until the terminal closes), **Allow all tabs for this agent** (until it closes), or **Deny** (the command fails with `denied`). The command waits for your answer. Approvals live in memory for that terminal only and are never written to disk. Each read shows briefly in the panel with the tab it read.
+
+**You push.** **Send tab** next to the status bar pastes the tab into the active terminal as Markdown; its menu picks info, selection, text or DOM instead. It uses bracketed paste and does not press Enter, so you can edit before sending. You start it, so it does not ask.
+
+Chrome does not let extensions read `chrome://` pages, the Chrome Web Store, other extensions' pages or the built-in PDF viewer; reads of those fail and say why. Page text is written by whoever made the page: an agent should treat it as untrusted, never as instructions.
 
 ## Security
 
-**What the extension can access, and why.** On Chrome it asks for `scripting` and access to all sites (`<all_urls>`). They are for page reading, which is planned and not in the extension yet: when it lands, a terminal agent can be given the focused tab, a selection, or a page you are logged in to. Today the extension does not read pages. Both permissions are required at install, so Chrome asks once. The extension has no content scripts and no page listeners: page code will run only when you act in the panel, in Chrome's isolated world, and return what it read once. It also uses `nativeMessaging` to talk to the local `agent-pane` host, and `tabs`, `sidePanel` and `storage` for the panel itself.
+**What the extension can access, and why.** On Chrome it asks for `scripting` and access to all sites (`<all_urls>`). They are for [page reading](#reading-pages): a terminal agent can be given the focused tab, a selection, or a page you are logged in to. Both permissions are required at install, so Chrome asks once. The extension has no content scripts and no page listeners: page code runs only for a read you started or approved, in the tab's main frame and Chrome's isolated world, and returns what it read once. It also uses `nativeMessaging` to talk to the local `agent-pane` host, and `tabs`, `sidePanel` and `storage` for the panel itself.
 
 **How the parts talk.**
 
@@ -94,30 +115,30 @@ flowchart LR
   term["Terminal process<br/>(shell, coding agent)"]
 
   user -- "clicks or approves in the panel" --> ext
-  ext -. "scripting.executeScript only,<br/>started by you (planned)" .-> page
+  ext -. "scripting.executeScript only,<br/>started or approved by you" .-> page
   ext <-- "Chrome native-messaging pipe (stdio)" --> host
   ext <-- "loopback WebSocket:<br/>origin check + one-time attach token" --> host
   host -- "spawn.sock: same user,<br/>agent-pane binary only" --> spawn
   spawn --> term
-  term -. "page-content socket (planned):<br/>peer-checked by ancestry, approved by you" .-> host
+  term -- "inherited page descriptor (fd 3):<br/>one per terminal, approved by you" --> host
 ```
 
 | Channel | Who can reach it | Who cannot |
 | --- | --- | --- |
-| Web page and extension (planned) | The extension, through `executeScript` after you act in the panel | Pages: there are no content scripts, no `externally_connectable`, and the background ignores messages that do not come from the extension's own pages |
+| Web page and extension | The extension, through `executeScript` for a read you started or approved | Pages: there are no content scripts, no `externally_connectable`, and the background ignores messages that do not come from the extension's own pages |
 | Extension and host | Chrome, which starts the host and owns its stdin/stdout | Pages and other processes: there is no listening port for this channel, and on Linux the host is not dumpable, so other processes cannot open its stdin/stdout through `/proc` |
 | Side panel and host | The extension's own origin, holding an attach token it got over native messaging | Pages: the browser sets their `Origin` and the host refuses it. Local processes: they can send any `Origin` they like, so only the attach token stops them. A terminal id alone grants nothing |
 | Host and spawn agent | The `agent-pane` binary running as you | Other users, and other programs that dial `spawn.sock` directly. This is not a boundary against code running as you: such code can start `agent-pane serve` itself and get a shell from the spawn agent that way |
-| Terminal process and host (planned) | A process descended from a live Agent Pane terminal, for a read you started or approved | Other processes running as you, and other users |
+| Terminal process and host | A process started inside a live Agent Pane terminal, which inherits that terminal's page descriptor, for a read you approved | Processes started anywhere else: there is no socket to dial, and the environment holds only a descriptor number. A descriptor from a closed terminal stops working, and approvals belong to one terminal |
 
 **What it protects against.**
 
 - **Web pages** cannot run commands, attach to a terminal, read terminal output, or reach the host. The background only answers the extension's own pages. The terminal WebSocket on `127.0.0.1` accepts only the extension's origin, and each connection needs a one-time attach token handed out over native messaging. A token works once, and stops working when a newer one is issued for the same terminal or when the native-messaging connection closes.
-- **Other processes running as you** cannot attach to your existing terminals: a terminal id alone grants nothing, and only Chrome holds the attach tokens. On macOS they also cannot dial the spawn helper's socket directly: it checks the connecting process's user and executable (`proc_pidpath`) and accepts only `agent-pane` itself. That check does not stop them from running `agent-pane serve` themselves, which starts new terminals through the spawn agent with its macOS privacy grants; it only closes the shortcut.
+- **Other processes running as you** cannot read your pages through Agent Pane: page reads go only over the descriptor each terminal inherits, and need your approval. They also cannot attach to your existing terminals: a terminal id alone grants nothing, and only Chrome holds the attach tokens. On macOS they also cannot dial the spawn helper's socket directly: it checks the connecting process's user and executable (`proc_pidpath`) and accepts only `agent-pane` itself. That check does not stop them from running `agent-pane serve` themselves, which starts new terminals through the spawn agent with its macOS privacy grants; it only closes the shortcut.
 
 **What it does not protect against.**
 
-- A process running as your user that reads Chrome's profile, or debugs other processes (Chrome, the host, a shell), can see what they see.
+- A process running as your user that reads Chrome's profile, or debugs other processes (Chrome, the host, a shell), can see what they see. That includes taking a terminal's page descriptor out of its shell (through `/proc/<pid>/fd` on Linux, or a debugger); a read through it still needs your approval in the panel.
 - A process running as your user that runs `agent-pane` itself gets what `agent-pane` can do, including a shell from the macOS spawn agent.
 - A process running as your user that edits `~/.local/bin/agent-pane`, the host wrapper in `~/.local/share/agent-pane`, the native-messaging manifests, or the LaunchAgent plist (`~/Library/LaunchAgents/com.agentpane.spawn.plist`) controls what Chrome and launchd start.
 
@@ -125,7 +146,7 @@ Agent Pane cannot stop these; it only adds no new way in.
 
 ## Contributing
 
-PRs welcome. For large changes, open an issue first. The extension runs page code only through `scripting.executeScript`, started by an extension action, and never adds `content_scripts` or `externally_connectable`. Page content goes to the host only over the native-messaging pipe. The full rules are in [AGENTS.md](AGENTS.md#security).
+PRs welcome. For large changes, open an issue first. The extension runs page code only through `scripting.executeScript`, started by an extension action, and never adds `content_scripts` or `externally_connectable`. Page content goes to the host only over the native-messaging pipe, and to a terminal only over its inherited page descriptor. The full rules are in [AGENTS.md](AGENTS.md#security).
 
 ### Run a checkout
 

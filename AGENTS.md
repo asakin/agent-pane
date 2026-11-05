@@ -29,13 +29,15 @@ How the channels are locked down:
 
 - **PTY WebSocket** (`internal/cmd/serve.go`): `allowedOrigin` accepts only `extensionOrigins` and refuses a missing `Origin`. `tty.create` and `tty.attach` return a URL with a one-time attach token (32 bytes from `crypto/rand`, bound to one tty id, no timer: it stops working once used, when a newer `tty.attach` is issued for the same tty, or when the native-messaging connection that asked for it closes), checked in constant time before any replay. Errors do not echo the id or token.
 - **Unix sockets:** check the peer with `internal/peercred` (same uid, plus an allowed executable or ancestry). The zero `Policy` refuses everyone, so every socket states what it accepts. The socket lives in a `0700` folder (`install.sh` and `serveSpawnSocketFor` both tighten `~/.local/share/agent-pane`). `spawn.sock` accepts only the `agent-pane` binary (`/proc/<pid>/exe` on Linux, `proc_pidpath` on macOS). This stops other programs dialing it directly; it is not a boundary against same-user code, which can run `agent-pane serve` itself.
-- **Peer check limits:** the peer is read once, at accept. A process that connects and then execs, or hands the socket to a child, is judged as it was at connect time, and the ancestry walk follows parent pids, which can be reused. Ancestry also rejects daemonised descendants such as a tmux server started from an Agent Pane terminal (its parent becomes launchd or init). A page-content socket must close these gaps (macOS `LOCAL_PEERTOKEN` audit token, Linux `SO_PEERPIDFD`) before it ships.
+- **Peer check limits:** the peer is read once, at accept. A process that connects and then execs, or hands the socket to a child, is judged as it was at connect time, and the ancestry walk follows parent pids, which can be reused. Page content does not use a peer-checked socket for this reason; it uses the page channel below.
+- **Page channel** (`internal/cmd/page.go`, `page_unix.go`): each PTY session gets one end of a `socketpair` as inherited fd 3, named by `AGENT_PANE_FD`. There is no listening socket and no process lookup: the host knows the session from which end a request arrives on. Each request is one datagram carrying its own reply socket (`SCM_RIGHTS`), so processes sharing the descriptor never read each other's answers. The host closes its end when the session ends. Known limit: a same-user process can take the descriptor out of the shell through `/proc/<pid>/fd` on Linux or a debugger; the approval prompt is the real lock.
 - **Native-messaging host:** on Linux `serve` sets `PR_SET_DUMPABLE` to 0, so other same-user processes cannot open its stdin/stdout through `/proc/<pid>/fd`.
 
 Rules for any endpoint that returns page content:
 
 - Page content travels from the extension to the host only over the native-messaging stdio pipe Chrome opens. It never goes over the loopback WebSocket or any listening TCP port.
-- A terminal process asks for page content only through a unix socket in a `0700` folder, checked with `internal/peercred`. The peer must be a descendant of a live Agent Pane PTY session's shell. No tokens in environment variables, because same-user processes can read another process's environment.
+- A terminal process asks for page content only through its session's inherited page-channel descriptor, never through a listening socket, unix or TCP. The environment holds only the descriptor's number, never a token, because same-user processes can read another process's environment.
+- Approvals ("Allow this tab", "Allow all tabs for this agent") are held in memory by the host per session and dropped when it ends. Never write them to disk.
 - Nothing is sent to a terminal automatically. Every page read starts from a user action in the panel, or from a request the user approves in the panel, and the panel shows which tab was read.
 - Content passed to an agent is labelled as untrusted page text. A page that tells the agent to run commands is the attack the approval step exists for.
 
@@ -69,10 +71,10 @@ npm --prefix extension run build
 
 ## Map
 
-- `main.go`, `internal/cmd/`: Go CLI entry point, native-messaging host (`serve.go`), agent catalog loader (`agents.go`), and macOS LaunchAgent spawn (`spawn_darwin.go`).
+- `main.go`, `internal/cmd/`: Go CLI entry point, native-messaging host (`serve.go`), page channel and `agent-pane page` commands (`page.go`, `page_unix.go`), agent catalog loader (`agents.go`), and macOS LaunchAgent spawn (`spawn_darwin.go`).
 - `internal/jsonrpc/`, `internal/scrollback/`: JSON-RPC framing and terminal scrollback ring/mode replay.
 - `internal/peercred/`: unix socket peer checks (uid, executable, ancestry) for Linux and macOS.
-- `extension/entrypoints/`: WXT extension entry points (`background.ts`, `sidepanel.html`, `options.html`) and shared terminal/tab/RPC modules in `extension/entrypoints/shared/`.
+- `extension/entrypoints/`: WXT extension entry points (`background.ts`, `sidepanel.html`, `options.html`, the injected `page-reader.ts`) and shared terminal/tab/RPC/page modules in `extension/entrypoints/shared/`.
 - `extension/tests/`: Node test runner suites (`*.test.mjs`).
 - `agents/`: shipped agent definitions and `agents/enabled.json`; see [agents/README.md](agents/README.md).
 - `install.sh`, `install_test.sh`: curl installer and its test script.

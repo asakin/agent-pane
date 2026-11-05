@@ -52,6 +52,15 @@ type Session struct {
 	rows         int
 	closed       bool
 	manager      *SessionManager
+
+	// Label names the terminal in approval prompts (agent name or Terminal).
+	Label string
+	// page is the host's end of the page channel; nil where there is none.
+	page *net.UnixConn
+	// Page-read approvals, in memory only, dropped with the session.
+	approveMu   sync.Mutex
+	allowAll    bool
+	allowedTabs map[int]bool
 }
 
 // extensionOrigins are the only origins that may open a PTY WebSocket. Add the
@@ -76,6 +85,22 @@ type SessionManager struct {
 
 	tokenMu sync.Mutex
 	tokens  []attachToken
+
+	callMu sync.Mutex
+	call   extensionCaller
+}
+
+// SetExtensionCaller sets how page reads reach the extension.
+func (m *SessionManager) SetExtensionCaller(call extensionCaller) {
+	m.callMu.Lock()
+	m.call = call
+	m.callMu.Unlock()
+}
+
+func (m *SessionManager) extensionCaller() extensionCaller {
+	m.callMu.Lock()
+	defer m.callMu.Unlock()
+	return m.call
 }
 
 func NewSessionManager(port int, logger *slog.Logger) *SessionManager {
@@ -187,7 +212,7 @@ func (m *SessionManager) wsURL(id, token string) string {
 	return fmt.Sprintf("ws://127.0.0.1:%d/tty/%s?token=%s", m.port, id, token)
 }
 
-func (m *SessionManager) Create(cmdFactory func(tty pty.Pty, id string) (*pty.Cmd, error)) (*Session, error) {
+func (m *SessionManager) Create(label string, cmdFactory func(tty pty.Pty, id string) (*pty.Cmd, error)) (*Session, error) {
 	tty, err := pty.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pty: %w", err)
@@ -200,8 +225,23 @@ func (m *SessionManager) Create(cmdFactory func(tty pty.Pty, id string) (*pty.Cm
 		return nil, err
 	}
 
-	wait, err := startPty(tty, cmd)
+	// A terminal without a page channel still works; page commands in it
+	// say they are not in an Agent Pane terminal.
+	page, child, err := newPageChannel()
 	if err != nil {
+		m.logger.Warn("no page channel for terminal", "error", err)
+	} else {
+		cmd.Env = mergePtyEnv(cmd.Env, map[string]string{pageFDEnv: fmt.Sprint(pageFD)})
+	}
+
+	wait, err := startPty(tty, cmd, child)
+	if child != nil {
+		_ = child.Close()
+	}
+	if err != nil {
+		if page != nil {
+			_ = page.Close()
+		}
 		tty.Close()
 		return nil, fmt.Errorf("failed to start pty: %w", err)
 	}
@@ -211,6 +251,8 @@ func (m *SessionManager) Create(cmdFactory func(tty pty.Pty, id string) (*pty.Cm
 		Pty:     tty,
 		Buf:     scrollback.New(scrollbackBytes),
 		manager: m,
+		Label:   label,
+		page:    page,
 	}
 
 	m.mu.Lock()
@@ -218,6 +260,9 @@ func (m *SessionManager) Create(cmdFactory func(tty pty.Pty, id string) (*pty.Cm
 	m.mu.Unlock()
 
 	go session.readLoop(m.logger)
+	if page != nil {
+		go session.servePage(page, m.extensionCaller)
+	}
 	go func() {
 		_ = wait()
 		m.reap(id)
@@ -266,6 +311,12 @@ func (s *Session) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
+	// A descriptor that outlives its terminal stops working.
+	if s.page != nil {
+		_ = s.page.Close()
+	}
+	s.allowAll = false
+	s.allowedTabs = nil
 	if s.client != nil {
 		_ = s.client.Close()
 		s.client = nil
@@ -367,6 +418,7 @@ func NewCmdServe(version string) *cobra.Command {
 
 			sessions := NewSessionManager(port, logger)
 			messagingHost := NewMessagingHost(logger, sessions, version)
+			sessions.SetExtensionCaller(nativeCaller(messagingHost))
 
 			handler := NewWebSocketHandler(sessions)
 
@@ -457,6 +509,7 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 		}
 
 		mode, app := params.Mode, params.App
+		label := "Terminal"
 		switch mode {
 		case "shell":
 			mode, app = "", ""
@@ -464,14 +517,16 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			if !isSafeAppID(app) {
 				return nil, fmt.Errorf("invalid app id %q", app)
 			}
-			if _, ok := agentByID(app); !ok {
+			agent, ok := agentByID(app)
+			if !ok {
 				return nil, fmt.Errorf("unknown app %q", app)
 			}
+			label = agent.Name
 		default:
 			mode, app = "", ""
 		}
 
-		session, err := sessions.Create(func(tty pty.Pty, _ string) (*pty.Cmd, error) {
+		session, err := sessions.Create(label, func(tty pty.Pty, _ string) (*pty.Cmd, error) {
 			if err := tty.Resize(params.Cols, params.Rows); err != nil {
 				return nil, fmt.Errorf("failed to set size for tty: %w", err)
 			}
