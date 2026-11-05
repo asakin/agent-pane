@@ -5,16 +5,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/aymanbagabas/go-pty"
 	"github.com/spf13/cobra"
 )
-
-func startPty(_ pty.Pty, cmd *pty.Cmd) (func() error, error) {
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	return cmd.Wait, nil
-}
 
 func NewCmdSpawn() *cobra.Command {
 	return &cobra.Command{

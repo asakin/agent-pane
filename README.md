@@ -96,11 +96,29 @@ navigation. Copy/paste uses the browser's normal shortcuts.
 
 - **Pane tab survival:** hide the side panel and open it again; the same terminals are still running
 
+## Reading pages
+
+Coding agents run `agent-pane page` commands inside a pane tab to read its associated Chrome tab. The status bar locks a pane tab to a particular Chrome tab; otherwise reads follow the active Chrome tab in that window. Commands print results to stdout and report errors on stderr with a non-zero exit status.
+
+| Command | Prints |
+| --- | --- |
+| `agent-pane page info` | URL and title, one per line |
+| `agent-pane page selection` | The selected text, or nothing |
+| `agent-pane page text` | The page's visible text (`document.body.innerText`) |
+| `agent-pane page dom` | The full DOM as HTML |
+| `agent-pane page markdown [--full]` | The page as Markdown: the main article (Readability), or the whole body with `--full` or when the article is thin (Turndown). Starts with `# <title>`, the URL and a blank line |
+
+The side panel prompts when a read needs approval, with **Allow this tab**, **Allow all tabs for this agent**, and **Deny** choices. In this implementation, grants are stored in memory for the PTY session and expire when that session ends. An approval covers subsequent reads within its scope.
+
+**Send tab** beside the status bar pastes Chrome-tab content into the selected pane tab. It defaults to Markdown, with other formats in its menu. The pasted text can be edited before pressing Enter.
+
+Chrome restricts extension access to protected pages, including `chrome://` pages, the Chrome Web Store, other extensions' pages, and its built-in PDF viewer. Reads of these pages report an error.
+
 ## Security
 
 The following describes the current implementation and its limitations.
 
-**What the extension can access.** On Chrome it requests `scripting` and access to all sites (`<all_urls>`), although this version does not yet read page content. It uses `nativeMessaging` to talk to the local `agent-pane` host, and `tabs`, `sidePanel` and `storage` for the side panel.
+**What the extension can access.** On Chrome it requests `scripting` and access to all sites (`<all_urls>`), for [page reading](#reading-pages). It uses `nativeMessaging` to talk to the local `agent-pane` host, and `tabs`, `sidePanel` and `storage` for the side panel.
 
 **How the parts talk.**
 

@@ -21,8 +21,23 @@ export type HostConnectionDeps = {
     extensionVersion: string;
     /** `browser.runtime.lastError` message, read inside onDisconnect. */
     lastError?(): string | undefined;
+    /**
+     * Answers a request the host sends (page reads). A thrown error becomes
+     * the JSON-RPC error message the host sees.
+     */
+    onHostRequest?(method: string, params: unknown): Promise<Record<string, unknown>>;
     timers?: Timers;
 };
+
+/** A request from the host: a method and an id, and no result or error. */
+export function isHostRequest(message: unknown): message is { jsonrpc: "2.0"; id: string; method: string; params?: unknown } {
+    if (typeof message !== "object" || message === null) {
+        return false;
+    }
+    const m = message as Record<string, unknown>;
+    return m.jsonrpc === "2.0" && typeof m.id === "string" && m.id !== "" && typeof m.method === "string"
+        && !("result" in m) && !("error" in m);
+}
 
 /** One host process and the answer to its `initialize`. */
 type Connection = {
@@ -97,6 +112,28 @@ export function createHostConnection(deps: HostConnectionDeps) {
                 params: { browserId, version: deps.extensionVersion },
             }, undefined, timers),
         };
+        if (deps.onHostRequest) {
+            const answer = deps.onHostRequest;
+            port.onMessage.addListener((message) => {
+                if (!isHostRequest(message)) {
+                    return;
+                }
+                answer(message.method, message.params).then(
+                    (result) => ({ jsonrpc: "2.0", id: message.id, result }),
+                    (err) => ({
+                        jsonrpc: "2.0",
+                        id: message.id,
+                        error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
+                    }),
+                ).then((reply) => {
+                    try {
+                        port.postMessage(reply);
+                    } catch {
+                        // The host is gone; its read fails on its side.
+                    }
+                });
+            });
+        }
         port.onDisconnect.addListener(() => {
             forget(conn);
             console.warn("Native messaging host disconnected:", deps.lastError?.() ?? "");
