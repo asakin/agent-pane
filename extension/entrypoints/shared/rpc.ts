@@ -30,6 +30,8 @@ export type RequestCreateTTY = JSONRPCRequestBase<"tty.create", {
     app?: string;
     args?: string[];
     cwd?: string;
+    /** The pane tab a replacement session joins. */
+    pane?: string;
     cols: number;
     rows: number;
 }>
@@ -42,6 +44,8 @@ export type RequestListTTY = JSONRPCRequestBase<"tty.list", undefined>
 
 export type RequestDestroyTTY = JSONRPCRequestBase<"tty.destroy", {
     id: string;
+    /** Set when the pane tab is closing: revokes its grants. */
+    pane?: string;
 }>
 
 export type RequestChooseFolder = JSONRPCRequestBase<"dialog.chooseFolder", undefined>
@@ -96,6 +100,8 @@ export type ResponseGetXtermConfig = JSONRPCResponseBase
 export type ResponseCreateTTY = JSONRPCResponseBase<{
     id: string;
     url: string;
+    /** The host's id for the session's pane tab. */
+    pane?: string;
 }>
 
 export type ResponseAttachTTY = ResponseCreateTTY

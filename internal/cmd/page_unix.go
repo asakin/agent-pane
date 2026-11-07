@@ -72,41 +72,69 @@ func (s *Session) servePage(conn *net.UnixConn, call func() extensionCaller) {
 			writePageReply(reply, pageReply{ID: req.ID, Error: "bad request"})
 			continue
 		}
-		if !s.trackReply(reply) {
-			writePageReply(reply, pageReply{ID: req.ID, Error: errTerminalClosed})
+		if errMsg := s.admitRead(reply); errMsg != "" {
+			writePageReply(reply, pageReply{ID: req.ID, Error: errMsg})
 			continue
 		}
+		t, writeTimeout := currentPageTimeouts(), pageReplyWriteTimeout
 		go func() {
 			defer s.untrackReply(reply)
-			content, err := s.pageRead(call(), req)
+			ctx, cancel := s.requestContext(t.total(), watchHangup(reply))
+			defer cancel()
+			content, err := s.pageRead(ctx, t, call(), req)
 			out := pageReply{ID: req.ID, Content: content}
 			if err != nil {
 				out = pageReply{ID: req.ID, Error: err.Error()}
 			}
-			writePageReply(reply, out)
+			writePageReplyWithin(reply, out, writeTimeout)
 		}()
 	}
 }
 
-// trackReply records a reply socket so closing the session closes it. It
-// reports false once the session has closed.
-func (s *Session) trackReply(reply *os.File) bool {
+// admitRead records a reply socket so closing the session closes it, unless
+// the session has closed or a limit on reads in flight is reached. It returns
+// the reason it refused, or "".
+func (s *Session) admitRead(reply *os.File) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return false
+		return errTerminalClosed
+	}
+	if len(s.replies) >= maxSessionPageReads {
+		return errTooManyReads
+	}
+	if s.manager != nil && !s.manager.takePageRead() {
+		return errTooManyReads
 	}
 	if s.replies == nil {
 		s.replies = map[*os.File]struct{}{}
 	}
 	s.replies[reply] = struct{}{}
-	return true
+	return ""
 }
 
 func (s *Session) untrackReply(reply *os.File) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.replies[reply]; !ok {
+		return
+	}
 	delete(s.replies, reply)
+	if s.manager != nil {
+		s.manager.releasePageRead()
+	}
+}
+
+// watchHangup returns a channel that closes when the client end of reply
+// goes away, or when reply itself is closed. The client never writes on its
+// reply socket, so any read returning is the end of it.
+func watchHangup(reply *os.File) <-chan struct{} {
+	gone := make(chan struct{})
+	go func() {
+		defer close(gone)
+		_, _ = reply.Read(make([]byte, 1))
+	}()
+	return gone
 }
 
 // pollableFile wraps a socket descriptor in non-blocking mode, so the
@@ -146,10 +174,14 @@ func takeReplySocket(oob []byte) *os.File {
 }
 
 func writePageReply(reply *os.File, out pageReply) {
+	writePageReplyWithin(reply, out, pageReplyWriteTimeout)
+}
+
+func writePageReplyWithin(reply *os.File, out pageReply, timeout time.Duration) {
 	defer reply.Close()
 	out.AgentPane = 1
 	// A client that stops reading cannot hold the writer past this.
-	if reply.SetWriteDeadline(time.Now().Add(pageReplyWriteTimeout)) != nil {
+	if reply.SetWriteDeadline(time.Now().Add(timeout)) != nil {
 		return
 	}
 	_ = json.NewEncoder(reply).Encode(out)

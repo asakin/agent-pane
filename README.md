@@ -108,9 +108,16 @@ Coding agents run `agent-pane page` commands inside a pane tab to read its assoc
 | `agent-pane page dom` | The full DOM as HTML |
 | `agent-pane page markdown [--full]` | The page as Markdown: the main article (Readability), or the whole body with `--full` or when the article is thin (Turndown). Starts with `# <title>`, the URL and a blank line |
 
-The side panel prompts when a read needs approval, with **Allow this tab**, **Allow all tabs for this agent**, and **Deny** choices. In this implementation, grants are stored in memory for the PTY session and expire when that session ends. An approval covers subsequent reads within its scope. Pending requests time out after three minutes or end when their PTY session closes.
+The side panel prompts when a read is not covered by the pane tab's approval, with **Allow this Chrome tab**, **Allow all Chrome tabs for this pane tab**, and **Deny** choices. Reads that the approval covers proceed without another prompt.
 
-**Send tab** beside the status bar pastes Chrome-tab content into the selected pane tab. It defaults to Markdown, with other formats in its menu. The pasted text can be edited before pressing Enter.
+- **Approval belongs to the pane tab.** It stays when a coding agent exits, when another one is started in the same pane tab, and when the side panel replaces a dead PTY session in that pane tab. Hiding and reopening the side panel keeps it. Closing the pane tab, or the Chrome window holding it, revokes it. A new pane tab starts with no approval, even if it runs the same coding agent.
+- **The host owns pane-tab identity.** The host makes each pane tab's id and gives it only to the extension. A replacement PTY session joins a pane tab only when the extension names it and no live session holds it. Nothing running in the terminal can name another pane tab. Approvals are kept in host memory, so restarting the host or the browser starts every pane tab without approval.
+- **A prompted read gets the document the prompt named.** The prompt shows the Chrome tab's committed URL. If the tab moves to another page before the read runs, the read fails and asks for the command to be run again. Later reads covered by an approval follow the Chrome tab wherever it navigates.
+- **Pending requests are bounded.** A request gives up after three minutes and five seconds altogether, including time spent waiting to be written to a stalled native-messaging pipe. It also ends when its PTY session closes or the `agent-pane page` process exits. When a PTY session ends, its pending requests fail and its descriptor stops working; the pane tab keeps its approval. At most 8 reads per PTY session and 32 across the host wait at once; the rest fail immediately.
+
+**Send tab** beside the status bar pastes Chrome-tab content into the selected pane tab. It defaults to Markdown, with other formats in its menu. The pasted text can be edited before pressing Enter. It reports that nothing was sent if the pane tab changed, or was still reconnecting, while the Chrome tab was read.
+
+Markdown output rewrites link and image targets as absolute URLs, resolved against the page's `<base href>` when it has one.
 
 Chrome restricts extension access to protected pages, including `chrome://` pages, the Chrome Web Store, other extensions' pages, and its built-in PDF viewer. Reads of these pages report an error.
 

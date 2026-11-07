@@ -84,7 +84,10 @@ export default defineBackground(() => {
       }
       case "page.read": {
         const tabId = Number(p.tabId);
-        const content = await readTab(pageApis, tabId, String(p.format ?? ""), p.full === true);
+        // Set when the read was just approved: only the document the
+        // prompt named may be delivered.
+        const expectUrl = typeof p.expectUrl === "string" ? p.expectUrl : undefined;
+        const content = await readTab(pageApis, tabId, String(p.format ?? ""), p.full === true, expectUrl);
         const tab = await browser.tabs.get(tabId).catch(() => undefined);
         const notice: ReadNotice = {
           type: "agent-pane.page-read",
@@ -113,12 +116,12 @@ export default defineBackground(() => {
     void destroyWindowSession(windowId);
   });
 
-  async function destroyTTYViaNative(nativePort: HostPort, ttyId: string) {
+  async function destroyTTYViaNative(nativePort: HostPort, ttyId: string, pane?: string) {
     const msg: RequestDestroyTTY = {
       jsonrpc: "2.0",
       id: crypto.randomUUID(),
       method: "tty.destroy",
-      params: { id: ttyId },
+      params: pane ? { id: ttyId, pane } : { id: ttyId },
     };
     await requestNative(nativePort, msg, 2000);
   }
@@ -130,22 +133,24 @@ export default defineBackground(() => {
     const state = stored[wKey] as WindowTabState | undefined;
     const legacyId = stored[legacyKey] as string | undefined;
 
-    const ids = new Set<string>();
+    // PTY session id to its pane tab's id, when it has one; the window's
+    // pane tabs close with it.
+    const ids = new Map<string, string | undefined>();
     const tabs = state?.tabs as unknown;
     if (Array.isArray(tabs)) {
       for (const tab of tabs) {
         if (typeof tab === "string" && tab) {
-          ids.add(tab);
+          ids.set(tab, undefined);
         } else if (tab && typeof tab === "object" && typeof (tab as { id?: unknown }).id === "string") {
-          const id = (tab as { id: string }).id;
+          const { id, pane } = tab as { id: string; pane?: unknown };
           if (id) {
-            ids.add(id);
+            ids.set(id, typeof pane === "string" && pane ? pane : undefined);
           }
         }
       }
     }
     if (typeof legacyId === "string" && legacyId) {
-      ids.add(legacyId);
+      ids.set(legacyId, undefined);
     }
 
     await browser.storage.session.remove([wKey, legacyKey]);
@@ -159,8 +164,8 @@ export default defineBackground(() => {
       return;
     }
 
-    for (const ttyId of ids) {
-      await destroyTTYViaNative(nativePort, ttyId);
+    for (const [ttyId, pane] of ids) {
+      await destroyTTYViaNative(nativePort, ttyId, pane);
     }
   }
 

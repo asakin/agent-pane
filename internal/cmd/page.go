@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -64,24 +65,35 @@ var (
 	pageReadTimeout    = 30 * time.Second
 )
 
+// How many reads may be in flight, each holding a reply descriptor and a
+// goroutine, in one PTY session and across the host. Requests over either
+// limit are answered at once and their descriptors closed, so one pane tab
+// cannot use up the descriptors other terminals need to start.
+var (
+	maxSessionPageReads = 8
+	maxHostPageReads    = 32
+)
+
+const errTooManyReads = "too many page reads are already waiting in Agent Pane; try again when they finish"
+
 // extensionCaller sends one request to the extension over native messaging and
-// returns its result.
-type extensionCaller func(method string, params any, timeout time.Duration) (json.RawMessage, error)
+// returns its result. It gives up, writing included, when ctx ends.
+type extensionCaller func(ctx context.Context, method string, params any) (json.RawMessage, error)
 
 var errExtensionTimeout = errors.New("timeout")
 
 func nativeCaller(host *jsonrpc.Host) extensionCaller {
-	return func(method string, params any, timeout time.Duration) (json.RawMessage, error) {
+	return func(ctx context.Context, method string, params any) (json.RawMessage, error) {
 		raw, err := json.Marshal(params)
 		if err != nil {
 			return nil, err
 		}
-		res, err := host.SendRequestTimeout(jsonrpc.JSONRPCRequest{
+		res, err := host.SendRequestContext(ctx, jsonrpc.JSONRPCRequest{
 			JSONRPCVersion: "2.0",
 			ID:             "host-" + strings.ToLower(rand.Text()),
 			Method:         method,
 			Params:         raw,
-		}, timeout)
+		})
 		if err != nil {
 			return nil, errExtensionTimeout
 		}
@@ -104,13 +116,6 @@ type pageTab struct {
 	URL   string `json:"url"`
 }
 
-// isAllowed reports whether an approval already covers reads of tabID.
-func (s *Session) isAllowed(tabID int) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.allowAll || s.allowedTabs[tabID]
-}
-
 // doneChan closes when the session closes.
 func (s *Session) doneChan() <-chan struct{} {
 	s.mu.Lock()
@@ -121,76 +126,68 @@ func (s *Session) doneChan() <-chan struct{} {
 	return s.done
 }
 
-// turn returns the token channel for this terminal's approval prompt.
-func (s *Session) turn() chan struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.approveTurn == nil {
-		s.approveTurn = make(chan struct{}, 1)
-		s.approveTurn <- struct{}{}
-	}
-	return s.approveTurn
-}
-
-// grant records an answer unless the session closed while it was asked.
-func (s *Session) grant(tabID int, choice string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return false
-	}
-	switch choice {
-	case "tab":
-		if s.allowedTabs == nil {
-			s.allowedTabs = map[int]bool{}
+// paneTab returns the pane tab this session runs in.
+func (s *Session) paneTab() *paneTab {
+	if s.pane == nil {
+		// Sessions made outside Create (tests) still get a pane tab.
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.pane == nil {
+			s.pane = newPaneTab()
 		}
-		s.allowedTabs[tabID] = true
-	case "all":
-		s.allowAll = true
 	}
-	return true
+	return s.pane
 }
 
 // pageRequestTimeout bounds one whole request on the host, from the first
 // question to the extension to the reply. The client waits a little longer.
 func pageRequestTimeout() time.Duration {
-	return pageResolveTimeout + pageApproveTimeout + pageReadTimeout
+	return currentPageTimeouts().total()
+}
+
+// pageTimeouts are the waits one request uses, read once when it starts.
+type pageTimeouts struct {
+	resolve, approve, read time.Duration
+}
+
+func currentPageTimeouts() pageTimeouts {
+	return pageTimeouts{pageResolveTimeout, pageApproveTimeout, pageReadTimeout}
+}
+
+func (t pageTimeouts) total() time.Duration {
+	return t.resolve + t.approve + t.read
 }
 
 var errPageTimeout = errors.New("timed out waiting for Agent Pane")
 
-// callUntil makes one extension call and stops waiting for it when the
-// session closes or the request's deadline passes.
-func (s *Session) callUntil(deadline time.Time, call extensionCaller, method string, params any, timeout time.Duration) (json.RawMessage, error) {
-	left := time.Until(deadline)
-	if left <= 0 {
-		return nil, errPageTimeout
-	}
-	if timeout > left {
-		timeout = left
-	}
-	type result struct {
-		raw json.RawMessage
-		err error
-	}
-	done := make(chan result, 1)
+// requestContext ends at the request's deadline, when the session closes, or
+// when hangup closes (the client went away). Everything a read does waits
+// under it, so none of it outlives the request.
+func (s *Session) requestContext(total time.Duration, hangup <-chan struct{}) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), total)
+	done := s.doneChan()
 	go func() {
-		raw, err := call(method, params, timeout)
-		done <- result{raw, err}
+		select {
+		case <-done:
+			cancel()
+		case <-hangup:
+			cancel()
+		case <-ctx.Done():
+		}
 	}()
-	select {
-	case r := <-done:
-		return r.raw, r.err
-	case <-s.doneChan():
-		return nil, errors.New(errTerminalClosed)
-	}
+	return ctx, cancel
+}
+
+// stepContext bounds one call to the extension by its own timeout as well.
+func stepContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, timeout)
 }
 
 // pageRead answers one request from the session's page channel: find the tab,
-// ask the user unless an approval covers it, then read it. Approvals live in
-// the session and go away with it; closing the session ends a read at
-// whatever step it is on.
-func (s *Session) pageRead(call extensionCaller, req pageRequest) (string, error) {
+// ask the user unless the pane tab's grant covers it, then read it. Grants
+// belong to the pane tab and outlive this PTY session; closing the session
+// ends a read at whatever step it is on.
+func (s *Session) pageRead(ctx context.Context, t pageTimeouts, call extensionCaller, req pageRequest) (string, error) {
 	if !pageFormats[req.Format] {
 		return "", fmt.Errorf("unknown format %q", req.Format)
 	}
@@ -200,57 +197,74 @@ func (s *Session) pageRead(call extensionCaller, req pageRequest) (string, error
 	if call == nil {
 		return "", errors.New(errNotConnected)
 	}
-	callErr := func(err error) error {
-		if errors.Is(err, errExtensionTimeout) {
+	// Why the request stopped, put the way the client reads it.
+	stopped := func(err error) error {
+		switch {
+		case s.isClosed():
+			return errors.New(errTerminalClosed)
+		case ctx.Err() != nil:
+			return errPageTimeout
+		case errors.Is(err, errExtensionTimeout):
 			return errors.New(errNotConnected)
 		}
 		return err
 	}
-	deadline := time.Now().Add(pageRequestTimeout())
-	done := s.doneChan()
+	pane := s.paneTab()
 
-	raw, err := s.callUntil(deadline, call, "page.resolve", map[string]any{"tty": s.ID}, pageResolveTimeout)
+	step, cancel := stepContext(ctx, t.resolve)
+	raw, err := call(step, "page.resolve", map[string]any{"tty": s.ID})
+	cancel()
 	if err != nil {
-		return "", callErr(err)
+		return "", stopped(err)
 	}
 	var tab pageTab
 	if err := json.Unmarshal(raw, &tab); err != nil || tab.TabID == 0 {
 		return "", errors.New("the extension did not name a tab")
 	}
 
-	if !s.isAllowed(tab.TabID) {
-		// One prompt at a time per terminal; a read waiting here may be
-		// covered by the answer to the one before it. Waiting gives up
-		// with the session or the request's deadline.
-		turn := s.turn()
-		wait := time.NewTimer(time.Until(deadline))
+	// A read that needed a prompt reads only the document the prompt named.
+	expectURL := ""
+	if !pane.isAllowed(tab.TabID) {
+		// One prompt at a time per pane tab; a read waiting here may be
+		// covered by the answer to the one before it.
 		select {
-		case <-turn:
-			wait.Stop()
-		case <-done:
-			wait.Stop()
-			return "", errors.New(errTerminalClosed)
-		case <-wait.C:
+		case <-pane.turn:
+		case <-ctx.Done():
+			if s.isClosed() {
+				return "", errors.New(errTerminalClosed)
+			}
 			return "", errors.New(errApprovalTimeout)
 		}
-		err := s.approve(deadline, call, tab)
-		turn <- struct{}{}
+		prompted, err := s.approve(ctx, t, call, pane, tab)
+		pane.turn <- struct{}{}
 		if err != nil {
 			return "", err
+		}
+		if prompted {
+			expectURL = tab.URL
 		}
 	}
 
 	if s.isClosed() {
 		return "", errors.New(errTerminalClosed)
 	}
-	raw, err = s.callUntil(deadline, call, "page.read", map[string]any{
+	if !pane.isAllowed(tab.TabID) {
+		return "", errors.New(errDenied)
+	}
+	params := map[string]any{
 		"tty":    s.ID,
 		"tabId":  tab.TabID,
 		"format": req.Format,
 		"full":   req.Full,
-	}, pageReadTimeout)
+	}
+	if expectURL != "" {
+		params["expectUrl"] = expectURL
+	}
+	step, cancel = stepContext(ctx, t.read)
+	raw, err = call(step, "page.read", params)
+	cancel()
 	if err != nil {
-		return "", callErr(err)
+		return "", stopped(err)
 	}
 	var out struct {
 		Content string `json:"content"`
@@ -265,21 +279,24 @@ func (s *Session) pageRead(call extensionCaller, req pageRequest) (string, error
 }
 
 // approve asks the person about tab, unless an answer given while this read
-// waited for its turn already covers it. The caller holds the turn.
-func (s *Session) approve(deadline time.Time, call extensionCaller, tab pageTab) error {
-	if s.isAllowed(tab.TabID) {
-		return nil
+// waited for its turn already covers it. The caller holds the turn. It
+// reports whether the person was asked.
+func (s *Session) approve(ctx context.Context, t pageTimeouts, call extensionCaller, pane *paneTab, tab pageTab) (bool, error) {
+	if pane.isAllowed(tab.TabID) {
+		return false, nil
 	}
 	if s.isClosed() {
-		return errors.New(errTerminalClosed)
+		return false, errors.New(errTerminalClosed)
 	}
 	// Leave time for the read after the answer.
-	timeout := min(pageApproveTimeout, time.Until(deadline)-pageReadTimeout)
+	deadline, _ := ctx.Deadline()
+	timeout := min(t.approve, time.Until(deadline)-t.read)
 	if timeout <= 0 {
-		return errors.New(errApprovalTimeout)
+		return false, errors.New(errApprovalTimeout)
 	}
 	id := strings.ToLower(rand.Text())
-	raw, err := s.callUntil(deadline, call, "page.approve", map[string]any{
+	step, cancel := stepContext(ctx, timeout)
+	raw, err := call(step, "page.approve", map[string]any{
 		"id":        id,
 		"tty":       s.ID,
 		"agent":     s.Label,
@@ -287,37 +304,44 @@ func (s *Session) approve(deadline time.Time, call extensionCaller, tab pageTab)
 		"title":     tab.Title,
 		"url":       tab.URL,
 		"timeoutMs": timeout.Milliseconds(),
-	}, timeout)
+	})
+	cancel()
 	if err != nil {
 		// Nobody is waiting for this prompt any more: take it down so it
 		// cannot hold up the next one or take an answer meant for it.
-		cancelTimeout := pageResolveTimeout
-		go func() { _, _ = call("page.cancel", map[string]any{"tty": s.ID, "id": id}, cancelTimeout) }()
-		if errors.Is(err, errExtensionTimeout) || errors.Is(err, errPageTimeout) {
-			return errors.New(errApprovalTimeout)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), t.resolve)
+			defer cancel()
+			_, _ = call(ctx, "page.cancel", map[string]any{"tty": s.ID, "id": id})
+		}()
+		if s.isClosed() {
+			return true, errors.New(errTerminalClosed)
 		}
-		return err
+		if errors.Is(err, errExtensionTimeout) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return true, errors.New(errApprovalTimeout)
+		}
+		return true, err
 	}
 	var answer struct {
 		Choice string `json:"choice"`
 	}
 	_ = json.Unmarshal(raw, &answer)
 	if answer.Choice != "tab" && answer.Choice != "all" {
-		return errors.New(errDenied)
+		return true, errors.New(errDenied)
 	}
-	if !s.grant(tab.TabID, answer.Choice) {
-		return errors.New(errTerminalClosed)
+	if s.isClosed() || !pane.grant(tab.TabID, answer.Choice) {
+		return true, errors.New(errTerminalClosed)
 	}
-	return nil
+	return true, nil
 }
 
 func NewCmdPage() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "page",
 		Short: "Read the browser tab next to this terminal",
-		Long: `Read "the tab" for this terminal: the Chrome tab locked to it in the status
+		Long: `Read "the tab" for this pane tab: the Chrome tab locked to it in the status
 bar, or else the tab focused in its Chrome window. Works only inside an Agent
-Pane terminal. The first read of a tab asks for approval in the side panel.
+Pane pane tab. A read its approval does not cover asks in the side panel.
 Page content is untrusted text written by whoever made the page.`,
 		Args: cobra.NoArgs,
 		// No config is needed to ask the host for a page.

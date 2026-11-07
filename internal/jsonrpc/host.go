@@ -1,6 +1,7 @@
 package jsonrpc
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,6 +20,27 @@ type Host struct {
 	mu             sync.Mutex
 	handlers       map[string]RequestHandlerFunc
 	clientChannels map[string]chan JSONRPCResponse
+
+	in  io.Reader
+	out io.Writer
+	// queue feeds the one goroutine that writes to out, so no caller ever
+	// blocks on the native pipe or on another caller's write.
+	queue       chan *outbound
+	startWriter sync.Once
+}
+
+// Outbound message states. A message is written only if the writer claims it
+// before its sender withdraws it.
+const (
+	outQueued int32 = iota
+	outWriting
+	outWithdrawn
+)
+
+type outbound struct {
+	frame   []byte
+	state   atomic.Int32
+	written chan error
 }
 
 func (h *Host) HandleRequest(method string, handler RequestHandlerFunc) {
@@ -29,13 +52,16 @@ func NewHost(logger *slog.Logger) *Host {
 		logger:         logger,
 		handlers:       make(map[string]RequestHandlerFunc),
 		clientChannels: make(map[string]chan JSONRPCResponse),
+		in:             os.Stdin,
+		out:            os.Stdout,
+		queue:          make(chan *outbound, 64),
 	}
 }
 
 func (h *Host) Listen() error {
 	for {
 		lengthBytes := make([]byte, 4)
-		if _, err := io.ReadFull(os.Stdin, lengthBytes); err != nil {
+		if _, err := io.ReadFull(h.in, lengthBytes); err != nil {
 			if err == io.EOF {
 				h.logger.Info("EOF reached, stopping listener")
 				return nil
@@ -48,7 +74,7 @@ func (h *Host) Listen() error {
 		length := binary.LittleEndian.Uint32(lengthBytes)
 
 		msgBytes := make([]byte, length)
-		if _, err := io.ReadFull(os.Stdin, msgBytes); err != nil {
+		if _, err := io.ReadFull(h.in, msgBytes); err != nil {
 			h.logger.Error("failed to read message", "error", err)
 			continue
 		}
@@ -111,7 +137,7 @@ func (h *Host) Listen() error {
 				continue
 			}
 
-			writeMessage(JSONRPCResponse{
+			h.writeMessage(JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      request.ID,
 				Error:   errorBytes,
@@ -132,7 +158,7 @@ func (h *Host) Listen() error {
 					return
 				}
 
-				writeMessage(JSONRPCResponse{
+				h.writeMessage(JSONRPCResponse{
 					JSONRPC: "2.0",
 					ID:      request.ID,
 					Error:   errorBytes,
@@ -153,7 +179,7 @@ func (h *Host) Listen() error {
 				Error:   nil,
 			}
 
-			if err := writeMessage(response); err != nil {
+			if err := h.writeMessage(response); err != nil {
 				h.logger.Error("failed to write response", "error", err)
 				return
 			}
@@ -168,6 +194,16 @@ func (h *Host) SendRequest(request JSONRPCRequest) (JSONRPCResponse, error) {
 // SendRequestTimeout sends a request to the extension and waits up to timeout
 // for its answer. A late answer is dropped without blocking the listen loop.
 func (h *Host) SendRequestTimeout(request JSONRPCRequest, timeout time.Duration) (JSONRPCResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return h.SendRequestContext(ctx, request)
+}
+
+// SendRequestContext sends a request to the extension and waits for its
+// answer until ctx ends. The wait covers queueing and writing as well as the
+// answer: a request still queued behind a stalled native pipe when ctx ends
+// is withdrawn and never written.
+func (h *Host) SendRequestContext(ctx context.Context, request JSONRPCRequest) (JSONRPCResponse, error) {
 	h.mu.Lock()
 	responseChan := make(chan JSONRPCResponse, 1)
 	h.clientChannels[request.ID] = responseChan
@@ -178,36 +214,68 @@ func (h *Host) SendRequestTimeout(request JSONRPCRequest, timeout time.Duration)
 		h.mu.Unlock()
 	}
 
-	if err := writeMessage(request); err != nil {
+	o, err := h.enqueue(ctx, request)
+	if err != nil {
 		forget()
 		return JSONRPCResponse{}, fmt.Errorf("failed to write request: %w", err)
 	}
-
-	select {
-	case response := <-responseChan:
-		return response, nil
-	case <-time.After(timeout):
-		forget()
-		return JSONRPCResponse{}, fmt.Errorf("timeout waiting for response")
+	written := o.written
+	for {
+		select {
+		case response := <-responseChan:
+			return response, nil
+		case err := <-written:
+			if err != nil {
+				forget()
+				return JSONRPCResponse{}, fmt.Errorf("failed to write request: %w", err)
+			}
+			written = nil
+		case <-ctx.Done():
+			o.state.CompareAndSwap(outQueued, outWithdrawn)
+			forget()
+			return JSONRPCResponse{}, fmt.Errorf("no response: %w", ctx.Err())
+		}
 	}
 }
 
-var writeMu sync.Mutex
-
-func writeMessage(data interface{}) error {
+// enqueue hands one message to the writer, waiting for room in the queue
+// until ctx ends.
+func (h *Host) enqueue(ctx context.Context, data any) (*outbound, error) {
 	msg, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	frame := make([]byte, 4, 4+len(msg))
+	binary.LittleEndian.PutUint32(frame, uint32(len(msg)))
+	o := &outbound{frame: append(frame, msg...), written: make(chan error, 1)}
+	h.startWriter.Do(func() { go h.writeLoop() })
+	select {
+	case h.queue <- o:
+		return o, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// writeLoop writes queued messages in order, skipping withdrawn ones. If the
+// browser stops reading the pipe, this goroutine blocks, and senders give up
+// at their own deadlines.
+func (h *Host) writeLoop() {
+	for o := range h.queue {
+		if !o.state.CompareAndSwap(outQueued, outWriting) {
+			continue
+		}
+		_, err := h.out.Write(o.frame)
+		o.written <- err
+	}
+}
+
+// writeMessage writes a response to the extension and waits until it is
+// written.
+func (h *Host) writeMessage(data any) error {
+	o, err := h.enqueue(context.Background(), data)
 	if err != nil {
 		return err
 	}
-	length := uint32(len(msg))
-
-	writeMu.Lock()
-	defer writeMu.Unlock()
-
-	if err := binary.Write(os.Stdout, binary.LittleEndian, length); err != nil {
-		return err
-	}
-
-	_, err = os.Stdout.Write(msg)
-	return err
+	return <-o.written
 }

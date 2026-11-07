@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,7 +33,7 @@ type fakeExtension struct {
 	readErr error
 }
 
-func (f *fakeExtension) call(method string, params any, _ time.Duration) (json.RawMessage, error) {
+func (f *fakeExtension) call(_ context.Context, method string, params any) (json.RawMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p, _ := params.(map[string]any)
@@ -45,6 +46,9 @@ func (f *fakeExtension) call(method string, params any, _ time.Duration) (json.R
 		out = map[string]string{"choice": f.choice}
 	case "page.read":
 		f.reads = append(f.reads, p)
+		if want, ok := p["expectUrl"]; ok && want != f.tab.URL {
+			return nil, errors.New("the tab navigated after approval")
+		}
 		if f.readErr != nil {
 			return nil, f.readErr
 		}
@@ -83,6 +87,14 @@ func pageSession(t *testing.T, ext *fakeExtension) (*SessionManager, *Session, s
 	if ext != nil {
 		m.SetExtensionCaller(ext.call)
 	}
+	s, fd := sessionInPane(t, m, "tty1", "")
+	return m, s, fd
+}
+
+// sessionInPane adds a session like pageSession's to m, started for the pane
+// tab paneID the way tty.create starts one.
+func sessionInPane(t *testing.T, m *SessionManager, id, paneID string) (*Session, string) {
+	t.Helper()
 	host, child, err := newPageChannel()
 	if err != nil {
 		t.Fatal(err)
@@ -92,11 +104,14 @@ func pageSession(t *testing.T, ext *fakeExtension) (*SessionManager, *Session, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Session{ID: "tty1", Pty: tty, Buf: scrollback.New(64), manager: m, Label: "Claude Code", page: host}
+	s := &Session{ID: id, Pty: tty, Buf: scrollback.New(64), manager: m, Label: "Claude Code", page: host}
+	m.mu.Lock()
+	s.pane = m.paneLocked(paneID)
 	m.sessions[s.ID] = s
+	m.mu.Unlock()
 	t.Cleanup(func() { _ = m.Destroy(s.ID) })
 	go s.servePage(host, m.extensionCaller)
-	return m, s, fmt.Sprint(child.Fd())
+	return s, fmt.Sprint(child.Fd())
 }
 
 func read(fd, format string) (string, error) {
@@ -227,8 +242,10 @@ func TestPageClosedTerminalStopsWorking(t *testing.T) {
 	if _, err := read(fd, "text"); err == nil || err.Error() != errTerminalClosed {
 		t.Fatalf("descriptor outlived its terminal: %v", err)
 	}
-	if s.allowAll || s.allowedTabs != nil {
-		t.Fatal("approvals survived the terminal")
+	// The pane tab's grant is not the session's: it stays for a
+	// replacement session until the pane tab closes.
+	if !s.pane.isAllowed(7) {
+		t.Fatal("closing the PTY session revoked the pane tab's grant")
 	}
 }
 
@@ -288,7 +305,7 @@ func TestPageDescriptorIsInheritedOnlyInsideTheTerminal(t *testing.T) {
 	ext := &fakeExtension{tab: pageTab{TabID: 7}, choice: "all", content: "from the tab"}
 	m := NewSessionManager(0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	m.SetExtensionCaller(ext.call)
-	s, err := m.Create("Terminal", func(tty pty.Pty, _ string) (*pty.Cmd, error) {
+	s, err := m.Create("Terminal", "", func(tty pty.Pty, _ string) (*pty.Cmd, error) {
 		cmd := tty.Command(os.Args[0], "-test.run=^TestPageHelperProcess$")
 		cmd.Env = append(os.Environ(), "PAGE_HELPER=1")
 		return cmd, nil
@@ -341,7 +358,7 @@ func newBlockingExtension() *blockingExtension {
 	}
 }
 
-func (b *blockingExtension) call(method string, params any, timeout time.Duration) (json.RawMessage, error) {
+func (b *blockingExtension) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	switch method {
 	case "page.approve":
 		b.mu.Lock()
@@ -351,14 +368,14 @@ func (b *blockingExtension) call(method string, params any, timeout time.Duratio
 		select {
 		case choice := <-b.answer:
 			return json.Marshal(map[string]string{"choice": choice})
-		case <-time.After(timeout):
+		case <-ctx.Done():
 			return nil, errExtensionTimeout
 		}
 	case "page.cancel":
 		b.cancels <- params.(map[string]any)
 		return json.Marshal(map[string]any{})
 	}
-	return b.fakeExtension.call(method, params, timeout)
+	return b.fakeExtension.call(ctx, method, params)
 }
 
 func TestPageClosingDuringApprovalEndsTheRead(t *testing.T) {
@@ -388,7 +405,7 @@ func TestPageClosingDuringApprovalEndsTheRead(t *testing.T) {
 	// The late answer changes nothing.
 	ext.answer <- "all"
 	time.Sleep(50 * time.Millisecond)
-	if s.isAllowed(7) {
+	if s.pane.isAllowed(7) {
 		t.Fatal("a late answer granted access to a closed terminal")
 	}
 	if _, reads := ext.seen(); len(reads) != 0 {
@@ -400,9 +417,10 @@ func TestPageClosingDuringApprovalEndsTheRead(t *testing.T) {
 }
 
 func TestPageGrantAfterCloseIsRefused(t *testing.T) {
-	s := &Session{closed: true}
-	if s.grant(7, "all") || s.isAllowed(7) {
-		t.Fatal("grant on a closed session")
+	p := newPaneTab()
+	p.close()
+	if p.grant(7, "all") || p.isAllowed(7) {
+		t.Fatal("grant on a closed pane tab")
 	}
 }
 
@@ -489,5 +507,240 @@ func TestPageReplySocketDeadlinesWork(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("writing a reply nobody reads did not time out")
+	}
+}
+
+func TestPaneTabGrantSurvivesReplacementSessions(t *testing.T) {
+	// Terminal pane tab -> OpenCode -> approve -> OpenCode exits -> the panel
+	// starts Claude Code in the same pane tab, which keeps the grant.
+	ext := &fakeExtension{tab: pageTab{TabID: 7, URL: "https://a.example/"}, choice: "all", content: "x"}
+	m, first, fd := pageSession(t, ext)
+	if _, err := read(fd, "text"); err != nil {
+		t.Fatal(err)
+	}
+	paneID := first.pane.id
+	if err := m.Destroy(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	ext.set(func(f *fakeExtension) { f.choice = "deny" })
+	second, fd2 := sessionInPane(t, m, "tty2", paneID)
+	if second.pane != first.pane {
+		t.Fatal("the replacement session got a new pane tab")
+	}
+	if _, err := read(fd2, "text"); err != nil {
+		t.Fatalf("replacement session lost the pane tab's grant: %v", err)
+	}
+	if ext.promptCount() != 1 {
+		t.Fatalf("prompts %d", ext.promptCount())
+	}
+	// The old descriptor stays dead.
+	if _, err := read(fd, "text"); err == nil || err.Error() != errTerminalClosed {
+		t.Fatalf("old descriptor: %v", err)
+	}
+}
+
+func TestPaneTabsHaveIndependentGrants(t *testing.T) {
+	ext := &fakeExtension{tab: pageTab{TabID: 7}, choice: "all"}
+	m, first, fd1 := pageSession(t, ext)
+	if _, err := read(fd1, "text"); err != nil {
+		t.Fatal(err)
+	}
+	ext.set(func(f *fakeExtension) { f.choice = "deny" })
+	// A new pane tab running the same coding agent asks for itself.
+	_, fd2 := sessionInPane(t, m, "tty2", "")
+	if _, err := read(fd2, "text"); err == nil || err.Error() != errDenied {
+		t.Fatalf("new pane tab: %v", err)
+	}
+	// Naming a pane tab whose session is alive does not join it, and an
+	// id the host never made gets nothing.
+	for i, id := range []string{first.pane.id, "pane-made-up"} {
+		s, fd := sessionInPane(t, m, fmt.Sprintf("tty%d", 3+i), id)
+		if s.pane == first.pane {
+			t.Fatalf("%s: joined a live pane tab", id)
+		}
+		if _, err := read(fd, "text"); err == nil || err.Error() != errDenied {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+	if _, err := read(fd1, "text"); err != nil {
+		t.Fatalf("first pane tab lost its grant: %v", err)
+	}
+}
+
+func TestClosingPaneTabRevokesItsGrant(t *testing.T) {
+	ext := &fakeExtension{tab: pageTab{TabID: 7}, choice: "all"}
+	m, first, fd := pageSession(t, ext)
+	if _, err := read(fd, "text"); err != nil {
+		t.Fatal(err)
+	}
+	paneID := first.pane.id
+	m.ClosePane(paneID)
+	_ = m.Destroy(first.ID)
+	if first.pane.isAllowed(7) {
+		t.Fatal("closed pane tab kept its grant")
+	}
+	ext.set(func(f *fakeExtension) { f.choice = "deny" })
+	s, fd2 := sessionInPane(t, m, "tty2", paneID)
+	if s.pane == first.pane {
+		t.Fatal("a closed pane tab was reused")
+	}
+	if _, err := read(fd2, "text"); err == nil || err.Error() != errDenied {
+		t.Fatalf("after close: %v", err)
+	}
+}
+
+func TestClosingPaneTabDuringApprovalRefusesTheLateAnswer(t *testing.T) {
+	ext := newBlockingExtension()
+	m, s, fd := pageSession(t, nil)
+	m.SetExtensionCaller(ext.call)
+	errs := make(chan error, 1)
+	go func() { _, err := read(fd, "text"); errs <- err }()
+	<-ext.asked
+	m.ClosePane(s.pane.id)
+	ext.answer <- "all"
+	if err := <-errs; err == nil {
+		t.Fatal("read succeeded after its pane tab closed")
+	}
+	if s.pane.isAllowed(7) {
+		t.Fatal("a late answer granted a closed pane tab")
+	}
+	if _, reads := ext.seen(); len(reads) != 0 {
+		t.Fatalf("read after close: %v", reads)
+	}
+}
+
+func TestPageReadNamesTheApprovedDocument(t *testing.T) {
+	ext := &fakeExtension{tab: pageTab{TabID: 7, URL: "https://a.example/"}, choice: "tab", content: "x"}
+	_, _, fd := pageSession(t, ext)
+	if _, err := read(fd, "text"); err != nil {
+		t.Fatal(err)
+	}
+	// Covered by the grant: later navigation is the grant's to cover.
+	ext.set(func(f *fakeExtension) { f.tab.URL = "https://b.example/" })
+	if _, err := read(fd, "text"); err != nil {
+		t.Fatal(err)
+	}
+	_, reads := ext.seen()
+	if reads[0]["expectUrl"] != "https://a.example/" {
+		t.Fatalf("prompted read did not name the approved URL: %v", reads[0])
+	}
+	if _, ok := reads[1]["expectUrl"]; ok {
+		t.Fatalf("covered read was pinned to a URL: %v", reads[1])
+	}
+}
+
+func TestPageReadsInFlightAreBounded(t *testing.T) {
+	defer func(old int) { maxSessionPageReads = old }(maxSessionPageReads)
+	maxSessionPageReads = 2
+	ext := newBlockingExtension()
+	m, s, fd := pageSession(t, nil)
+	m.SetExtensionCaller(ext.call)
+	errs := make(chan error, 4)
+	for range 2 {
+		go func() { _, err := read(fd, "text"); errs <- err }()
+	}
+	<-ext.asked
+	waitFor(t, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return len(s.replies) == 2 })
+	// Over the limit: refused at once, its descriptor closed.
+	if _, err := read(fd, "text"); err == nil || err.Error() != errTooManyReads {
+		t.Fatalf("over the limit: %v", err)
+	}
+	ext.answer <- "tab"
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return len(s.replies) == 0 })
+	if n := m.pageReads.Load(); n != 0 {
+		t.Fatalf("host still counts %d reads", n)
+	}
+	if _, err := read(fd, "text"); err != nil {
+		t.Fatalf("after the burst: %v", err)
+	}
+}
+
+func TestPageReadEndsWhenTheClientGoesAway(t *testing.T) {
+	ext := newBlockingExtension()
+	m, s, fd := pageSession(t, nil)
+	m.SetExtensionCaller(ext.call)
+	// A client that sends a request and exits, as when the person presses
+	// Ctrl-C while the prompt is up.
+	child := exec.Command(os.Args[0], "-test.run=^TestPageHelperProcess$")
+	child.Env = append(os.Environ(), "PAGE_HELPER=1", pageFDEnv+"=3")
+	dup, err := syscall.Dup(mustAtoi(t, fd))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := os.NewFile(uintptr(dup), "page")
+	defer f.Close()
+	child.ExtraFiles = []*os.File{f}
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	<-ext.asked
+	_ = child.Process.Kill()
+	_ = child.Wait()
+	select {
+	case <-ext.cancels:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the prompt outlived the client that asked")
+	}
+	waitFor(t, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return len(s.replies) == 0 })
+}
+
+func mustAtoi(t *testing.T, s string) int {
+	t.Helper()
+	var n int
+	if _, err := fmt.Sscan(s, &n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not reached")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestCreateJoinsTheDeadSessionsPaneTab(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS terminals start through the spawn agent")
+	}
+	m := NewSessionManager(0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	start := func(pane, prog string) *Session {
+		s, err := m.Create("Terminal", pane, func(tty pty.Pty, _ string) (*pty.Cmd, error) {
+			return tty.Command("/bin/sh", "-c", prog), nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = m.Destroy(s.ID) })
+		return s
+	}
+	first := start("", "exit 0")
+	if !first.pane.grant(7, "all") {
+		t.Fatal("grant refused")
+	}
+	waitFor(t, func() bool { _, ok := m.Get(first.ID); return !ok })
+
+	// tty.create and tty.attach name the pane tab to the extension.
+	second := start(first.pane.id, "sleep 30")
+	if second.pane != first.pane || !second.pane.isAllowed(7) {
+		t.Fatal("the replacement session did not keep the pane tab's grant")
+	}
+	ep, err := m.endpoint(second.ID)
+	if err != nil || ep["pane"] != first.pane.id {
+		t.Fatalf("endpoint %v %v", ep, err)
+	}
+	// While second is alive, another session cannot join its pane tab.
+	if third := start(first.pane.id, "sleep 30"); third.pane == first.pane {
+		t.Fatal("a session joined a pane tab that has a live session")
 	}
 }
