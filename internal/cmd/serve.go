@@ -239,7 +239,10 @@ func (m *SessionManager) wsURL(id, token string) string {
 	return fmt.Sprintf("ws://127.0.0.1:%d/tty/%s?token=%s", m.port, id, token)
 }
 
-func (m *SessionManager) Create(label, paneID string, cmdFactory func(tty pty.Pty, id string) (*pty.Cmd, error)) (*Session, error) {
+// Create starts a PTY session in the pane tab paneID (a new pane tab when it
+// is empty or cannot be joined). agent is the agent-definition id the launch
+// chose, or "" for a shell.
+func (m *SessionManager) Create(label, paneID, agent string, cmdFactory func(tty pty.Pty, id string) (*pty.Cmd, error)) (*Session, error) {
 	tty, err := pty.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pty: %w", err)
@@ -257,20 +260,6 @@ func (m *SessionManager) Create(label, paneID string, cmdFactory func(tty pty.Pt
 	page, child, err := newPageChannel()
 	if err != nil {
 		m.logger.Warn("no page channel for terminal", "error", err)
-	} else {
-		cmd.Env = mergePtyEnv(cmd.Env, map[string]string{pageFDEnv: fmt.Sprint(pageFD)})
-	}
-
-	wait, err := startPty(tty, cmd, child)
-	if child != nil {
-		_ = child.Close()
-	}
-	if err != nil {
-		if page != nil {
-			_ = page.Close()
-		}
-		tty.Close()
-		return nil, fmt.Errorf("failed to start pty: %w", err)
 	}
 
 	session := &Session{
@@ -281,10 +270,22 @@ func (m *SessionManager) Create(label, paneID string, cmdFactory func(tty pty.Pt
 		Label:   label,
 		page:    page,
 	}
+	// Register the session before it starts, so its pane tab is held and
+	// its environment can name it.
 	m.mu.Lock()
 	session.pane = m.paneLocked(paneID)
 	m.sessions[id] = session
 	m.mu.Unlock()
+	cmd.Env = withSessionEnv(cmd.Env, sessionEnv(session, agent, page != nil))
+
+	wait, err := startPty(tty, cmd, child)
+	if child != nil {
+		_ = child.Close()
+	}
+	if err != nil {
+		_ = m.Destroy(id)
+		return nil, fmt.Errorf("failed to start pty: %w", err)
+	}
 
 	go session.readLoop(m.logger)
 	if page != nil {
@@ -571,7 +572,7 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			mode, app = "", ""
 		}
 
-		session, err := sessions.Create(label, params.Pane, func(tty pty.Pty, _ string) (*pty.Cmd, error) {
+		session, err := sessions.Create(label, params.Pane, app, func(tty pty.Pty, _ string) (*pty.Cmd, error) {
 			if err := tty.Resize(params.Cols, params.Rows); err != nil {
 				return nil, fmt.Errorf("failed to set size for tty: %w", err)
 			}
@@ -850,9 +851,7 @@ func isSafeAppID(app string) bool {
 func buildPtyCommand(tty pty.Pty, mode, app string, args []string, cwd string) (*pty.Cmd, error) {
 	var cmd *pty.Cmd
 	overlay := map[string]string{
-		"TERM":         "xterm-256color",
-		"TERM_PROGRAM": "agent-pane",
-		"AGENT_PANE":   "1",
+		"TERM": "xterm-256color",
 	}
 	if mode == "app" && app != "" {
 		agent, ok := agentByID(app)
@@ -863,7 +862,6 @@ func buildPtyCommand(tty pty.Pty, mode, app string, args []string, cwd string) (
 		argv := append([]string{agent.Bin}, agent.Args...)
 		argv = append(argv, args...)
 		cmd = tty.Command(shell, agentExecArgs(shell, argv)...)
-		overlay["AGENT_PANE_AGENT"] = agent.ID
 	} else {
 		shell := k.String("command")
 		if shell == "" {

@@ -117,6 +117,35 @@ The side panel prompts when a read is not covered by the pane tab's approval, wi
 
 **Send tab** beside the status bar pastes Chrome-tab content into the selected pane tab. It defaults to Markdown, with other formats in its menu. The pasted text can be edited before pressing Enter. It reports that nothing was sent if the pane tab changed, or was still reconnecting, while the Chrome tab was read.
 
+### Environment
+
+Every PTY session Agent Pane starts (plain shells, agent definitions and configured commands) gets these variables, and ordinary child processes inherit them. They are context, not credentials: a page read is decided by the host from the connection it arrives on, never from these values.
+
+| Variable | Value |
+| --- | --- |
+| `AGENT_PANE` | `1`. |
+| `TERM_PROGRAM` | `agent-pane`. Any inherited `TERM_PROGRAM_VERSION` is removed. |
+| `AGENT_PANE_TAB_ID` | Opaque id of the pane tab (`tab-` and 32 hex digits). It stays the same when the side panel replaces a dead PTY session in that pane tab, and across a host restart. A new pane tab gets a new one. It is derived from, and does not reveal, the pane-tab id the host gives the extension. |
+| `AGENT_PANE_SESSION_ID` | Opaque id of the PTY session (`session-` and 32 hex digits). Reattaching to a running session keeps it; a replacement session gets a new one. |
+| `AGENT_PANE_AGENT` | The agent-definition id the launch chose, such as `claude`. Unset for Terminal and for a replacement started as a shell. It describes the launch only, not whatever runs in the terminal later. |
+| `AGENT_PANE_FD` | The descriptor number of the session's page connection (`3`). Unset when the host could not make one. A process that did not inherit the descriptor gets an error from `agent-pane page`, whatever this says. |
+| `AGENT_PANE_SKILL_PATH` | The installed [skill](#agent-skill), when `install.sh` has put it in place. |
+
+These names are reserved. Values inherited by the host (for example a host started from inside a pane tab) and entries in the Settings env are replaced, and a variable with no value for this session is removed. Other variables, `PATH` included, keep their inherited or configured values. A program sees the values from when its PTY session started; a later replacement session does not change them for programs still running elsewhere.
+
+### Agent skill
+
+`skills/agent-pane/SKILL.md` teaches coding agents to detect Agent Pane and read the Chrome tab with `agent-pane page`. `install.sh` copies it to `~/.local/share/agent-pane/skills/agent-pane/` and installs a copy in each user skills folder the supported agents read:
+
+| Folder | Read by |
+| --- | --- |
+| `~/.claude/skills/agent-pane/` | Claude Code; OpenCode, Goose and Cursor also read it |
+| `~/.agents/skills/agent-pane/` | Codex, Pi, OpenCode, Goose and Cursor |
+
+Each copy holds an `.agent-pane-managed` marker. Running `install.sh` again replaces marked copies with the current skill. A folder of that name without the marker, or a symlink, belongs to you and is left alone with a warning. To remove the skill, delete the `agent-pane` folders; the installer has no uninstall step. The skill reaches an agent started from Terminal too, because these are user-level folders. `~/AGENTS.md` and `~/CLAUDE.md`, when they hold the Agent Pane block, also point to it. An agent configured to read skills from elsewhere (for example `CLAUDE_CONFIG_DIR` or `PI_CODING_AGENT_DIR`) does not see these copies; point it at `$AGENT_PANE_SKILL_PATH`.
+
+The page connection is an inherited descriptor, so a command tool that does not pass it on cannot read pages. Claude Code's Bash tool (checked with 2.1.287 on Linux) starts commands with only stdin, stdout and stderr: the variables arrive, and `agent-pane page` reports `AGENT_PANE_FD is not an Agent Pane connection`. Commands run directly in the pane tab's shell work. The skill tells agents to report the error and suggest **Send tab**.
+
 Markdown output rewrites link and image targets as absolute URLs, resolved against the page's `<base href>` when it has one.
 
 Chrome restricts extension access to protected pages, including `chrome://` pages, the Chrome Web Store, other extensions' pages, and its built-in PDF viewer. Reads of these pages report an error.
