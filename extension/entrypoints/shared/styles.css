@@ -580,6 +580,35 @@ body.at-options {
     width: auto;
 }
 
+.at-field__help {
+    margin: 0 0 8px;
+    font-size: 12px;
+    opacity: 0.75;
+}
+
+.at-blocked__add {
+    display: flex;
+    gap: 8px;
+}
+
+.at-blocked {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.at-blocked li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+}
+
 .at-agent__missing {
     opacity: 0.65;
     font-size: 12px;

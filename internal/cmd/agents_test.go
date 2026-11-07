@@ -217,3 +217,31 @@ func TestInitializeRejectsBadParams(t *testing.T) {
 		t.Fatal("expected error for malformed params")
 	}
 }
+
+// The Blocked domains list is one config.json key: Options saves it on its
+// own and the form's Save, which leaves it out, keeps it.
+func TestBlockedDomainsPersistAcrossConfigSaves(t *testing.T) {
+	old := configDir
+	configDir = t.TempDir()
+	t.Cleanup(func() { configDir = old })
+
+	if err := writeConfigMap(map[string]any{"blockedDomains": []any{"bank.example"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeConfigMap(map[string]any{"theme": "Tomorrow Night", "cwd": nil}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := readConfigMap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(cfg["blockedDomains"]); got != "[bank.example]" {
+		t.Fatalf("blockedDomains after a form save: %s", got)
+	}
+	if err := writeConfigMap(map[string]any{"blockedDomains": []any{}}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, _ = readConfigMap(); fmt.Sprint(cfg["blockedDomains"]) != "[]" {
+		t.Fatalf("removing the last entry: %v", cfg["blockedDomains"])
+	}
+}
