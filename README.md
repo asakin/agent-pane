@@ -14,7 +14,7 @@
 Claude Code, Codex and Pi in a real terminal, in Chrome's side panel.
 </p>
 
-For people who live in the TUI: each tab is a real local shell, not a chat box. An agent in that shell uses whatever browser tools it already has.
+For people who live in the TUI: each pane tab is a real local terminal. A coding agent in that terminal uses whatever browser tools it already has.
 
 Agent Pane started from [Agent Terminal](https://github.com/rishiskhare/agent-terminal) and is now developed independently with a different focus. See [Origins and license](#origins-and-license) for attribution.
 
@@ -43,7 +43,7 @@ The side panel is a terminal next to the browser, in the same window.
 
 3. Open the side panel from the Agent Pane extension icon
 
-The script downloads the binary for this machine, puts `~/.local/bin` on `PATH`, and writes the native-messaging manifest Chrome needs. On macOS it also starts a LaunchAgent that launches the shell, so programs the agent runs are not children of Chrome. If that manifest is not written, the script exits with an error. Running it again writes the same files again.
+The script downloads the binary for this machine, puts `~/.local/bin` on `PATH`, and writes the native-messaging manifest Chrome needs. On macOS it also starts a LaunchAgent that launches the shell independently of Chrome. If that manifest is not written, the script exits with an error. Running it again writes the same files again.
 
 ## Updating
 
@@ -57,13 +57,27 @@ When the two are out of step, the side panel shows an update screen with that co
 
 ## How it works
 
-It is a terminal in Chrome’s side panel: your shell, local files, `git`, language toolchains, existing CLI/agent tools, and whatever else is on your `PATH`. The extension does not attach to a browser and does not choose one. Browser automation is whatever CLI the agent runs.
+It is a terminal in Chrome’s side panel: your shell, local files, `git`, language toolchains, existing CLI/agent tools, and whatever else is on your `PATH`.
+
+## Terminology
+
+| Term | Meaning |
+| --- | --- |
+| **Agent Pane** | The Chrome extension and its local host. |
+| **Side panel** | The Chrome UI surface containing Agent Pane. |
+| **Pane tab** | A terminal tab inside Agent Pane, regardless of which programs run in it. |
+| **Chrome tab** | A browser tab containing a web page. |
+| **Coding agent** | A program such as Claude Code, OpenCode, Codex, or Pi running in a pane tab. |
+| **Agent definition** | A launcher entry in `agents/<id>/` describing a command, arguments, and icon. |
+| **Shell** | The program that runs terminal commands, including coding agents. |
+| **PTY session** | The host's pseudo-terminal and its associated process lifecycle. |
+| **Factory run** | A Tessl automation execution working on this repository. |
 
 ## Usage
 
-- **Tabs:** up to 8 terminals per Chrome window
+- **Pane tabs:** multiple terminals per Chrome window
 - **One-Click Agent Launcher:** the side panel opens a shell. `+` runs the last agent you chose. The menu lists enabled agents that are on your `PATH`, then Terminal. Opening one moves it to the top unless Settings is set to keep the menu alphabetical
-- **Settings:** shell, theme, font size, env, which agents are on, and the folder new agent tabs start in. The shell tab still starts in your home directory. Definitions live in `agents/` (see `agents/README.md`)
+- **Settings:** shell, theme, font size, env, which agent definitions are enabled, and the folder pane tabs opened from an agent definition start in. Pane tabs opened with Terminal still start in your home directory. Definitions live in `agents/` (see `agents/README.md`)
 
 Terminal editing follows VS Code/Cursor conventions. Shift+Enter inserts a newline in
 supporting agent CLIs; on macOS, Cmd+Enter does too. Cmd+Backspace deletes to the start
@@ -76,63 +90,48 @@ On macOS, Cmd+A selects the terminal buffer, Cmd+K clears the visible terminal h
 and Escape clears a selection. Page Up/Down, Cmd+Home/End and Cmd+Option+Page Up/Down
 scroll by page, to the top/bottom and by line respectively. Scrolling shortcuts apply
 only to the normal buffer, leaving alternate-screen applications in control of page
-navigation. Copy/paste uses the browser's normal shortcuts. Browser-reserved shortcuts
-and Cursor's editor, pane, search and shell-integration commands are not remapped.
+navigation. Copy/paste uses the browser's normal shortcuts.
 
 ## Features
 
-- **Session survival:** hide the side panel and open it again; the same tabs are still running
+- **Pane tab survival:** hide the side panel and open it again; the same terminals are still running
 
 ## Security
 
-**What the extension can access, and why.** On Chrome it asks for `scripting` and access to all sites (`<all_urls>`). They are for page reading, which is planned and not in the extension yet: when it lands, a terminal agent can be given the focused tab, a selection, or a page you are logged in to. Today the extension does not read pages. Both permissions are required at install, so Chrome asks once. The extension has no content scripts and no page listeners: page code will run only when you act in the panel, in Chrome's isolated world, and return what it read once. It also uses `nativeMessaging` to talk to the local `agent-pane` host, and `tabs`, `sidePanel` and `storage` for the panel itself.
+The following describes the current implementation and its limitations.
+
+**What the extension can access.** On Chrome it requests `scripting` and access to all sites (`<all_urls>`), although this version does not yet read page content. It uses `nativeMessaging` to talk to the local `agent-pane` host, and `tabs`, `sidePanel` and `storage` for the side panel.
 
 **How the parts talk.**
 
 ```mermaid
 flowchart LR
-  user((You))
-  page["Web page"]
   ext["Extension<br/>(background + side panel)"]
   host["agent-pane host<br/>(native messaging + PTY server)"]
   spawn["Spawn agent (macOS)"]
   term["Terminal process<br/>(shell, coding agent)"]
 
-  user -- "clicks or approves in the panel" --> ext
-  ext -. "scripting.executeScript only,<br/>started by you (planned)" .-> page
   ext <-- "Chrome native-messaging pipe (stdio)" --> host
   ext <-- "loopback WebSocket:<br/>origin check + one-time attach token" --> host
   host -- "spawn.sock: same user,<br/>agent-pane binary only" --> spawn
   spawn --> term
-  term -. "page-content socket (planned):<br/>peer-checked by ancestry, approved by you" .-> host
 ```
 
-| Channel | Who can reach it | Who cannot |
-| --- | --- | --- |
-| Web page and extension (planned) | The extension, through `executeScript` after you act in the panel | Pages: there are no content scripts, no `externally_connectable`, and the background ignores messages that do not come from the extension's own pages |
-| Extension and host | Chrome, which starts the host and owns its stdin/stdout | Pages and other processes: there is no listening port for this channel, and on Linux the host is not dumpable, so other processes cannot open its stdin/stdout through `/proc` |
-| Side panel and host | The extension's own origin, holding an attach token it got over native messaging | Pages: the browser sets their `Origin` and the host refuses it. Local processes: they can send any `Origin` they like, so only the attach token stops them. A terminal id alone grants nothing |
-| Host and spawn agent | The `agent-pane` binary running as you | Other users, and other programs that dial `spawn.sock` directly. This is not a boundary against code running as you: such code can start `agent-pane serve` itself and get a shell from the spawn agent that way |
-| Terminal process and host (planned) | A process descended from a live Agent Pane terminal, for a read you started or approved | Other processes running as you, and other users |
+**Connection checks.**
 
-**What it protects against.**
+The background accepts messages from the extension's own pages. Terminal WebSocket connections use the extension's origin and a one-time attach token obtained over native messaging. A token expires when used, when replaced by a newer token for that terminal, or when the native-messaging connection closes.
 
-- **Web pages** cannot run commands, attach to a terminal, read terminal output, or reach the host. The background only answers the extension's own pages. The terminal WebSocket on `127.0.0.1` accepts only the extension's origin, and each connection needs a one-time attach token handed out over native messaging. A token works once, and stops working when a newer one is issued for the same terminal or when the native-messaging connection closes.
-- **Other processes running as you** cannot attach to your existing terminals: a terminal id alone grants nothing, and only Chrome holds the attach tokens. On macOS they also cannot dial the spawn helper's socket directly: it checks the connecting process's user and executable (`proc_pidpath`) and accepts only `agent-pane` itself. That check does not stop them from running `agent-pane serve` themselves, which starts new terminals through the spawn agent with its macOS privacy grants; it only closes the shortcut.
+On macOS, the spawn helper checks the connecting process's user and executable (`proc_pidpath`) and accepts the `agent-pane` binary running as that user.
 
-**What it does not protect against.**
+**Local machine access.**
 
 - A process running as your user that reads Chrome's profile, or debugs other processes (Chrome, the host, a shell), can see what they see.
 - A process running as your user that runs `agent-pane` itself gets what `agent-pane` can do, including a shell from the macOS spawn agent.
 - A process running as your user that edits `~/.local/bin/agent-pane`, the host wrapper in `~/.local/share/agent-pane`, the native-messaging manifests, or the LaunchAgent plist (`~/Library/LaunchAgents/com.agentpane.spawn.plist`) controls what Chrome and launchd start.
 
-Agent Pane cannot stop these; it only adds no new way in.
-
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution process and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations. Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
-
-PRs welcome. For large changes, open an issue first. The extension runs page code only through `scripting.executeScript`, started by an extension action, and never adds `content_scripts` or `externally_connectable`. Page content goes to the host only over the native-messaging pipe. The full rules are in [AGENTS.md](AGENTS.md#security).
 
 ### Run a checkout
 

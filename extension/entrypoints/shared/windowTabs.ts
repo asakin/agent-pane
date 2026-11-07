@@ -8,8 +8,6 @@ import type {
 } from "./rpc";
 import { type TabLock, closeMissingLocks, isTabLock } from "./tabLock";
 
-export const MAX_TABS = 8;
-
 export type WindowTab = TabLock & {
     id: string;
     app: string;

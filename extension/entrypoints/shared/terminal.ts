@@ -54,7 +54,6 @@ async function loadTerminalFont(config: Record<string, unknown>) {
     ]);
 }
 import {
-    MAX_TABS,
     type WindowTab,
     type WindowTabState,
     attachTTY,
@@ -397,7 +396,7 @@ async function main() {
     let launcher!: LauncherController;
     launcher = mountAgentLauncher(launcherHost, {
         onLaunch: (appId, cwd) => void newTab(appId, cwd),
-        canLaunch: () => !!state && state.tabs.length < MAX_TABS,
+        canLaunch: () => !!state,
     });
 
     const fontSizeHost = document.createElement("div");
@@ -556,7 +555,7 @@ async function main() {
             onSelect: (id) => void switchTo(id),
             onClose: (id) => void closeTab(id),
         });
-        launcher.setLaunchEnabled(state!.tabs.length < MAX_TABS);
+        launcher.setLaunchEnabled(true);
         void refreshStatus();
     };
 
@@ -713,7 +712,7 @@ async function main() {
     }
 
     async function newTab(appId?: string, cwd?: string) {
-        if (!state || state.tabs.length >= MAX_TABS) {
+        if (!state) {
             return;
         }
         const size = fitAddon.proposeDimensions();
