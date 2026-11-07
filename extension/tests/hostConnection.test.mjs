@@ -80,6 +80,7 @@ function setup(installed, opts) {
         browserId: () => env.browserId(),
         extensionVersion: "1.0.0",
         onHostRequest: opts?.onHostRequest,
+        now: opts?.now,
         timers,
     });
     return { host, timers, env };
@@ -236,4 +237,27 @@ test("requests from the host are answered on the same port, errors included", as
     assert.equal(replies[1].id, "host-2");
     assert.equal(replies[1].error.message, "Chrome does not let extensions read chrome:// pages");
     assert.equal(replies.length, 2);
+});
+
+test("a host request that expired before it arrived is refused, not acted on", async () => {
+    const asked = [];
+    const t = setup(CURRENT, {
+        now: () => 10_000,
+        onHostRequest: async (method, params) => {
+            asked.push(method);
+            return { choice: "all" };
+        },
+    });
+    await run(t, t.host.handle(init("a")));
+    const port = t.env.ports[0];
+    const before = port.sent.length;
+    // Written whole after the host gave up on it, as a stalled pipe can.
+    port.onMessage.emit({ jsonrpc: "2.0", id: "host-1", method: "page.approve", params: { tty: "x", expiresAt: 9_999 } });
+    port.onMessage.emit({ jsonrpc: "2.0", id: "host-2", method: "page.approve", params: { tty: "x", expiresAt: 10_001 } });
+    await flush();
+    assert.deepEqual(asked, ["page.approve"]);
+    const replies = port.sent.slice(before);
+    assert.equal(replies[0].id, "host-1");
+    assert.match(replies[0].error.message, /^expired/);
+    assert.deepEqual(replies[1], { jsonrpc: "2.0", id: "host-2", result: { choice: "all" } });
 });

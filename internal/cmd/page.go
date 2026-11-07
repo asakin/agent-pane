@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -84,6 +85,16 @@ var errExtensionTimeout = errors.New("timeout")
 
 func nativeCaller(host *jsonrpc.Host) extensionCaller {
 	return func(ctx context.Context, method string, params any) (json.RawMessage, error) {
+		// A request written after its sender gave up (a write already under
+		// way when the pipe stalled is finished) names when that was, so the
+		// extension does not act on it.
+		if p, ok := params.(map[string]any); ok {
+			if deadline, ok := ctx.Deadline(); ok {
+				p = maps.Clone(p)
+				p["expiresAt"] = deadline.UnixMilli()
+				params = p
+			}
+		}
 		raw, err := json.Marshal(params)
 		if err != nil {
 			return nil, err

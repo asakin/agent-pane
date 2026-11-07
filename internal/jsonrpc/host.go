@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -27,19 +27,33 @@ type Host struct {
 	// blocks on the native pipe or on another caller's write.
 	queue       chan *outbound
 	startWriter sync.Once
+	// writeStarted, if set, is called as the writer starts on a message.
+	writeStarted func()
 }
 
-// Outbound message states. A message is written only if the writer claims it
-// before its sender withdraws it.
-const (
-	outQueued int32 = iota
-	outWriting
-	outWithdrawn
-)
+// maxOutgoingMessage is the largest message Chrome accepts from a native
+// messaging host.
+const maxOutgoingMessage = 1 << 20
+
+var errMessageTooLarge = errors.New("message exceeds the native messaging limit")
+
+// errWithdrawn reports a message whose sender gave up before any of it was
+// written.
+var errWithdrawn = errors.New("withdrawn before it was written")
+
+// deadlineWriter is an output whose blocked writes can be interrupted, such
+// as a non-blocking pipe.
+type deadlineWriter interface {
+	io.Writer
+	SetWriteDeadline(time.Time) error
+}
 
 type outbound struct {
-	frame   []byte
-	state   atomic.Int32
+	frame []byte
+	// ctx ends when the sender gives up. A message is skipped if that
+	// happens before its first byte is written; after that it is finished,
+	// so the framing stays intact.
+	ctx     context.Context
 	written chan error
 }
 
@@ -56,6 +70,19 @@ func NewHost(logger *slog.Logger) *Host {
 		out:            os.Stdout,
 		queue:          make(chan *outbound, 64),
 	}
+}
+
+// SetOutput sets where the host writes messages. Call it before Listen.
+func (h *Host) SetOutput(w io.Writer) {
+	h.out = w
+}
+
+// UseInterruptibleStdout switches the host's output to a non-blocking stdout,
+// so a write stalled on a full pipe can be withdrawn when its sender gives up.
+// The mode belongs to the open pipe, so only a process where nothing else
+// writes to stdout should call it, before Listen.
+func (h *Host) UseInterruptibleStdout() {
+	h.SetOutput(nativeOutput())
 }
 
 func (h *Host) Listen() error {
@@ -201,8 +228,11 @@ func (h *Host) SendRequestTimeout(request JSONRPCRequest, timeout time.Duration)
 
 // SendRequestContext sends a request to the extension and waits for its
 // answer until ctx ends. The wait covers queueing and writing as well as the
-// answer: a request still queued behind a stalled native pipe when ctx ends
-// is withdrawn and never written.
+// answer: a request still queued behind a stalled native pipe when ctx ends,
+// or whose write has started but not yet sent a byte, is withdrawn and never
+// written. One already partly written is finished so the next frame stays
+// readable; callers that need the extension to ignore it name its expiry in
+// the request.
 func (h *Host) SendRequestContext(ctx context.Context, request JSONRPCRequest) (JSONRPCResponse, error) {
 	h.mu.Lock()
 	responseChan := make(chan JSONRPCResponse, 1)
@@ -231,7 +261,6 @@ func (h *Host) SendRequestContext(ctx context.Context, request JSONRPCRequest) (
 			}
 			written = nil
 		case <-ctx.Done():
-			o.state.CompareAndSwap(outQueued, outWithdrawn)
 			forget()
 			return JSONRPCResponse{}, fmt.Errorf("no response: %w", ctx.Err())
 		}
@@ -245,9 +274,12 @@ func (h *Host) enqueue(ctx context.Context, data any) (*outbound, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(msg) > maxOutgoingMessage {
+		return nil, errMessageTooLarge
+	}
 	frame := make([]byte, 4, 4+len(msg))
 	binary.LittleEndian.PutUint32(frame, uint32(len(msg)))
-	o := &outbound{frame: append(frame, msg...), written: make(chan error, 1)}
+	o := &outbound{frame: append(frame, msg...), ctx: ctx, written: make(chan error, 1)}
 	h.startWriter.Do(func() { go h.writeLoop() })
 	select {
 	case h.queue <- o:
@@ -258,16 +290,66 @@ func (h *Host) enqueue(ctx context.Context, data any) (*outbound, error) {
 }
 
 // writeLoop writes queued messages in order, skipping withdrawn ones. If the
-// browser stops reading the pipe, this goroutine blocks, and senders give up
-// at their own deadlines.
+// browser stops reading the pipe, the write in progress waits for it, and
+// senders give up at their own deadlines.
 func (h *Host) writeLoop() {
 	for o := range h.queue {
-		if !o.state.CompareAndSwap(outQueued, outWriting) {
+		if o.ctx.Err() != nil {
+			o.written <- errWithdrawn
 			continue
 		}
-		_, err := h.out.Write(o.frame)
-		o.written <- err
+		o.written <- h.writeFrame(o)
 	}
+}
+
+// writeFrame writes one frame. On an output whose writes can be interrupted,
+// the sender giving up interrupts a write that has sent nothing yet, and the
+// frame is dropped; once a byte is out, the rest follows whatever the sender
+// does.
+func (h *Host) writeFrame(o *outbound) error {
+	if h.writeStarted != nil {
+		h.writeStarted()
+	}
+	dw, ok := h.out.(deadlineWriter)
+	if !ok || dw.SetWriteDeadline(time.Time{}) != nil {
+		_, err := h.out.Write(o.frame)
+		return err
+	}
+	// finished stops a late interrupt from leaving a deadline on the next
+	// frame.
+	var mu sync.Mutex
+	finished := false
+	stop := context.AfterFunc(o.ctx, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if !finished {
+			_ = dw.SetWriteDeadline(time.Now())
+		}
+	})
+	defer func() {
+		stop()
+		mu.Lock()
+		finished = true
+		_ = dw.SetWriteDeadline(time.Time{})
+		mu.Unlock()
+	}()
+	sent := 0
+	for sent < len(o.frame) {
+		n, err := dw.Write(o.frame[sent:])
+		sent += n
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			return err
+		}
+		if sent == 0 {
+			return errWithdrawn
+		}
+		// Part of the frame is out: finish it.
+		_ = dw.SetWriteDeadline(time.Time{})
+	}
+	return nil
 }
 
 // writeMessage writes a response to the extension and waits until it is

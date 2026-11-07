@@ -27,7 +27,19 @@ export type HostConnectionDeps = {
      */
     onHostRequest?(method: string, params: unknown): Promise<Record<string, unknown>>;
     timers?: Timers;
+    /** Wall-clock milliseconds, as the host's `expiresAt` counts them. */
+    now?(): number;
 };
+
+/**
+ * Whether the host had already given up on a request when it arrived. A
+ * request the host was still writing when it gave up reaches us whole, with
+ * the `expiresAt` it was sent with.
+ */
+export function hostRequestExpired(params: unknown, now: number): boolean {
+    const expiresAt = (params as { expiresAt?: unknown } | undefined)?.expiresAt;
+    return typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt <= now;
+}
 
 /** A request from the host: a method and an id, and no result or error. */
 export function isHostRequest(message: unknown): message is { jsonrpc: "2.0"; id: string; method: string; params?: unknown } {
@@ -55,6 +67,7 @@ const GATED_METHODS = new Set(["tty.create", "tty.attach"]);
  */
 export function createHostConnection(deps: HostConnectionDeps) {
     const timers = deps.timers ?? globalThis;
+    const now = deps.now ?? Date.now;
     let active: Connection | null = null;
     // One connect at a time, so two callers never start two hosts.
     let pending: Promise<Connection | null> | null = null;
@@ -118,7 +131,11 @@ export function createHostConnection(deps: HostConnectionDeps) {
                 if (!isHostRequest(message)) {
                     return;
                 }
-                answer(message.method, message.params).then(
+                // Nobody waits for the answer, so do not act on it.
+                const work = hostRequestExpired(message.params, now())
+                    ? Promise.reject(new Error("expired: Agent Pane stopped waiting for this request"))
+                    : answer(message.method, message.params);
+                work.then(
                     (result) => ({ jsonrpc: "2.0", id: message.id, result }),
                     (err) => ({
                         jsonrpc: "2.0",

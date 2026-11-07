@@ -6,6 +6,7 @@ import { attachPtySocket } from "../entrypoints/shared/ptyAttach.ts";
 import { effectiveBase, isThin, readPage } from "../entrypoints/shared/pageContent.ts";
 import {
     approvalChoice,
+    approveTimeoutMs,
     createApprovalQueue,
     findTerminal,
     isCancelMessage,
@@ -245,6 +246,17 @@ test("a prompt without a host timeout still expires", () => {
     const q = createApprovalQueue(() => {}, timers);
     void q.ask({ ...ask("p1"), timeoutMs: undefined });
     assert.equal([...timers.pending.values()][0].ms, 3 * 60 * 1000);
+});
+
+test("a prompt waits no longer than the host's expiry", () => {
+    assert.equal(approveTimeoutMs(60_000, undefined, 0), 60_000);
+    assert.equal(approveTimeoutMs(60_000, 1_000 + 5_000, 1_000), 5_000);
+    // Already past: the prompt leaves at once.
+    assert.equal(approveTimeoutMs(60_000, 500, 1_000), -500);
+    const timers = fakeTimers();
+    const q = createApprovalQueue(() => {}, timers);
+    void q.ask(ask("p1", "a", -500));
+    assert.equal([...timers.pending.values()][0].ms, 0);
 });
 
 test("Send tab does not deliver when the terminal changes during the last await", async () => {

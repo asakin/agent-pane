@@ -7,6 +7,7 @@ import {
   type CancelMessage,
   type ReadNotice,
   approvalChoice,
+  approveTimeoutMs,
   readTab,
   resolveTab,
 } from "~/entrypoints/shared/pageAccess"
@@ -59,7 +60,7 @@ export default defineBackground(() => {
           tabId: Number(p.tabId),
           title: typeof p.title === "string" ? p.title : "",
           url: typeof p.url === "string" ? p.url : "",
-          timeoutMs: Number(p.timeoutMs),
+          timeoutMs: approveTimeoutMs(Number(p.timeoutMs), p.expiresAt, Date.now()),
         };
         // No panel holding this terminal (closed, or a terminal in its own
         // window) means nobody can approve: deny.
