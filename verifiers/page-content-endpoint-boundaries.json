@@ -1,0 +1,22 @@
+{
+  "name": "Page content endpoints keep the documented boundary",
+  "instruction": "Any endpoint that returns page content must keep page data on the native-messaging path and require user-approved, peer-checked terminal access.",
+  "relevant_when": "Diff that adds or changes page content reading, page-content sockets, browser.scripting.executeScript page extraction, focused tab or selection reads, or APIs that pass browser page content to the native host or terminal processes.",
+  "context": "AGENTS.md and README.md define strict rules for planned page-content features: page content reaches the host only over Chrome's native-messaging pipe, terminals request it only through a peer-checked unix socket, and every read starts from user action or approval.",
+  "scope": "diff",
+  "scope_reason": "The security property depends on how extension code, host code, sockets, and UI approval are changed together.",
+  "checklist": [
+    {
+      "name": "native-messaging-only-to-host",
+      "rule": "Page content sent from the extension to the host travels only over Chrome's native-messaging stdio pipe, not over the loopback WebSocket or any listening TCP port. Return not applicable if the diff does not add or change page-content handling."
+    },
+    {
+      "name": "terminal-access-peer-checked",
+      "rule": "Any terminal process access to page content goes through a unix socket in a 0700 directory with internal/peercred checks requiring descent from a live Agent Pane PTY shell, and does not use environment-variable tokens. Return not applicable if the diff does not add or change terminal access to page content."
+    },
+    {
+      "name": "user-approval-and-untrusted-label",
+      "rule": "Every page read starts from a panel user action or panel approval, the panel shows which tab was read, and content passed to an agent is labeled as untrusted page text. Return not applicable if the diff does not add or change page-content reads."
+    }
+  ]
+}
