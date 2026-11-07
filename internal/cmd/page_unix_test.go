@@ -306,7 +306,7 @@ func TestPageDescriptorIsInheritedOnlyInsideTheTerminal(t *testing.T) {
 	ext := &fakeExtension{tab: pageTab{TabID: 7}, choice: "all", content: "from the tab"}
 	m := NewSessionManager(0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	m.SetExtensionCaller(ext.call)
-	s, err := m.Create("Terminal", "", func(tty pty.Pty, _ string) (*pty.Cmd, error) {
+	s, err := m.Create("Terminal", "", "", func(tty pty.Pty, _ string) (*pty.Cmd, error) {
 		cmd := tty.Command(os.Args[0], "-test.run=^TestPageHelperProcess$")
 		cmd.Env = append(os.Environ(), "PAGE_HELPER=1")
 		return cmd, nil
@@ -716,7 +716,7 @@ func TestCreateJoinsTheDeadSessionsPaneTab(t *testing.T) {
 	}
 	m := NewSessionManager(0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	start := func(pane, prog string) *Session {
-		s, err := m.Create("Terminal", pane, func(tty pty.Pty, _ string) (*pty.Cmd, error) {
+		s, err := m.Create("Terminal", pane, "", func(tty pty.Pty, _ string) (*pty.Cmd, error) {
 			return tty.Command("/bin/sh", "-c", prog), nil
 		})
 		if err != nil {

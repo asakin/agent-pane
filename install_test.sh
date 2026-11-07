@@ -55,6 +55,38 @@ grep -q 'untrusted' "$home/AGENTS.md"
 [ ! -e "$home/.config/agent-pane/agents" ]
 ls -ld "$home/.local/share/agent-pane" | grep -q '^drwx------'
 
+grep -q 'AGENT_PANE_SKILL_PATH' "$home/AGENTS.md"
+
+# The skill: one canonical copy, and an owned copy per skills folder.
+skill="$home/.local/share/agent-pane/skills/agent-pane/SKILL.md"
+cmp "$root/skills/agent-pane/SKILL.md" "$skill"
+for dir in "$home/.agents/skills/agent-pane" "$home/.claude/skills/agent-pane"; do
+	cmp "$root/skills/agent-pane/SKILL.md" "$dir/SKILL.md"
+	[ -f "$dir/.agent-pane-managed" ]
+done
+grep -qx 'name: agent-pane' "$skill"
+grep -q '^description: ' "$skill"
+
+# Updating replaces owned copies; folders that are not ours stay as they are.
+echo stale >"$home/.agents/skills/agent-pane/SKILL.md"
+echo extra >"$home/.claude/skills/agent-pane/old.md"
+mkdir -p "$home/.agents/skills/mine"
+echo mine >"$home/.agents/skills/mine/SKILL.md"
+HOME="$home" SHELL=/bin/zsh AGENT_PANE_BIN="$bin" "$root/install.sh" >/dev/null
+cmp "$root/skills/agent-pane/SKILL.md" "$home/.agents/skills/agent-pane/SKILL.md"
+[ ! -e "$home/.claude/skills/agent-pane/old.md" ]
+grep -qx mine "$home/.agents/skills/mine/SKILL.md"
+
+rm -rf "$home/.claude/skills/agent-pane"
+mkdir -p "$home/.claude/skills/agent-pane"
+echo user >"$home/.claude/skills/agent-pane/SKILL.md"
+rm -rf "$home/.agents/skills/agent-pane"
+ln -s "$home/.agents/skills/mine" "$home/.agents/skills/agent-pane"
+HOME="$home" SHELL=/bin/zsh AGENT_PANE_BIN="$bin" "$root/install.sh" >/dev/null 2>&1
+grep -qx user "$home/.claude/skills/agent-pane/SKILL.md"
+[ -L "$home/.agents/skills/agent-pane" ]
+grep -qx mine "$home/.agents/skills/mine/SKILL.md"
+
 if [ "$(uname -s)" = Darwin ]; then
 	plist="$home/Library/LaunchAgents/com.agentpane.spawn.plist"
 	[ -s "$plist" ]
