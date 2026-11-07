@@ -1,6 +1,6 @@
-# Agents
+# Agent definitions
 
-Each agent is a folder. The folder name is the id.
+Each agent definition is a folder. The folder name is the definition's id. See [Terminology](../README.md#terminology).
 
 ```
 agents/<id>/
