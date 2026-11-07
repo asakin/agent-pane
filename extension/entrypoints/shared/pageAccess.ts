@@ -21,12 +21,26 @@ export type ApprovalChoice = "tab" | "all" | "deny";
 /** Background → side panel: ask the person about a read. */
 export type ApproveMessage = {
     type: "agent-pane.page-approve";
+    /** The host's id for this prompt, named again by a cancel. */
+    id: string;
     tty: string;
     agent: string;
     tabId: number;
     title: string;
     url: string;
+    /** How long the host waits for the answer. */
+    timeoutMs: number;
 };
+
+/** Background → side panel: the host stopped waiting for a prompt. */
+export type CancelMessage = {
+    type: "agent-pane.page-cancel";
+    id: string;
+    tty: string;
+};
+
+/** Used when the host names no wait: its own approval timeout. */
+export const DEFAULT_APPROVE_TIMEOUT_MS = 3 * 60 * 1000;
 
 /** Background → side panel: a read happened. */
 export type ReadNotice = {
@@ -39,6 +53,70 @@ export type ReadNotice = {
 export function isApproveMessage(msg: unknown): msg is ApproveMessage {
     const m = msg as ApproveMessage;
     return !!m && m.type === "agent-pane.page-approve" && typeof m.tty === "string" && Number.isInteger(m.tabId);
+}
+
+export function isCancelMessage(msg: unknown): msg is CancelMessage {
+    const m = msg as CancelMessage;
+    return !!m && m.type === "agent-pane.page-cancel" && typeof m.tty === "string" && typeof m.id === "string" && m.id !== "";
+}
+
+type Timers = {
+    setTimeout(fn: () => void, ms: number): unknown;
+    clearTimeout(id: unknown): void;
+};
+
+/**
+ * Approval prompts waiting for the person, oldest first. Only the first is
+ * shown. A prompt leaves the queue when it is answered, when the host cancels
+ * it, or when the host's wait for it runs out, whether or not it was shown
+ * yet, so a prompt nobody waits for never holds up a live one or takes its
+ * answer. A prompt that leaves unanswered resolves as deny; the host has
+ * already given up on it.
+ */
+export function createApprovalQueue(onChange: () => void, timers: Timers = globalThis) {
+    type Entry = { ask: ApproveMessage; resolve: (choice: ApprovalChoice) => void; timer: unknown };
+    let queue: Entry[] = [];
+
+    const settle = (entry: Entry, choice: ApprovalChoice) => {
+        const wasFirst = queue[0] === entry;
+        queue = queue.filter((e) => e !== entry);
+        timers.clearTimeout(entry.timer);
+        entry.resolve(choice);
+        if (wasFirst) {
+            onChange();
+        }
+    };
+
+    return {
+        /** The prompt to show, if any. */
+        current(): ApproveMessage | undefined {
+            return queue[0]?.ask;
+        },
+        ask(ask: ApproveMessage): Promise<ApprovalChoice> {
+            return new Promise((resolve) => {
+                const ms = Number.isFinite(ask.timeoutMs) && ask.timeoutMs > 0 ? ask.timeoutMs : DEFAULT_APPROVE_TIMEOUT_MS;
+                const entry: Entry = { ask, resolve, timer: undefined };
+                entry.timer = timers.setTimeout(() => settle(entry, "deny"), ms);
+                queue.push(entry);
+                if (queue.length === 1) {
+                    onChange();
+                }
+            });
+        },
+        /** Answers the shown prompt, if it is still the one with this id. */
+        answer(id: string, choice: ApprovalChoice) {
+            const first = queue[0];
+            if (first && first.ask.id === id) {
+                settle(first, choice);
+            }
+        },
+        cancel(tty: string, id: string) {
+            const entry = queue.find((e) => e.ask.id === id && e.ask.tty === tty);
+            if (entry) {
+                settle(entry, "deny");
+            }
+        },
+    };
 }
 
 export function isReadNotice(msg: unknown): msg is ReadNotice {
@@ -232,4 +310,26 @@ export function pasteBytes(text: string, bracketed: boolean): string {
         return clean;
     }
     return `\x1b[200~${clean.replace(/\n/g, "\r")}\x1b[201~`;
+}
+
+/**
+ * Send tab's steps after the click. The destination is checked after the
+ * last await, immediately before delivery, so switching terminals while the
+ * page is read never pastes it into the wrong one. Returns the tab's
+ * description, or null when the terminal it was clicked for is no longer
+ * the attached one.
+ */
+export async function sendTabContent(steps: {
+    read(): Promise<string>;
+    describe(): Promise<string>;
+    isDestination(): boolean;
+    deliver(content: string): void;
+}): Promise<string | null> {
+    const content = await steps.read();
+    const description = await steps.describe();
+    if (!steps.isDestination()) {
+        return null;
+    }
+    steps.deliver(content);
+    return description;
 }

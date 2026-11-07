@@ -108,7 +108,7 @@ Coding agents run `agent-pane page` commands inside a pane tab to read its assoc
 | `agent-pane page dom` | The full DOM as HTML |
 | `agent-pane page markdown [--full]` | The page as Markdown: the main article (Readability), or the whole body with `--full` or when the article is thin (Turndown). Starts with `# <title>`, the URL and a blank line |
 
-The side panel prompts when a read needs approval, with **Allow this tab**, **Allow all tabs for this agent**, and **Deny** choices. In this implementation, grants are stored in memory for the PTY session and expire when that session ends. An approval covers subsequent reads within its scope.
+The side panel prompts when a read needs approval, with **Allow this tab**, **Allow all tabs for this agent**, and **Deny** choices. In this implementation, grants are stored in memory for the PTY session and expire when that session ends. An approval covers subsequent reads within its scope. Pending requests time out after three minutes or end when their PTY session closes.
 
 **Send tab** beside the status bar pastes Chrome-tab content into the selected pane tab. It defaults to Markdown, with other formats in its menu. The pasted text can be edited before pressing Enter.
 

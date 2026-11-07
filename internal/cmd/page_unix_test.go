@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -319,5 +321,173 @@ func TestPageDescriptorIsInheritedOnlyInsideTheTerminal(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "ERR["+errNotPageChannel+"]") {
 		t.Fatalf("outside process: %q", got)
+	}
+}
+
+// blockingExtension holds page.approve until the test answers it.
+type blockingExtension struct {
+	fakeExtension
+	asked   chan struct{}
+	answer  chan string
+	cancels chan map[string]any
+}
+
+func newBlockingExtension() *blockingExtension {
+	return &blockingExtension{
+		fakeExtension: fakeExtension{tab: pageTab{TabID: 7}, content: "secret"},
+		asked:         make(chan struct{}, 8),
+		answer:        make(chan string, 8),
+		cancels:       make(chan map[string]any, 8),
+	}
+}
+
+func (b *blockingExtension) call(method string, params any, timeout time.Duration) (json.RawMessage, error) {
+	switch method {
+	case "page.approve":
+		b.mu.Lock()
+		b.prompts = append(b.prompts, params.(map[string]any))
+		b.mu.Unlock()
+		b.asked <- struct{}{}
+		select {
+		case choice := <-b.answer:
+			return json.Marshal(map[string]string{"choice": choice})
+		case <-time.After(timeout):
+			return nil, errExtensionTimeout
+		}
+	case "page.cancel":
+		b.cancels <- params.(map[string]any)
+		return json.Marshal(map[string]any{})
+	}
+	return b.fakeExtension.call(method, params, timeout)
+}
+
+func TestPageClosingDuringApprovalEndsTheRead(t *testing.T) {
+	ext := newBlockingExtension()
+	m, s, fd := pageSession(t, nil)
+	m.SetExtensionCaller(ext.call)
+	errs := make(chan error, 2)
+	go func() { _, err := read(fd, "text"); errs <- err }()
+	<-ext.asked
+	// A second read queues behind the open prompt.
+	go func() { _, err := read(fd, "text"); errs <- err }()
+	time.Sleep(50 * time.Millisecond)
+
+	if err := m.Destroy(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		select {
+		case err := <-errs:
+			if err == nil || err.Error() != errTerminalClosed {
+				t.Fatalf("read after close: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a pending read outlived its terminal")
+		}
+	}
+	// The late answer changes nothing.
+	ext.answer <- "all"
+	time.Sleep(50 * time.Millisecond)
+	if s.isAllowed(7) {
+		t.Fatal("a late answer granted access to a closed terminal")
+	}
+	if _, reads := ext.seen(); len(reads) != 0 {
+		t.Fatalf("the page was read after close: %v", reads)
+	}
+	if prompts, _ := ext.seen(); len(prompts) != 1 {
+		t.Fatalf("prompts %d", len(prompts))
+	}
+}
+
+func TestPageGrantAfterCloseIsRefused(t *testing.T) {
+	s := &Session{closed: true}
+	if s.grant(7, "all") || s.isAllowed(7) {
+		t.Fatal("grant on a closed session")
+	}
+}
+
+func TestPageApprovalTimeoutCancelsThePromptAndFreesTheTurn(t *testing.T) {
+	defer func(old time.Duration) { pageApproveTimeout = old }(pageApproveTimeout)
+	pageApproveTimeout = 100 * time.Millisecond
+	ext := newBlockingExtension()
+	m, _, fd := pageSession(t, nil)
+	m.SetExtensionCaller(ext.call)
+
+	if _, err := read(fd, "text"); err == nil || err.Error() != errApprovalTimeout {
+		t.Fatalf("unanswered prompt: %v", err)
+	}
+	<-ext.asked
+	select {
+	case c := <-ext.cancels:
+		prompts, _ := ext.seen()
+		if c["id"] == "" || c["id"] != prompts[0]["id"] || c["tty"] != "tty1" {
+			t.Fatalf("cancel %v for prompt %v", c, prompts[0])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the expired prompt was not cancelled")
+	}
+	// The next read gets its own prompt and is not held up.
+	ext.answer <- "tab"
+	if got, err := read(fd, "text"); err != nil || got != "secret" {
+		t.Fatalf("read after an expired prompt: %q %v", got, err)
+	}
+}
+
+func TestPageQueuedReadGivesUpAtItsDeadline(t *testing.T) {
+	defer func(a, r, w time.Duration) { pageApproveTimeout, pageReadTimeout, pageResolveTimeout = a, r, w }(pageApproveTimeout, pageReadTimeout, pageResolveTimeout)
+	pageApproveTimeout, pageReadTimeout, pageResolveTimeout = 300*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond
+	ext := newBlockingExtension()
+	m, _, fd := pageSession(t, nil)
+	m.SetExtensionCaller(ext.call)
+	start := time.Now()
+	errs := make(chan error, 3)
+	for range 3 {
+		go func() { _, err := read(fd, "text"); errs <- err }()
+	}
+	for range 3 {
+		if err := <-errs; err == nil {
+			t.Fatal("unanswered read succeeded")
+		}
+	}
+	// Each read is bounded by one request's time, not one prompt each in turn.
+	if took := time.Since(start); took >= 2*pageApproveTimeout {
+		t.Fatalf("queued reads took %v", took)
+	}
+}
+
+func TestPageReplySocketDeadlinesWork(t *testing.T) {
+	pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := pollableFile(pair[0], "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := pollableFile(pair[1], "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if err := a.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatalf("read deadline: %v", err)
+	}
+	if _, err := a.Read(make([]byte, 1)); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("read past deadline: %v", err)
+	}
+
+	// A reader that never reads cannot hold the host's writer.
+	defer func(old time.Duration) { pageReplyWriteTimeout = old }(pageReplyWriteTimeout)
+	pageReplyWriteTimeout = 100 * time.Millisecond
+	done := make(chan struct{})
+	go func() {
+		writePageReply(b, pageReply{Content: strings.Repeat("x", 8<<20)})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("writing a reply nobody reads did not time out")
 	}
 }

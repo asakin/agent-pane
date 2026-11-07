@@ -17,6 +17,9 @@ import (
 // over 2048 bytes by default, and a request is far smaller.
 const maxPageRequest = 2048
 
+// pageReplyWriteTimeout bounds writing one reply.
+var pageReplyWriteTimeout = 5 * time.Second
+
 // newPageChannel makes the socket pair for one session. The host keeps the
 // first end; the second is passed to the shell as pageFD and closed here once
 // the shell has it.
@@ -69,7 +72,12 @@ func (s *Session) servePage(conn *net.UnixConn, call func() extensionCaller) {
 			writePageReply(reply, pageReply{ID: req.ID, Error: "bad request"})
 			continue
 		}
+		if !s.trackReply(reply) {
+			writePageReply(reply, pageReply{ID: req.ID, Error: errTerminalClosed})
+			continue
+		}
 		go func() {
+			defer s.untrackReply(reply)
 			content, err := s.pageRead(call(), req)
 			out := pageReply{ID: req.ID, Content: content}
 			if err != nil {
@@ -78,6 +86,38 @@ func (s *Session) servePage(conn *net.UnixConn, call func() extensionCaller) {
 			writePageReply(reply, out)
 		}()
 	}
+}
+
+// trackReply records a reply socket so closing the session closes it. It
+// reports false once the session has closed.
+func (s *Session) trackReply(reply *os.File) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	if s.replies == nil {
+		s.replies = map[*os.File]struct{}{}
+	}
+	s.replies[reply] = struct{}{}
+	return true
+}
+
+func (s *Session) untrackReply(reply *os.File) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.replies, reply)
+}
+
+// pollableFile wraps a socket descriptor in non-blocking mode, so the
+// runtime poller handles it and its deadlines take effect. A blocking
+// descriptor refuses deadlines.
+func pollableFile(fd int, name string) (*os.File, error) {
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		syscall.Close(fd)
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), name), nil
 }
 
 // takeReplySocket returns the first descriptor passed with a request and
@@ -96,7 +136,7 @@ func takeReplySocket(oob []byte) *os.File {
 		for _, fd := range fds {
 			syscall.CloseOnExec(fd)
 			if reply == nil {
-				reply = os.NewFile(uintptr(fd), "agent-pane-page-reply")
+				reply, _ = pollableFile(fd, "agent-pane-page-reply")
 			} else {
 				syscall.Close(fd)
 			}
@@ -108,7 +148,10 @@ func takeReplySocket(oob []byte) *os.File {
 func writePageReply(reply *os.File, out pageReply) {
 	defer reply.Close()
 	out.AgentPane = 1
-	_ = reply.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	// A client that stops reading cannot hold the writer past this.
+	if reply.SetWriteDeadline(time.Now().Add(pageReplyWriteTimeout)) != nil {
+		return
+	}
 	_ = json.NewEncoder(reply).Encode(out)
 }
 
@@ -137,7 +180,11 @@ func pageClient(fdEnv string, req pageRequest) (string, error) {
 	}
 	syscall.CloseOnExec(pair[0])
 	syscall.CloseOnExec(pair[1])
-	mine := os.NewFile(uintptr(pair[0]), "agent-pane-page-reply")
+	mine, err := pollableFile(pair[0], "agent-pane-page-reply")
+	if err != nil {
+		syscall.Close(pair[1])
+		return "", err
+	}
 	defer mine.Close()
 
 	req.ID = strconv.Itoa(os.Getpid())
@@ -155,8 +202,11 @@ func pageClient(fdEnv string, req pageRequest) (string, error) {
 		return "", errors.New(errNotPageChannel)
 	}
 
-	// Long enough for the person to answer the approval prompt.
-	_ = mine.SetReadDeadline(time.Now().Add(pageApproveTimeout + pageResolveTimeout + pageReadTimeout))
+	// Long enough for the person to answer the approval prompt; the host
+	// gives up on the request a little before this.
+	if err := mine.SetReadDeadline(time.Now().Add(pageRequestTimeout() + pageReplyWriteTimeout)); err != nil {
+		return "", err
+	}
 	var out pageReply
 	if err := json.NewDecoder(mine).Decode(&out); err != nil {
 		if errors.Is(err, io.EOF) {

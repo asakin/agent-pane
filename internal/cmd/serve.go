@@ -58,9 +58,16 @@ type Session struct {
 	// page is the host's end of the page channel; nil where there is none.
 	page *net.UnixConn
 	// Page-read approvals, in memory only, dropped with the session.
-	approveMu   sync.Mutex
 	allowAll    bool
 	allowedTabs map[int]bool
+	// approveTurn holds one token: the right to show this terminal's
+	// approval prompt. A channel, so waiting for it can give up.
+	approveTurn chan struct{}
+	// done closes with the session, ending reads still in flight.
+	done chan struct{}
+	// replies are the reply sockets of reads in flight; closing the
+	// session closes them, so nothing is delivered after it.
+	replies map[*os.File]struct{}
 }
 
 // extensionOrigins are the only origins that may open a PTY WebSocket. Add the
@@ -317,6 +324,14 @@ func (s *Session) close() {
 	}
 	s.allowAll = false
 	s.allowedTabs = nil
+	if s.done == nil {
+		s.done = make(chan struct{})
+	}
+	close(s.done)
+	for reply := range s.replies {
+		_ = reply.Close()
+	}
+	s.replies = nil
 	if s.client != nil {
 		_ = s.client.Close()
 		s.client = nil
