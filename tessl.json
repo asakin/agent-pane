@@ -27,8 +27,7 @@
         ],
         "debounce": "90s"
       },
-      "environment": "factory-siglify-agent-pane-shepherd",
-      "instructions": "Before changing code, read AGENTS.md and the terminology section of README.md. Read the current linked issue body for feature requirements and maintainer clarifications; older PR discussions may have been superseded. Describe implemented behavior in README, keep feature requirements in the issue, and request maintainer approval before adding extension permissions or expanding host access."
+      "environment": "factory-siglify-agent-pane-shepherd"
     },
     "implement": {
       "tags": [
@@ -45,8 +44,7 @@
           }
         ]
       },
-      "environment": "factory-siglify-agent-pane-implement",
-      "instructions": "Before changing code, read AGENTS.md and the terminology section of README.md. Read the current linked issue body for feature requirements and maintainer clarifications; older PR discussions may have been superseded. Describe implemented behavior in README, keep feature requirements in the issue, and request maintainer approval before adding extension permissions or expanding host access."
+      "environment": "factory-siglify-agent-pane-implement"
     }
   },
   "triggers": {
