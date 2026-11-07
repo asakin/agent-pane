@@ -894,15 +894,16 @@ async function main() {
         await saveWindowState(windowId, state);
         refreshStrip();
         try {
-            const ok = await attachActive(gen);
-            if (ok && gen === switchGen) {
-                await destroyTTY(id, pane);
-                titles.delete(id);
-            }
+            await attachActive(gen);
         } catch (err) {
             if (gen === switchGen && !(err instanceof NativeUnavailable)) {
                 showSetup((err as Error).message);
             }
+        } finally {
+            // The pane tab is gone from state whatever happened to its
+            // neighbour, so its session and grant go too.
+            await destroyTTY(id, pane);
+            titles.delete(id);
         }
     }
 

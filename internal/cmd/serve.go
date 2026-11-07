@@ -350,8 +350,13 @@ func (s *Session) close() {
 		s.done = make(chan struct{})
 	}
 	close(s.done)
+	// Each tracked reply holds a host-wide read slot; untrackReply finds
+	// nothing to release once the map is cleared, so release them here.
 	for reply := range s.replies {
 		_ = reply.Close()
+		if s.manager != nil {
+			s.manager.releasePageRead()
+		}
 	}
 	s.replies = nil
 	if s.client != nil {
@@ -455,6 +460,7 @@ func NewCmdServe(version string) *cobra.Command {
 
 			sessions := NewSessionManager(port, logger)
 			messagingHost := NewMessagingHost(logger, sessions, version)
+			messagingHost.UseInterruptibleStdout()
 			sessions.SetExtensionCaller(nativeCaller(messagingHost))
 
 			handler := NewWebSocketHandler(sessions)

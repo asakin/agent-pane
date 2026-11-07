@@ -50,6 +50,18 @@ export type ReadNotice = {
     url: string;
 };
 
+/**
+ * How long a prompt may wait: the host's timeout, cut short by its
+ * `expiresAt` when that comes first.
+ */
+export function approveTimeoutMs(timeoutMs: unknown, expiresAt: unknown, now: number): number {
+    let ms = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_APPROVE_TIMEOUT_MS;
+    if (typeof expiresAt === "number" && Number.isFinite(expiresAt)) {
+        ms = Math.min(ms, expiresAt - now);
+    }
+    return ms;
+}
+
 export function isApproveMessage(msg: unknown): msg is ApproveMessage {
     const m = msg as ApproveMessage;
     return !!m && m.type === "agent-pane.page-approve" && typeof m.tty === "string" && Number.isInteger(m.tabId);
@@ -94,7 +106,8 @@ export function createApprovalQueue(onChange: () => void, timers: Timers = globa
         },
         ask(ask: ApproveMessage): Promise<ApprovalChoice> {
             return new Promise((resolve) => {
-                const ms = Number.isFinite(ask.timeoutMs) && ask.timeoutMs > 0 ? ask.timeoutMs : DEFAULT_APPROVE_TIMEOUT_MS;
+                // A prompt whose time has run out leaves at once.
+                const ms = Number.isFinite(ask.timeoutMs) ? Math.max(0, ask.timeoutMs) : DEFAULT_APPROVE_TIMEOUT_MS;
                 const entry: Entry = { ask, resolve, timer: undefined };
                 entry.timer = timers.setTimeout(() => settle(entry, "deny"), ms);
                 queue.push(entry);

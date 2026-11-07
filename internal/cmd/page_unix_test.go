@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -742,5 +743,56 @@ func TestCreateJoinsTheDeadSessionsPaneTab(t *testing.T) {
 	// While second is alive, another session cannot join its pane tab.
 	if third := start(first.pane.id, "sleep 30"); third.pane == first.pane {
 		t.Fatal("a session joined a pane tab that has a live session")
+	}
+}
+
+func TestClosingASessionReleasesItsHostWideReads(t *testing.T) {
+	ext := newBlockingExtension()
+	m, s, fd := pageSession(t, nil)
+	m.SetExtensionCaller(ext.call)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() { _, err := read(fd, "text"); errs <- err }()
+	}
+	<-ext.asked
+	waitFor(t, func() bool { return m.pageReads.Load() == 2 })
+	if err := m.Destroy(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		<-errs
+	}
+	waitFor(t, func() bool { return m.pageReads.Load() == 0 })
+}
+
+func TestNativeCallerNamesItsExpiry(t *testing.T) {
+	r, w := io.Pipe()
+	defer r.Close()
+	h := NewMessagingHost(slog.New(slog.NewTextHandler(io.Discard, nil)), nil, "test")
+	h.SetOutput(w)
+	call := nativeCaller(h)
+	deadline := time.Now().Add(time.Minute)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	go func() { _, _ = call(ctx, "page.approve", map[string]any{"tty": "a"}) }()
+	var n uint32
+	if err := binary.Read(r, binary.LittleEndian, &n); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		t.Fatal(err)
+	}
+	var req struct {
+		Params struct {
+			TTY       string `json:"tty"`
+			ExpiresAt int64  `json:"expiresAt"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(buf, &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Params.TTY != "a" || req.Params.ExpiresAt != deadline.UnixMilli() {
+		t.Fatalf("params %+v", req.Params)
 	}
 }
