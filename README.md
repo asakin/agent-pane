@@ -155,7 +155,7 @@ A local build reports version `dev`, which passes the side panel's version check
 
 ### Checks
 
-Every pull request and every push to `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml): extension and Go checks on Ubuntu, plus Go vet and race tests on macOS. To run the same checks locally:
+Every pull request and every push to `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml): extension and Go checks on Ubuntu, plus Go vet and race tests on macOS. To run the suite manually, open **Actions** → **ci** → **Run workflow**. To run the same checks locally:
 
 **extension** (Node 26):
 
