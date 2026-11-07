@@ -3,7 +3,7 @@
  * menu, the approval prompt for an agent's read, and the short notice shown
  * after each read.
  */
-import { type ApprovalChoice, type ApproveMessage, SEND_FORMATS } from "./pageAccess";
+import { type ApprovalChoice, type ApproveMessage, SEND_FORMATS, createApprovalQueue } from "./pageAccess";
 import type { PageFormat } from "./pageContent";
 
 export type SendTabRequest = {
@@ -73,19 +73,17 @@ export function mountSendTab(host: HTMLElement, onSend: (format: PageFormat) => 
 
 /**
  * Shows prompts one at a time above the status bar. Each resolves with the
- * person's choice; closing the panel answers deny on the host's side.
+ * person's choice; closing the panel answers deny on the host's side. A
+ * prompt the host cancels or stops waiting for is taken down.
  */
 export function createApprovalPrompts(anchor: HTMLElement, terminalName: (tty: string) => string) {
-    const queue: { ask: ApproveMessage; resolve: (choice: ApprovalChoice) => void }[] = [];
-
     const show = () => {
-        const next = queue[0];
-        if (!next) {
+        const ask = queue.current();
+        if (!ask) {
             anchor.hidden = true;
             anchor.replaceChildren();
             return;
         }
-        const { ask } = next;
         const title = document.createElement("div");
         title.className = "at-approve__title";
         title.textContent = `${ask.agent || terminalName(ask.tty)} wants to read a tab`;
@@ -105,11 +103,7 @@ export function createApprovalPrompts(anchor: HTMLElement, terminalName: (tty: s
             b.type = "button";
             b.className = `at-approve__button at-approve__button--${choice}`;
             b.textContent = label;
-            b.addEventListener("click", () => {
-                queue.shift();
-                next.resolve(choice);
-                show();
-            });
+            b.addEventListener("click", () => queue.answer(ask.id, choice));
             return b;
         };
         actions.append(
@@ -120,16 +114,11 @@ export function createApprovalPrompts(anchor: HTMLElement, terminalName: (tty: s
         anchor.replaceChildren(title, tab, url, where, actions);
         anchor.hidden = false;
     };
+    const queue = createApprovalQueue(show);
 
     return {
-        ask(ask: ApproveMessage): Promise<ApprovalChoice> {
-            return new Promise((resolve) => {
-                queue.push({ ask, resolve });
-                if (queue.length === 1) {
-                    show();
-                }
-            });
-        },
+        ask: (ask: ApproveMessage): Promise<ApprovalChoice> => queue.ask(ask),
+        cancel: (tty: string, id: string) => queue.cancel(tty, id),
     };
 }
 

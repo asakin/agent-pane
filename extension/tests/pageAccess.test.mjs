@@ -5,11 +5,14 @@ import xterm from "@xterm/xterm";
 import { isThin, readPage } from "../entrypoints/shared/pageContent.ts";
 import {
     approvalChoice,
+    createApprovalQueue,
     findTerminal,
+    isCancelMessage,
     pasteBytes,
     readTab,
     resolveTab,
     scriptingFailure,
+    sendTabContent,
     unreadableReason,
 } from "../entrypoints/shared/pageAccess.ts";
 
@@ -179,4 +182,95 @@ test("page text cannot end the paste early or press Enter", () => {
     assert.equal(out.split("\x1b").length, 3, "only our own two markers");
     assert.equal(pasteBytes("one line\n", false), "one line");
     assert.throws(() => pasteBytes("two\nlines", false), /bracketed paste/);
+});
+
+function fakeTimers() {
+    const pending = new Map();
+    let next = 1;
+    return {
+        setTimeout(fn, ms) { const id = next++; pending.set(id, { fn, ms }); return id; },
+        clearTimeout(id) { pending.delete(id); },
+        fire(id) { const t = pending.get(id); pending.delete(id); t?.fn(); },
+        pending,
+    };
+}
+
+const ask = (id, tty = "a", timeoutMs = 1000) => ({ type: "agent-pane.page-approve", id, tty, agent: "", tabId: 7, title: "", url: "", timeoutMs });
+
+test("an expired prompt leaves the queue and does not take the next answer", async () => {
+    const timers = fakeTimers();
+    let changes = 0;
+    const q = createApprovalQueue(() => changes++, timers);
+    const first = q.ask(ask("p1"));
+    const second = q.ask(ask("p2", "b"));
+    assert.equal(q.current().id, "p1");
+    // The host stops waiting for p1: it is taken down, and p2 is shown.
+    timers.fire(1);
+    assert.equal(await first, "deny");
+    assert.equal(q.current().id, "p2");
+    // A click on the stale p1 button does nothing; the live prompt is answered on its own.
+    q.answer("p1", "all");
+    assert.equal(q.current().id, "p2");
+    q.answer("p2", "tab");
+    assert.equal(await second, "tab");
+    assert.equal(q.current(), undefined);
+    assert.equal(timers.pending.size, 0);
+    assert.equal(changes, 3);
+});
+
+test("a cancelled prompt leaves the queue, shown or not", async () => {
+    const timers = fakeTimers();
+    const q = createApprovalQueue(() => {}, timers);
+    const p1 = q.ask(ask("p1"));
+    const p2 = q.ask(ask("p2"));
+    const p3 = q.ask(ask("p3"));
+    q.cancel("a", "p2");
+    assert.equal(await p2, "deny");
+    assert.equal(q.current().id, "p1");
+    q.cancel("other-tty", "p1");
+    assert.equal(q.current().id, "p1", "a cancel names its own terminal");
+    q.cancel("a", "p1");
+    assert.equal(await p1, "deny");
+    assert.equal(q.current().id, "p3");
+    q.answer("p3", "all");
+    assert.equal(await p3, "all");
+    assert.equal(timers.pending.size, 0);
+    assert.equal(isCancelMessage({ type: "agent-pane.page-cancel", id: "p1", tty: "a" }), true);
+    assert.equal(isCancelMessage({ type: "agent-pane.page-cancel", id: "", tty: "a" }), false);
+});
+
+test("a prompt without a host timeout still expires", () => {
+    const timers = fakeTimers();
+    const q = createApprovalQueue(() => {}, timers);
+    void q.ask({ ...ask("p1"), timeoutMs: undefined });
+    assert.equal([...timers.pending.values()][0].ms, 3 * 60 * 1000);
+});
+
+test("Send tab does not deliver when the terminal changes during the last await", async () => {
+    let active = "A";
+    const delivered = [];
+    let release;
+    const describing = new Promise((r) => { release = r; });
+    const sending = sendTabContent({
+        read: async () => "page of A",
+        describe: () => describing,
+        isDestination: () => active === "A",
+        deliver: (c) => delivered.push([active, c]),
+    });
+    // The person switches to B while the tab's title is looked up.
+    await new Promise((r) => setImmediate(r));
+    active = "B";
+    release("Title");
+    assert.equal(await sending, null);
+    assert.deepEqual(delivered, []);
+
+    active = "A";
+    const sent = await sendTabContent({
+        read: async () => "page of A",
+        describe: async () => "Title",
+        isDestination: () => active === "A",
+        deliver: (c) => delivered.push([active, c]),
+    });
+    assert.equal(sent, "Title");
+    assert.deepEqual(delivered, [["A", "page of A"]]);
 });

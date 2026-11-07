@@ -4,6 +4,7 @@ import type { RequestDestroyTTY } from "~/entrypoints/shared/rpc"
 import { isOwnExtensionPage } from "~/entrypoints/shared/sender"
 import {
   type ApproveMessage,
+  type CancelMessage,
   type ReadNotice,
   approvalChoice,
   readTab,
@@ -52,11 +53,13 @@ export default defineBackground(() => {
       case "page.approve": {
         const ask: ApproveMessage = {
           type: "agent-pane.page-approve",
+          id: typeof p.id === "string" ? p.id : "",
           tty,
           agent: typeof p.agent === "string" ? p.agent : "",
           tabId: Number(p.tabId),
           title: typeof p.title === "string" ? p.title : "",
           url: typeof p.url === "string" ? p.url : "",
+          timeoutMs: Number(p.timeoutMs),
         };
         // No panel holding this terminal (closed, or a terminal in its own
         // window) means nobody can approve: deny.
@@ -70,6 +73,14 @@ export default defineBackground(() => {
           throw new Error("denied: open the Agent Pane side panel for this terminal to approve the read");
         }
         return { choice: approvalChoice(answer) };
+      }
+      case "page.cancel": {
+        // The host stopped waiting for a prompt: take it down in the panel.
+        if (typeof p.id === "string" && p.id) {
+          const cancel: CancelMessage = { type: "agent-pane.page-cancel", id: p.id, tty };
+          browser.runtime.sendMessage(cancel).catch(() => {});
+        }
+        return {};
       }
       case "page.read": {
         const tabId = Number(p.tabId);

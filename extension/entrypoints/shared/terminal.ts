@@ -37,7 +37,7 @@ import {
     trackedTabId,
 } from "./tabLock";
 import type { PageFormat } from "./pageContent";
-import { isApproveMessage, isReadNotice, pasteBytes, readTab } from "./pageAccess";
+import { isApproveMessage, isCancelMessage, isReadNotice, pasteBytes, readTab, sendTabContent } from "./pageAccess";
 import { createApprovalPrompts, createReadNotice, mountSendTab } from "./pagePanel";
 import { isOwnExtensionPage } from "./sender";
 import { describeUrl } from "./tabLock";
@@ -567,15 +567,26 @@ async function main() {
             return;
         }
         const tty = agentTab.id;
+        const gen = switchGen;
         try {
-            const content = await readTab(browser, tabId, format, false);
-            if (!state || state.activeId !== tty || activeTtyId !== tty) {
+            const sent = await sendTabContent({
+                read: () => readTab(browser, tabId, format, false),
+                describe: async () => {
+                    const tab = await browser.tabs.get(tabId).catch(() => undefined);
+                    return tab?.title || describeUrl(tab?.url ?? "");
+                },
+                // Still the terminal it was clicked for, attached and taking
+                // input: terminal.input goes to whatever is attached now.
+                isDestination: () => !!state && state.activeId === tty && activeTtyId === tty
+                    && gen === switchGen && ws?.readyState === WebSocket.OPEN,
+                deliver: (content) => terminal.input(pasteBytes(content, terminal.modes.bracketedPasteMode), true),
+            });
+            if (sent === null) {
+                notice("Not sent: the terminal changed while the tab was read", true);
                 return;
             }
-            const tab = await browser.tabs.get(tabId).catch(() => undefined);
-            terminal.input(pasteBytes(content, terminal.modes.bracketedPasteMode), true);
             terminal.focus();
-            notice(`Sent ${tab?.title || describeUrl(tab?.url ?? "")}`);
+            notice(`Sent ${sent}`);
         } catch (err) {
             notice((err as Error).message, true);
         }
@@ -592,6 +603,10 @@ async function main() {
         if (isApproveMessage(msg) && hasTab(msg.tty)) {
             void prompts.ask(msg).then((choice) => sendResponse({ choice }));
             return true;
+        }
+        if (isCancelMessage(msg) && hasTab(msg.tty)) {
+            prompts.cancel(msg.tty, msg.id);
+            return false;
         }
         if (isReadNotice(msg) && hasTab(msg.tty)) {
             notice(`${terminalName(msg.tty)} read ${msg.title || describeUrl(msg.url)}`);
