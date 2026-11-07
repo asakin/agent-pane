@@ -43,6 +43,47 @@ function mainArticle(doc: Document): { title: string; content: string } | null {
     return { title: article.title ?? "", content: article.content };
 }
 
+/**
+ * The document's base URL: its first <base href>, resolved against the
+ * document's own URL, or that URL.
+ */
+export function effectiveBase(doc: Document, url: string): string {
+    const href = doc.querySelector("base[href]")?.getAttribute("href");
+    if (href) {
+        try {
+            return new URL(href, url).href;
+        } catch {
+            // An unusable <base> is ignored, as browsers do.
+        }
+    }
+    return url;
+}
+
+/**
+ * Rewrites link and image targets under root as absolute URLs, so the
+ * Markdown still names the same resources away from the page.
+ */
+function absolutizeTargets(root: ParentNode, base: string) {
+    for (const [selector, attr] of [["a[href]", "href"], ["img[src]", "src"]] as const) {
+        for (const el of Array.from(root.querySelectorAll(selector))) {
+            const value = el.getAttribute(attr) ?? "";
+            if (value.startsWith("#") && attr === "href") {
+                continue;
+            }
+            try {
+                el.setAttribute(attr, new URL(value, base).href);
+            } catch {
+                // Leave targets that are not URLs alone.
+            }
+        }
+    }
+}
+
+/** URLs naming the same document: fragments do not change it. */
+export function sameDocument(a: string, b: string): boolean {
+    return a.split("#")[0] === b.split("#")[0];
+}
+
 export function toMarkdown(doc: Document, url: string, full: boolean): string {
     const article = full ? null : mainArticle(doc);
     const clone = doc.cloneNode(true) as Document;
@@ -56,6 +97,7 @@ export function toMarkdown(doc: Document, url: string, full: boolean): string {
     } else {
         root = clone.body ?? clone.documentElement;
     }
+    absolutizeTargets(root as ParentNode, effectiveBase(doc, url));
     const turndown = new TurndownService({
         headingStyle: "atx",
         codeBlockStyle: "fenced",
@@ -81,7 +123,10 @@ function selectedText(doc: Document): string {
     return doc.defaultView?.getSelection?.()?.toString() ?? "";
 }
 
-export function readPage(doc: Document, url: string, format: string, full = false): PageResult {
+export function readPage(doc: Document, url: string, format: string, full = false, expectUrl?: string): PageResult {
+    if (expectUrl !== undefined && !sameDocument(url, expectUrl)) {
+        return { error: "the tab moved to another page after the read was approved; run the command again" };
+    }
     if (doc.contentType === "application/pdf") {
         return { error: "Chrome's built-in PDF viewer cannot be read by extensions" };
     }

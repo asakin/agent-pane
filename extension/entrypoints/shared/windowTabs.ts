@@ -9,9 +9,15 @@ import type {
 import { type TabLock, closeMissingLocks, isTabLock } from "./tabLock";
 
 export type WindowTab = TabLock & {
+    /** The PTY session attached to this pane tab now. */
     id: string;
     app: string;
     cwd?: string;
+    /**
+     * The host's id for the pane tab itself, which outlives its PTY
+     * sessions. Page-read grants belong to it.
+     */
+    pane?: string;
 };
 
 export type WindowTabState = {
@@ -24,7 +30,8 @@ function isWindowTab(value: unknown): value is WindowTab {
         return false;
     }
     const tab = value as WindowTab;
-    return typeof tab.id === "string" && tab.id !== "" && typeof tab.app === "string" && isTabLock(tab);
+    return typeof tab.id === "string" && tab.id !== "" && typeof tab.app === "string" && isTabLock(tab)
+        && (tab.pane === undefined || typeof tab.pane === "string");
 }
 
 export function windowStateKey(windowId: number): string {
@@ -87,13 +94,18 @@ export async function clearWindowState(windowId: number): Promise<void> {
     await browser.storage.session.remove(windowStateKey(windowId));
 }
 
-export async function destroyTTY(id: string): Promise<void> {
+/**
+ * Ends a PTY session. Passing its pane tab's id closes the pane tab too,
+ * which revokes its page-read grants; leave it out when the pane tab lives
+ * on with another session.
+ */
+export async function destroyTTY(id: string, pane?: string): Promise<void> {
     try {
         await browser.runtime.sendMessage<RequestDestroyTTY>({
             jsonrpc: "2.0",
             id: crypto.randomUUID(),
             method: "tty.destroy",
-            params: { id },
+            params: pane ? { id, pane } : { id },
         });
     } catch {
         // Host may already be gone.
@@ -109,11 +121,15 @@ export type CreateTTYOpts =
     | ({ mode: "shell"; cwd?: string } & TtyDimensions)
     | ({ mode: "app"; app: string; cwd?: string } & TtyDimensions);
 
-export async function createTTY(opts: CreateTTYOpts): Promise<{ id: string; url: string }> {
+/**
+ * Starts a PTY session. With pane, the session replaces a dead one in that
+ * pane tab and keeps its grants; without, the host makes a new pane tab.
+ */
+export async function createTTY(opts: CreateTTYOpts, pane?: string): Promise<{ id: string; url: string; pane?: string }> {
     const cwd = opts.cwd || undefined;
     const params = opts.mode === "app"
-        ? { mode: "app" as const, app: opts.app, cwd, cols: opts.cols, rows: opts.rows }
-        : { mode: "shell" as const, cwd, cols: opts.cols, rows: opts.rows };
+        ? { mode: "app" as const, app: opts.app, cwd, pane, cols: opts.cols, rows: opts.rows }
+        : { mode: "shell" as const, cwd, pane, cols: opts.cols, rows: opts.rows };
     const resp = await browser.runtime.sendMessage<RequestCreateTTY, ResponseCreateTTY>({
         jsonrpc: "2.0",
         id: crypto.randomUUID(),
@@ -191,15 +207,20 @@ export function pruneTab(state: WindowTabState, deadId: string): WindowTabState 
     return { tabs, activeId };
 }
 
-export function replaceTabId(state: WindowTabState, oldId: string, nextId: string): WindowTabState {
+/** Points a pane tab at its replacement PTY session, and the host's pane id. */
+export function replaceTabId(state: WindowTabState, oldId: string, nextId: string, pane?: string): WindowTabState {
     return {
-        tabs: state.tabs.map((tab) => tab.id === oldId ? { ...tab, id: nextId } : tab),
+        tabs: state.tabs.map((tab) => tab.id === oldId ? { ...tab, id: nextId, ...(pane ? { pane } : {}) } : tab),
         activeId: state.activeId === oldId ? nextId : state.activeId,
     };
 }
 
 export function tabApp(state: WindowTabState, id: string): string {
     return state.tabs.find((tab) => tab.id === id)?.app ?? "";
+}
+
+export function tabPane(state: WindowTabState, id: string): string | undefined {
+    return state.tabs.find((tab) => tab.id === id)?.pane || undefined;
 }
 
 export function tabCwd(state: WindowTabState, id: string): string | undefined {

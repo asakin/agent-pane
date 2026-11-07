@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agent-pane/internal/jsonrpc"
@@ -57,12 +58,9 @@ type Session struct {
 	Label string
 	// page is the host's end of the page channel; nil where there is none.
 	page *net.UnixConn
-	// Page-read approvals, in memory only, dropped with the session.
-	allowAll    bool
-	allowedTabs map[int]bool
-	// approveTurn holds one token: the right to show this terminal's
-	// approval prompt. A channel, so waiting for it can give up.
-	approveTurn chan struct{}
+	// pane is the pane tab this session runs in. Page-read grants live
+	// there, so they outlive this session when the panel replaces it.
+	pane *paneTab
 	// done closes with the session, ending reads still in flight.
 	done chan struct{}
 	// replies are the reply sockets of reads in flight; closing the
@@ -95,6 +93,23 @@ type SessionManager struct {
 
 	callMu sync.Mutex
 	call   extensionCaller
+
+	// panes are the pane tabs the extension has open, by id; guarded by mu.
+	panes map[string]*paneTab
+	// pageReads counts page reads in flight across all sessions.
+	pageReads atomic.Int32
+}
+
+func (m *SessionManager) takePageRead() bool {
+	if m.pageReads.Add(1) > int32(maxHostPageReads) {
+		m.pageReads.Add(-1)
+		return false
+	}
+	return true
+}
+
+func (m *SessionManager) releasePageRead() {
+	m.pageReads.Add(-1)
 }
 
 // SetExtensionCaller sets how page reads reach the extension.
@@ -113,6 +128,7 @@ func (m *SessionManager) extensionCaller() extensionCaller {
 func NewSessionManager(port int, logger *slog.Logger) *SessionManager {
 	return &SessionManager{
 		sessions: make(map[string]*Session),
+		panes:    make(map[string]*paneTab),
 		port:     port,
 		logger:   logger,
 	}
@@ -187,10 +203,14 @@ func (m *SessionManager) endpoint(id string) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create attach token: %w", err)
 	}
-	return map[string]string{
+	out := map[string]string{
 		"url": m.wsURL(id, token),
 		"id":  id,
-	}, nil
+	}
+	if s, ok := m.Get(id); ok && s.pane != nil {
+		out["pane"] = s.pane.id
+	}
+	return out, nil
 }
 
 func (m *SessionManager) Get(id string) (*Session, bool) {
@@ -219,7 +239,7 @@ func (m *SessionManager) wsURL(id, token string) string {
 	return fmt.Sprintf("ws://127.0.0.1:%d/tty/%s?token=%s", m.port, id, token)
 }
 
-func (m *SessionManager) Create(label string, cmdFactory func(tty pty.Pty, id string) (*pty.Cmd, error)) (*Session, error) {
+func (m *SessionManager) Create(label, paneID string, cmdFactory func(tty pty.Pty, id string) (*pty.Cmd, error)) (*Session, error) {
 	tty, err := pty.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pty: %w", err)
@@ -261,8 +281,8 @@ func (m *SessionManager) Create(label string, cmdFactory func(tty pty.Pty, id st
 		Label:   label,
 		page:    page,
 	}
-
 	m.mu.Lock()
+	session.pane = m.paneLocked(paneID)
 	m.sessions[id] = session
 	m.mu.Unlock()
 
@@ -283,6 +303,7 @@ func (m *SessionManager) Destroy(id string) error {
 	session, ok := m.sessions[id]
 	if ok {
 		delete(m.sessions, id)
+		m.forgetIdlePaneLocked(session.pane)
 	}
 	m.mu.Unlock()
 	if !ok {
@@ -299,6 +320,7 @@ func (m *SessionManager) reap(id string) {
 	session, ok := m.sessions[id]
 	if ok {
 		delete(m.sessions, id)
+		m.forgetIdlePaneLocked(session.pane)
 	}
 	m.mu.Unlock()
 	if !ok {
@@ -322,8 +344,8 @@ func (s *Session) close() {
 	if s.page != nil {
 		_ = s.page.Close()
 	}
-	s.allowAll = false
-	s.allowedTabs = nil
+	// The pane tab's grants stay: the panel may replace this session in the
+	// same pane tab. Closing the pane tab is what revokes them.
 	if s.done == nil {
 		s.done = make(chan struct{})
 	}
@@ -513,8 +535,10 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			Args []string `json:"args"`
 			Cwd  string   `json:"cwd"`
 			File string   `json:"file"`
-			Cols int      `json:"cols"`
-			Rows int      `json:"rows"`
+			// Pane is the pane tab this session replaces a dead one in.
+			Pane string `json:"pane"`
+			Cols int    `json:"cols"`
+			Rows int    `json:"rows"`
 		}
 
 		if len(input) > 0 {
@@ -541,7 +565,7 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			mode, app = "", ""
 		}
 
-		session, err := sessions.Create(label, func(tty pty.Pty, _ string) (*pty.Cmd, error) {
+		session, err := sessions.Create(label, params.Pane, func(tty pty.Pty, _ string) (*pty.Cmd, error) {
 			if err := tty.Resize(params.Cols, params.Rows); err != nil {
 				return nil, fmt.Errorf("failed to set size for tty: %w", err)
 			}
@@ -588,9 +612,15 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 	messagingHost.HandleRequest("tty.destroy", func(input []byte) (any, error) {
 		var params struct {
 			ID string `json:"id"`
+			// Pane, when set, is the pane tab being closed: its grants end
+			// even if its session has already died.
+			Pane string `json:"pane"`
 		}
 		if err := json.Unmarshal(input, &params); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal destroy params: %w", err)
+		}
+		if params.Pane != "" {
+			sessions.ClosePane(params.Pane)
 		}
 		if err := sessions.Destroy(params.ID); err != nil {
 			return nil, err

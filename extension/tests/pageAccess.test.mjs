@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseHTML } from "linkedom";
 import xterm from "@xterm/xterm";
-import { isThin, readPage } from "../entrypoints/shared/pageContent.ts";
+import { attachPtySocket } from "../entrypoints/shared/ptyAttach.ts";
+import { effectiveBase, isThin, readPage } from "../entrypoints/shared/pageContent.ts";
 import {
     approvalChoice,
     createApprovalQueue,
@@ -155,7 +156,7 @@ test("a read injects the reader into the main frame and returns its result", asy
     assert.equal(await readTab(apis, 3, "text", false), "page text");
     assert.deepEqual(calls[0], { target: { tabId: 3, frameIds: [0] }, files: ["/page-reader.js"] });
     assert.deepEqual(calls[1].target, { tabId: 3, frameIds: [0] });
-    assert.deepEqual(calls[1].args, ["text", false]);
+    assert.deepEqual(calls[1].args, ["text", false, null]);
     assert.equal(calls[1].world, undefined, "isolated world, the default");
 
     const chrome = { ...apis, tabs: { get: async () => ({ id: 3, url: "chrome://extensions/" }) } };
@@ -255,7 +256,7 @@ test("Send tab does not deliver when the terminal changes during the last await"
         read: async () => "page of A",
         describe: () => describing,
         isDestination: () => active === "A",
-        deliver: (c) => delivered.push([active, c]),
+        deliver: (c) => (delivered.push([active, c]), true),
     });
     // The person switches to B while the tab's title is looked up.
     await new Promise((r) => setImmediate(r));
@@ -269,8 +270,70 @@ test("Send tab does not deliver when the terminal changes during the last await"
         read: async () => "page of A",
         describe: async () => "Title",
         isDestination: () => active === "A",
-        deliver: (c) => delivered.push([active, c]),
+        deliver: (c) => (delivered.push([active, c]), true),
     });
     assert.equal(sent, "Title");
     assert.deepEqual(delivered, [["A", "page of A"]]);
+});
+
+test("Send tab reports nothing sent while a reattached socket is still replaying", async (t) => {
+    const originalWebSocket = globalThis.WebSocket;
+    globalThis.WebSocket = { OPEN: 1 };
+    t.after(() => { globalThis.WebSocket = originalWebSocket; });
+    const socket = new EventTarget();
+    socket.readyState = 1;
+    const sent = [];
+    socket.send = (data) => sent.push(new TextDecoder().decode(data));
+    const terminal = new Terminal();
+    const attachment = attachPtySocket(terminal, socket);
+    t.after(() => { attachment.dispose(); terminal.dispose(); });
+    const steps = {
+        read: async () => "page",
+        describe: async () => "Title",
+        isDestination: () => true,
+        deliver: (c) => attachment.sendInput(c),
+    };
+
+    // Open, but the replay frame has not been written: input is dropped,
+    // so Send tab must not say it was sent.
+    assert.equal(await sendTabContent(steps), null);
+    assert.deepEqual(sent, []);
+
+    socket.dispatchEvent(new MessageEvent("message", { data: new TextEncoder().encode("old screen").buffer }));
+    await new Promise((resolve) => terminal.write("", resolve));
+    assert.equal(await sendTabContent(steps), "Title");
+    assert.deepEqual(sent, ["page"]);
+});
+
+test("whole-body markdown resolves links and images against the document base", () => {
+    const html = `<html><head><title>T</title><base href="/docs/v2/"></head><body>
+        <p><a href="guide.html">Guide</a> <a href="#top">Top</a> <a href="https://other.example/x">Other</a></p>
+        <p><img src="images/chart.png" alt="Chart"> <a href="/products/1">Product</a></p></body></html>`;
+    const doc = page(html);
+    assert.equal(effectiveBase(doc, "https://example.com/a/b"), "https://example.com/docs/v2/");
+    const out = readPage(doc, "https://example.com/a/b", "markdown", true).content;
+    assert.match(out, /\[Guide\]\(https:\/\/example\.com\/docs\/v2\/guide\.html\)/);
+    assert.match(out, /!\[Chart\]\(https:\/\/example\.com\/docs\/v2\/images\/chart\.png\)/);
+    assert.match(out, /\[Product\]\(https:\/\/example\.com\/products\/1\)/);
+    assert.match(out, /\[Other\]\(https:\/\/other\.example\/x\)/);
+    assert.match(out, /\[Top\]\(#top\)/);
+
+    // Without <base>, the page's own URL is the base.
+    const plain = page(`<html><head><title>T</title></head><body><p><a href="next">Next</a></p></body></html>`);
+    assert.equal(effectiveBase(plain, "https://example.com/a/b"), "https://example.com/a/b");
+    assert.match(readPage(plain, "https://example.com/a/b", "markdown", true).content, /\(https:\/\/example\.com\/a\/next\)/);
+});
+
+test("a prompted read delivers only the document the prompt named", async () => {
+    const doc = page(`<html><head><title>T</title></head><body>secret</body></html>`);
+    assert.deepEqual(readPage(doc, "https://a.example/", "text", false, "https://a.example/#part"), { content: "secret" });
+    assert.match(readPage(doc, "https://b.example/", "text", false, "https://a.example/").error, /moved to another page/);
+    assert.deepEqual(readPage(doc, "https://b.example/", "text", false), { content: "secret" });
+
+    // The prompt names the committed document, not a navigation still pending.
+    const apis = {
+        storageSession: { get: async () => ({}) },
+        tabs: { query: async () => [{ id: 7, title: "Old", url: "https://old.example/", pendingUrl: "https://new.example/" }] },
+    };
+    assert.equal((await resolveTab(apis, "a")).url, "https://old.example/");
 });

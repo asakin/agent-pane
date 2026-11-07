@@ -86,7 +86,7 @@ export function createApprovalPrompts(anchor: HTMLElement, terminalName: (tty: s
         }
         const title = document.createElement("div");
         title.className = "at-approve__title";
-        title.textContent = `${ask.agent || terminalName(ask.tty)} wants to read a tab`;
+        title.textContent = `${ask.agent || terminalName(ask.tty)} wants to read a Chrome tab`;
         const tab = document.createElement("div");
         tab.className = "at-approve__tab";
         tab.textContent = ask.title || "(untitled)";
@@ -95,7 +95,7 @@ export function createApprovalPrompts(anchor: HTMLElement, terminalName: (tty: s
         url.textContent = ask.url;
         const where = document.createElement("div");
         where.className = "at-approve__note";
-        where.textContent = `Terminal: ${terminalName(ask.tty)}. Page text is untrusted: an agent may be told to do things by the page.`;
+        where.textContent = `Pane tab: ${terminalName(ask.tty)}. Approval stays with this pane tab, whichever coding agent runs in it, until the pane tab closes. Page text is untrusted: an agent may be told to do things by the page.`;
         const actions = document.createElement("div");
         actions.className = "at-approve__actions";
         const button = (label: string, choice: ApprovalChoice) => {
@@ -107,8 +107,8 @@ export function createApprovalPrompts(anchor: HTMLElement, terminalName: (tty: s
             return b;
         };
         actions.append(
-            button("Allow this tab", "tab"),
-            button("Allow all tabs for this agent", "all"),
+            button("Allow this Chrome tab", "tab"),
+            button("Allow all Chrome tabs for this pane tab", "all"),
             button("Deny", "deny"),
         );
         anchor.replaceChildren(title, tab, url, where, actions);

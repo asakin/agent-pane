@@ -255,11 +255,14 @@ export async function resolveTab(apis: PageApis, tty: string): Promise<ResolvedT
     if (!tab || tab.id === undefined) {
         throw new Error("no Chrome tab is focused in this terminal's window");
     }
-    return { tabId: tab.id, title: tab.title ?? "", url: tab.pendingUrl || tab.url || "" };
+    // The committed document, which is what a read gets; a navigation still
+    // pending has not replaced it yet. A prompted read checks it is still
+    // this document before anything is delivered.
+    return { tabId: tab.id, title: tab.title ?? "", url: tab.url || tab.pendingUrl || "" };
 }
 
 /** Reads one tab: main frame, isolated world, result returned once. */
-export async function readTab(apis: Pick<PageApis, "tabs" | "scripting">, tabId: number, format: string, full: boolean): Promise<string> {
+export async function readTab(apis: Pick<PageApis, "tabs" | "scripting">, tabId: number, format: string, full: boolean, expectUrl?: string): Promise<string> {
     const tab = await apis.tabs.get(tabId).catch(() => {
         throw new Error("the tab was closed");
     });
@@ -274,9 +277,11 @@ export async function readTab(apis: Pick<PageApis, "tabs" | "scripting">, tabId:
         await apis.scripting.executeScript({ target, files: ["/page-reader.js"] });
         results = await apis.scripting.executeScript({
             target,
-            func: (f: string, all: boolean) =>
-                (globalThis as unknown as { __agentPaneRead: (f: string, all: boolean) => unknown }).__agentPaneRead(f, all),
-            args: [format, full],
+            func: (f: string, all: boolean, expect: string | null) =>
+                (globalThis as unknown as { __agentPaneRead: (f: string, all: boolean, expect?: string) => unknown })
+                    .__agentPaneRead(f, all, expect ?? undefined),
+            // executeScript arguments must be JSON: null, not undefined.
+            args: [format, full, expectUrl ?? null],
         });
     } catch (err) {
         throw new Error(scriptingFailure(url, err));
@@ -315,21 +320,21 @@ export function pasteBytes(text: string, bracketed: boolean): string {
 /**
  * Send tab's steps after the click. The destination is checked after the
  * last await, immediately before delivery, so switching terminals while the
- * page is read never pastes it into the wrong one. Returns the tab's
- * description, or null when the terminal it was clicked for is no longer
- * the attached one.
+ * page is read never pastes it into the wrong one. Delivery reports whether
+ * the attached session took the input: while a reattached socket replays
+ * scrollback, input is dropped. Returns the tab's description, or null when
+ * nothing was delivered.
  */
 export async function sendTabContent(steps: {
     read(): Promise<string>;
     describe(): Promise<string>;
     isDestination(): boolean;
-    deliver(content: string): void;
+    deliver(content: string): boolean;
 }): Promise<string | null> {
     const content = await steps.read();
     const description = await steps.describe();
     if (!steps.isDestination()) {
         return null;
     }
-    steps.deliver(content);
-    return description;
+    return steps.deliver(content) ? description : null;
 }

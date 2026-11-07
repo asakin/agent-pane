@@ -6,5 +6,5 @@ import { readPage } from "./shared/pageContent";
 // executeScript call, whose return value is the result. No page listeners.
 export default defineUnlistedScript(() => {
     (globalThis as { __agentPaneRead?: unknown }).__agentPaneRead =
-        (format: string, full: boolean) => readPage(document, location.href, format, full);
+        (format: string, full: boolean, expectUrl?: string) => readPage(document, location.href, format, full, expectUrl);
 });
