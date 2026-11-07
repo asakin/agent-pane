@@ -25,13 +25,14 @@ import (
 
 // fakeExtension answers the host's page.* requests the way the side panel does.
 type fakeExtension struct {
-	mu      sync.Mutex
-	tab     pageTab
-	choice  string
-	prompts []map[string]any
-	reads   []map[string]any
-	content string
-	readErr error
+	mu         sync.Mutex
+	tab        pageTab
+	choice     string
+	prompts    []map[string]any
+	reads      []map[string]any
+	content    string
+	readErr    error
+	resolveErr error
 }
 
 func (f *fakeExtension) call(_ context.Context, method string, params any) (json.RawMessage, error) {
@@ -41,6 +42,9 @@ func (f *fakeExtension) call(_ context.Context, method string, params any) (json
 	var out any
 	switch method {
 	case "page.resolve":
+		if f.resolveErr != nil {
+			return nil, f.resolveErr
+		}
 		out = f.tab
 	case "page.approve":
 		f.prompts = append(f.prompts, p)
@@ -794,5 +798,35 @@ func TestNativeCallerNamesItsExpiry(t *testing.T) {
 	}
 	if req.Params.TTY != "a" || req.Params.ExpiresAt != deadline.UnixMilli() {
 		t.Fatalf("params %+v", req.Params)
+	}
+}
+
+// The extension refuses blocked domains; the host passes the refusal on as
+// it is, without a prompt, and an existing grant does not get around it.
+func TestPageBlockedDomainReachesTheCaller(t *testing.T) {
+	ext := &fakeExtension{tab: pageTab{TabID: 7, Title: "Bank", URL: "https://bank.example/"}, choice: "all", content: "balance"}
+	_, _, fd := pageSession(t, ext)
+	if _, err := read(fd, "text"); err != nil {
+		t.Fatal(err)
+	}
+	const blocked = "blocked: the page's domain matches bank.example in Agent Pane's Blocked domains"
+	ext.set(func(f *fakeExtension) { f.resolveErr = errors.New(blocked) })
+	for _, format := range []string{"info", "selection", "text", "dom", "markdown"} {
+		if got, err := read(fd, format); err == nil || err.Error() != blocked || got != "" {
+			t.Fatalf("%s: %q %v", format, got, err)
+		}
+	}
+	// Blocked during the read itself.
+	ext.set(func(f *fakeExtension) { f.resolveErr = nil; f.readErr = errors.New(blocked) })
+	if got, err := read(fd, "dom"); err == nil || err.Error() != blocked || got != "" {
+		t.Fatalf("read: %q %v", got, err)
+	}
+	// Removing the block: the grant from before still covers the tab.
+	ext.set(func(f *fakeExtension) { f.readErr = nil })
+	if got, err := read(fd, "text"); err != nil || got != "balance" {
+		t.Fatalf("after removal: %q %v", got, err)
+	}
+	if ext.promptCount() != 1 {
+		t.Fatalf("prompts %d", ext.promptCount())
 	}
 }
