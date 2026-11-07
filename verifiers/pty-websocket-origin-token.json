@@ -1,0 +1,22 @@
+{
+  "name": "PTY WebSocket origin and token boundary",
+  "instruction": "PTY WebSocket attach paths must require both an allowed extension Origin and a one-time attach token before exposing a terminal session.",
+  "relevant_when": "Go file that defines the PTY WebSocket handler, WebSocket upgrader, allowedOrigin check, attach token issuance, or token redemption for tty.create or tty.attach.",
+  "context": "AGENTS.md states that web pages and other local processes must not be able to attach to terminals. The PTY WebSocket boundary relies on extension-origin checking plus one-time attach tokens issued over native messaging.",
+  "scope": "file",
+  "scope_reason": "The WebSocket boundary and token lifecycle are implemented together in the server file.",
+  "checklist": [
+    {
+      "name": "allowed-extension-origin-only",
+      "rule": "WebSocket requests are accepted only from configured extension origins, and requests with a missing or non-matching Origin are refused. Return not applicable if the file does not define the PTY WebSocket boundary."
+    },
+    {
+      "name": "one-time-token-before-session",
+      "rule": "The WebSocket handler validates a fresh one-time token bound to the tty id before looking up or exposing the terminal session. Return not applicable if the file does not define the PTY WebSocket boundary."
+    },
+    {
+      "name": "no-secret-echo-on-refusal",
+      "rule": "Refusal paths do not echo the tty id, attach token, or other attach secrets in user-visible error messages. Return not applicable if the file does not define the PTY WebSocket boundary."
+    }
+  ]
+}

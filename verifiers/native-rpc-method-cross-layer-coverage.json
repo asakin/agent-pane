@@ -1,0 +1,22 @@
+{
+  "name": "Native RPC methods wired through all layers",
+  "instruction": "New native-messaging RPC methods must be typed, forwarded, handled, and covered by both extension and Go tests.",
+  "relevant_when": "Diff that adds, renames, or changes a native-messaging RPC method in extension/entrypoints/shared/rpc.ts, extension/entrypoints/background.ts, internal/cmd/serve.go, or related native RPC tests.",
+  "context": "AGENTS.md defines the repository rule for adding native-messaging RPC methods: define request and response types, forward through sendNative, handle in Go, and cover both sides in tests.",
+  "scope": "diff",
+  "scope_reason": "The invariant depends on companion changes across TypeScript, Go, and tests in one pull request.",
+  "checklist": [
+    {
+      "name": "typed-and-forwarded",
+      "rule": "For each new or changed RPC method, the diff includes matching TypeScript request/response types and background forwarding through the native messaging path, unless the method is exclusively internal to the host. Return not applicable if no native-messaging RPC method is added, renamed, or changed."
+    },
+    {
+      "name": "go-handler-present",
+      "rule": "For each new or changed RPC method that the extension can call, the diff includes a matching Go handler in the native host. Return not applicable if no extension-callable native-messaging RPC method is added, renamed, or changed."
+    },
+    {
+      "name": "both-side-tests",
+      "rule": "For each new or changed extension-callable RPC method, the diff includes or updates extension native RPC tests and Go command tests that cover the method's contract. Return not applicable if no extension-callable native-messaging RPC method is added, renamed, or changed."
+    }
+  ]
+}
