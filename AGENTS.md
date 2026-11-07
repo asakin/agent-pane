@@ -46,10 +46,10 @@ npm --prefix extension run build
 
 ## Map
 
-- `main.go`, `internal/cmd/`: Go CLI entry point, native-messaging host (`serve.go`), agent catalog loader (`agents.go`), and macOS LaunchAgent spawn (`spawn_darwin.go`).
+- `main.go`, `internal/cmd/`: Go CLI entry point, native-messaging host (`serve.go`), page channel and `agent-pane page` commands (`page.go`, `page_unix.go`), agent catalog loader (`agents.go`), and macOS LaunchAgent spawn (`spawn_darwin.go`).
 - `internal/jsonrpc/`, `internal/scrollback/`: JSON-RPC framing and terminal scrollback ring/mode replay.
 - `internal/peercred/`: unix socket peer checks (uid, executable, ancestry) for Linux and macOS.
-- `extension/entrypoints/`: WXT extension entry points (`background.ts`, `sidepanel.html`, `options.html`) and shared terminal/tab/RPC modules in `extension/entrypoints/shared/`.
+- `extension/entrypoints/`: WXT extension entry points (`background.ts`, `sidepanel.html`, `options.html`, the injected `page-reader.ts`) and shared terminal/tab/RPC/page modules in `extension/entrypoints/shared/`.
 - `extension/tests/`: Node test runner suites (`*.test.mjs`).
 - `agents/`: shipped agent definitions and `agents/enabled.json`; see [agents/README.md](agents/README.md).
 - `install.sh`, `install_test.sh`: curl installer and its test script.

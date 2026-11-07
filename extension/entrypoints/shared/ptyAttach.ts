@@ -2,6 +2,12 @@ import type { Terminal } from "@xterm/xterm";
 
 export type PtyAttachHandle = {
     dispose: () => void;
+    /**
+     * Sends input to the session unless the attachment is not taking input
+     * (replay still running, superseded, or socket closed). Reports whether
+     * it was sent.
+     */
+    sendInput: (data: string) => boolean;
 };
 
 /**
@@ -43,11 +49,12 @@ export function attachPtySocket(
     // onBinary is a byte string (each char = one octet).
     const encoder = new TextEncoder();
 
-    const send = (data: string) => {
+    const send = (data: string): boolean => {
         if (!acceptInput || !alive() || socket.readyState !== WebSocket.OPEN) {
-            return;
+            return false;
         }
         socket.send(encoder.encode(data));
+        return true;
     };
 
     const sendBinary = (data: string) => {
@@ -61,7 +68,7 @@ export function attachPtySocket(
         socket.send(buf);
     };
 
-    disposables.push(terminal.onData(send));
+    disposables.push(terminal.onData((data) => void send(data)));
     disposables.push(terminal.onBinary(sendBinary));
 
     const onMessage = (ev: MessageEvent) => {
@@ -103,6 +110,7 @@ export function attachPtySocket(
     socket.addEventListener("error", onClose);
 
     return {
+        sendInput: send,
         dispose: () => {
             if (disposed) {
                 return;

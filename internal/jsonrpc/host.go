@@ -1,8 +1,10 @@
 package jsonrpc
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +20,41 @@ type Host struct {
 	mu             sync.Mutex
 	handlers       map[string]RequestHandlerFunc
 	clientChannels map[string]chan JSONRPCResponse
+
+	in  io.Reader
+	out io.Writer
+	// queue feeds the one goroutine that writes to out, so no caller ever
+	// blocks on the native pipe or on another caller's write.
+	queue       chan *outbound
+	startWriter sync.Once
+	// writeStarted, if set, is called as the writer starts on a message.
+	writeStarted func()
+}
+
+// maxOutgoingMessage is the largest message Chrome accepts from a native
+// messaging host.
+const maxOutgoingMessage = 1 << 20
+
+var errMessageTooLarge = errors.New("message exceeds the native messaging limit")
+
+// errWithdrawn reports a message whose sender gave up before any of it was
+// written.
+var errWithdrawn = errors.New("withdrawn before it was written")
+
+// deadlineWriter is an output whose blocked writes can be interrupted, such
+// as a non-blocking pipe.
+type deadlineWriter interface {
+	io.Writer
+	SetWriteDeadline(time.Time) error
+}
+
+type outbound struct {
+	frame []byte
+	// ctx ends when the sender gives up. A message is skipped if that
+	// happens before its first byte is written; after that it is finished,
+	// so the framing stays intact.
+	ctx     context.Context
+	written chan error
 }
 
 func (h *Host) HandleRequest(method string, handler RequestHandlerFunc) {
@@ -29,13 +66,29 @@ func NewHost(logger *slog.Logger) *Host {
 		logger:         logger,
 		handlers:       make(map[string]RequestHandlerFunc),
 		clientChannels: make(map[string]chan JSONRPCResponse),
+		in:             os.Stdin,
+		out:            os.Stdout,
+		queue:          make(chan *outbound, 64),
 	}
+}
+
+// SetOutput sets where the host writes messages. Call it before Listen.
+func (h *Host) SetOutput(w io.Writer) {
+	h.out = w
+}
+
+// UseInterruptibleStdout switches the host's output to a non-blocking stdout,
+// so a write stalled on a full pipe can be withdrawn when its sender gives up.
+// The mode belongs to the open pipe, so only a process where nothing else
+// writes to stdout should call it, before Listen.
+func (h *Host) UseInterruptibleStdout() {
+	h.SetOutput(nativeOutput())
 }
 
 func (h *Host) Listen() error {
 	for {
 		lengthBytes := make([]byte, 4)
-		if _, err := io.ReadFull(os.Stdin, lengthBytes); err != nil {
+		if _, err := io.ReadFull(h.in, lengthBytes); err != nil {
 			if err == io.EOF {
 				h.logger.Info("EOF reached, stopping listener")
 				return nil
@@ -48,7 +101,7 @@ func (h *Host) Listen() error {
 		length := binary.LittleEndian.Uint32(lengthBytes)
 
 		msgBytes := make([]byte, length)
-		if _, err := io.ReadFull(os.Stdin, msgBytes); err != nil {
+		if _, err := io.ReadFull(h.in, msgBytes); err != nil {
 			h.logger.Error("failed to read message", "error", err)
 			continue
 		}
@@ -111,7 +164,7 @@ func (h *Host) Listen() error {
 				continue
 			}
 
-			writeMessage(JSONRPCResponse{
+			h.writeMessage(JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      request.ID,
 				Error:   errorBytes,
@@ -132,7 +185,7 @@ func (h *Host) Listen() error {
 					return
 				}
 
-				writeMessage(JSONRPCResponse{
+				h.writeMessage(JSONRPCResponse{
 					JSONRPC: "2.0",
 					ID:      request.ID,
 					Error:   errorBytes,
@@ -153,7 +206,7 @@ func (h *Host) Listen() error {
 				Error:   nil,
 			}
 
-			if err := writeMessage(response); err != nil {
+			if err := h.writeMessage(response); err != nil {
 				h.logger.Error("failed to write response", "error", err)
 				return
 			}
@@ -162,39 +215,149 @@ func (h *Host) Listen() error {
 }
 
 func (h *Host) SendRequest(request JSONRPCRequest) (JSONRPCResponse, error) {
+	return h.SendRequestTimeout(request, 5*time.Second)
+}
+
+// SendRequestTimeout sends a request to the extension and waits up to timeout
+// for its answer. A late answer is dropped without blocking the listen loop.
+func (h *Host) SendRequestTimeout(request JSONRPCRequest, timeout time.Duration) (JSONRPCResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return h.SendRequestContext(ctx, request)
+}
+
+// SendRequestContext sends a request to the extension and waits for its
+// answer until ctx ends. The wait covers queueing and writing as well as the
+// answer: a request still queued behind a stalled native pipe when ctx ends,
+// or whose write has started but not yet sent a byte, is withdrawn and never
+// written. One already partly written is finished so the next frame stays
+// readable; callers that need the extension to ignore it name its expiry in
+// the request.
+func (h *Host) SendRequestContext(ctx context.Context, request JSONRPCRequest) (JSONRPCResponse, error) {
 	h.mu.Lock()
-	responseChan := make(chan JSONRPCResponse)
+	responseChan := make(chan JSONRPCResponse, 1)
 	h.clientChannels[request.ID] = responseChan
 	h.mu.Unlock()
-
-	if err := writeMessage(request); err != nil {
-		return JSONRPCResponse{}, fmt.Errorf("failed to write request: %w", err)
+	forget := func() {
+		h.mu.Lock()
+		delete(h.clientChannels, request.ID)
+		h.mu.Unlock()
 	}
 
-	select {
-	case response := <-responseChan:
-		return response, nil
-	case <-time.After(5 * time.Second):
-		return JSONRPCResponse{}, fmt.Errorf("timeout waiting for response")
+	o, err := h.enqueue(ctx, request)
+	if err != nil {
+		forget()
+		return JSONRPCResponse{}, fmt.Errorf("failed to write request: %w", err)
+	}
+	written := o.written
+	for {
+		select {
+		case response := <-responseChan:
+			return response, nil
+		case err := <-written:
+			if err != nil {
+				forget()
+				return JSONRPCResponse{}, fmt.Errorf("failed to write request: %w", err)
+			}
+			written = nil
+		case <-ctx.Done():
+			forget()
+			return JSONRPCResponse{}, fmt.Errorf("no response: %w", ctx.Err())
+		}
 	}
 }
 
-var writeMu sync.Mutex
-
-func writeMessage(data interface{}) error {
+// enqueue hands one message to the writer, waiting for room in the queue
+// until ctx ends.
+func (h *Host) enqueue(ctx context.Context, data any) (*outbound, error) {
 	msg, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	if len(msg) > maxOutgoingMessage {
+		return nil, errMessageTooLarge
+	}
+	frame := make([]byte, 4, 4+len(msg))
+	binary.LittleEndian.PutUint32(frame, uint32(len(msg)))
+	o := &outbound{frame: append(frame, msg...), ctx: ctx, written: make(chan error, 1)}
+	h.startWriter.Do(func() { go h.writeLoop() })
+	select {
+	case h.queue <- o:
+		return o, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// writeLoop writes queued messages in order, skipping withdrawn ones. If the
+// browser stops reading the pipe, the write in progress waits for it, and
+// senders give up at their own deadlines.
+func (h *Host) writeLoop() {
+	for o := range h.queue {
+		if o.ctx.Err() != nil {
+			o.written <- errWithdrawn
+			continue
+		}
+		o.written <- h.writeFrame(o)
+	}
+}
+
+// writeFrame writes one frame. On an output whose writes can be interrupted,
+// the sender giving up interrupts a write that has sent nothing yet, and the
+// frame is dropped; once a byte is out, the rest follows whatever the sender
+// does.
+func (h *Host) writeFrame(o *outbound) error {
+	if h.writeStarted != nil {
+		h.writeStarted()
+	}
+	dw, ok := h.out.(deadlineWriter)
+	if !ok || dw.SetWriteDeadline(time.Time{}) != nil {
+		_, err := h.out.Write(o.frame)
+		return err
+	}
+	// finished stops a late interrupt from leaving a deadline on the next
+	// frame.
+	var mu sync.Mutex
+	finished := false
+	stop := context.AfterFunc(o.ctx, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if !finished {
+			_ = dw.SetWriteDeadline(time.Now())
+		}
+	})
+	defer func() {
+		stop()
+		mu.Lock()
+		finished = true
+		_ = dw.SetWriteDeadline(time.Time{})
+		mu.Unlock()
+	}()
+	sent := 0
+	for sent < len(o.frame) {
+		n, err := dw.Write(o.frame[sent:])
+		sent += n
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			return err
+		}
+		if sent == 0 {
+			return errWithdrawn
+		}
+		// Part of the frame is out: finish it.
+		_ = dw.SetWriteDeadline(time.Time{})
+	}
+	return nil
+}
+
+// writeMessage writes a response to the extension and waits until it is
+// written.
+func (h *Host) writeMessage(data any) error {
+	o, err := h.enqueue(context.Background(), data)
 	if err != nil {
 		return err
 	}
-	length := uint32(len(msg))
-
-	writeMu.Lock()
-	defer writeMu.Unlock()
-
-	if err := binary.Write(os.Stdout, binary.LittleEndian, length); err != nil {
-		return err
-	}
-
-	_, err = os.Stdout.Write(msg)
-	return err
+	return <-o.written
 }

@@ -36,6 +36,11 @@ import {
     toggleLock,
     trackedTabId,
 } from "./tabLock";
+import type { PageFormat } from "./pageContent";
+import { isApproveMessage, isCancelMessage, isReadNotice, pasteBytes, readTab, sendTabContent } from "./pageAccess";
+import { createApprovalPrompts, createReadNotice, mountSendTab } from "./pagePanel";
+import { isOwnExtensionPage } from "./sender";
+import { describeUrl } from "./tabLock";
 
 const terminalFontFamily = "JetBrainsMono Nerd Font Mono";
 
@@ -65,6 +70,7 @@ import {
     pruneTab,
     reclaimLegacySession,
     replaceTabId,
+    tabPane,
     resolveWindowId,
     saveWindowState,
     tabApp,
@@ -367,7 +373,10 @@ async function main() {
 
     const strip = document.getElementById("tab-strip");
     const statusBar = document.getElementById("status-bar");
-    if (!strip || !statusBar) {
+    const sendTabHost = document.getElementById("send-tab");
+    const approveHost = document.getElementById("page-approve");
+    const noticeHost = document.getElementById("page-notice");
+    if (!strip || !statusBar || !sendTabHost || !approveHost || !noticeHost) {
         showSetup("Tab strip missing from side panel");
         return;
     }
@@ -542,6 +551,77 @@ async function main() {
         void updateLocks(applyTabLifecycle(state, earlyTabEvents.splice(0)));
     }
 
+    // Page reading. Send tab is the person's own action, so it needs no
+    // prompt; reads an agent asks for are approved here, per terminal.
+    const notice = createReadNotice(noticeHost);
+    const terminalName = (tty: string) => titles.get(tty) || tabApp(state ?? { tabs: [], activeId: "" }, tty) || "Terminal";
+    const prompts = createApprovalPrompts(approveHost, terminalName);
+
+    async function sendTab(format: PageFormat) {
+        const agentTab = activeAgentTab();
+        if (!state || !agentTab || shownAgentId !== agentTab.id) {
+            return;
+        }
+        const tabId = trackedTabId(agentTab, activeChromeTabId);
+        if (tabId === undefined) {
+            notice("No tab to send: the locked tab was closed", true);
+            return;
+        }
+        const tty = agentTab.id;
+        const gen = switchGen;
+        try {
+            const sent = await sendTabContent({
+                read: () => readTab(browser, tabId, format, false),
+                describe: async () => {
+                    const tab = await browser.tabs.get(tabId).catch(() => undefined);
+                    return tab?.title || describeUrl(tab?.url ?? "");
+                },
+                // Still the pane tab it was clicked for and attached; the
+                // attachment itself says whether it is taking input yet.
+                isDestination: () => !!state && state.activeId === tty && activeTtyId === tty
+                    && gen === switchGen && ws?.readyState === WebSocket.OPEN && !!ptyAttach,
+                deliver: (content) => {
+                    const bytes = pasteBytes(content, terminal.modes.bracketedPasteMode);
+                    if (!ptyAttach?.sendInput(bytes)) {
+                        return false;
+                    }
+                    terminal.scrollToBottom();
+                    return true;
+                },
+            });
+            if (sent === null) {
+                notice("Not sent: the pane tab changed or was still reconnecting while the Chrome tab was read", true);
+                return;
+            }
+            terminal.focus();
+            notice(`Sent ${sent}`);
+        } catch (err) {
+            notice((err as Error).message, true);
+        }
+    }
+
+    mountSendTab(sendTabHost, (format) => void sendTab(format));
+    sendTabHost.hidden = false;
+
+    browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+        if (!isOwnExtensionPage(sender, browser.runtime.id, browser.runtime.getURL("/"))) {
+            return false;
+        }
+        // Only the panel holding the terminal answers for it.
+        if (isApproveMessage(msg) && hasTab(msg.tty)) {
+            void prompts.ask(msg).then((choice) => sendResponse({ choice }));
+            return true;
+        }
+        if (isCancelMessage(msg) && hasTab(msg.tty)) {
+            prompts.cancel(msg.tty, msg.id);
+            return false;
+        }
+        if (isReadNotice(msg) && hasTab(msg.tty)) {
+            notice(`${terminalName(msg.tty)} read ${msg.title || describeUrl(msg.url)}`);
+        }
+        return false;
+    });
+
     try {
         const [activeChromeTab] = await browser.tabs.query({ active: true, windowId });
         activeChromeTabId = activeChromeTab?.id;
@@ -563,7 +643,7 @@ async function main() {
         return !!state && state.tabs.some((tab) => tab.id === id);
     }
 
-    async function openKind(app: string, size: TtyDimensions, remember: boolean, cwd?: string): Promise<{ id: string; url: string; app: string; cwd?: string }> {
+    async function openKind(app: string, size: TtyDimensions, remember: boolean, cwd?: string): Promise<{ id: string; url: string; pane?: string; app: string; cwd?: string }> {
         try {
             const created = await createTTY(optsFromAppId(app, size, cwd));
             if (remember) {
@@ -617,13 +697,14 @@ async function main() {
             if (!size) {
                 throw new Error("Terminal has no size yet");
             }
-            const created = await createTTY(optsFromAppId(kind, size, tabCwd(state, deadId)));
+            // Same pane tab, new PTY session: it keeps the pane tab's grants.
+            const created = await createTTY(optsFromAppId(kind, size, tabCwd(state, deadId)), tabPane(state, deadId));
             if (gen !== switchGen) {
                 await destroyTTY(created.id);
                 return false;
             }
             await ensureWindowAlive(windowId, created.id);
-            state = replaceTabId(state, deadId, created.id);
+            state = replaceTabId(state, deadId, created.id, created.pane);
             await saveWindowState(windowId, state);
             refreshStrip();
             endpoint = await attachTTY(state.activeId);
@@ -720,7 +801,7 @@ async function main() {
             return;
         }
         const gen = ++switchGen;
-        let created: { id: string; url: string; app: string; cwd?: string };
+        let created: { id: string; url: string; pane?: string; app: string; cwd?: string };
         try {
             created = await openKind(appId ?? "", size, true, cwd);
             await ensureWindowAlive(windowId, created.id);
@@ -731,11 +812,11 @@ async function main() {
             return;
         }
         if (gen !== switchGen) {
-            await destroyTTY(created.id);
+            await destroyTTY(created.id, created.pane);
             return;
         }
         state = {
-            tabs: [...state.tabs, { id: created.id, app: created.app, cwd: created.cwd }],
+            tabs: [...state.tabs, { id: created.id, app: created.app, cwd: created.cwd, pane: created.pane }],
             activeId: created.id,
         };
         await saveWindowState(windowId, state);
@@ -754,8 +835,10 @@ async function main() {
             return;
         }
 
+        // Closing the pane tab revokes its grants along with its session.
+        const pane = tabPane(state, id);
         if (id !== state.activeId) {
-            await destroyTTY(id);
+            await destroyTTY(id, pane);
             titles.delete(id);
             const next = pruneTab(state, id);
             if (!next) {
@@ -778,9 +861,9 @@ async function main() {
                 return;
             }
             const gen = ++switchGen;
-            await destroyTTY(id);
+            await destroyTTY(id, pane);
             titles.delete(id);
-            let created: { id: string; url: string };
+            let created: { id: string; url: string; pane?: string };
             try {
                 created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
                 await ensureWindowAlive(windowId, created.id);
@@ -790,10 +873,10 @@ async function main() {
                 return;
             }
             if (gen !== switchGen) {
-                await destroyTTY(created.id);
+                await destroyTTY(created.id, created.pane);
                 return;
             }
-            state = { tabs: [{ id: created.id, app: "" }], activeId: created.id };
+            state = { tabs: [{ id: created.id, app: "", pane: created.pane }], activeId: created.id };
             await saveWindowState(windowId, state);
             refreshStrip();
             try {
@@ -811,15 +894,16 @@ async function main() {
         await saveWindowState(windowId, state);
         refreshStrip();
         try {
-            const ok = await attachActive(gen);
-            if (ok && gen === switchGen) {
-                await destroyTTY(id);
-                titles.delete(id);
-            }
+            await attachActive(gen);
         } catch (err) {
             if (gen === switchGen && !(err instanceof NativeUnavailable)) {
                 showSetup((err as Error).message);
             }
+        } finally {
+            // The pane tab is gone from state whatever happened to its
+            // neighbour, so its session and grant go too.
+            await destroyTTY(id, pane);
+            titles.delete(id);
         }
     }
 
@@ -868,10 +952,10 @@ async function main() {
             const created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
             await ensureWindowAlive(windowId, created.id);
             if (gen !== switchGen) {
-                await destroyTTY(created.id);
+                await destroyTTY(created.id, created.pane);
                 return;
             }
-            state = { tabs: [{ id: created.id, app: "" }], activeId: created.id };
+            state = { tabs: [{ id: created.id, app: "", pane: created.pane }], activeId: created.id };
             await saveWindowState(windowId, state);
             refreshStrip();
             await attachActive(gen);

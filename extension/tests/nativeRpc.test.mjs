@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { isHostRequest } from "../entrypoints/shared/hostConnection.ts";
 import { checkHost, MIN_HOST_PROTOCOL, MIN_HOST_VERSION } from "../entrypoints/shared/hostVersion.ts";
 import { CHOOSE_FOLDER_TIMEOUT_MS, errorFromResponse, NATIVE_RPC_TIMEOUT_MS, nativeTimeoutMs, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
 
@@ -123,4 +124,12 @@ test("a released host that answers {} is blocked", () => {
 test("a dev host always passes", () => {
     assert.deepEqual(checkHost({ version: "dev" }), { ok: true });
     assert.deepEqual(checkHost({ version: "dev", protocol: 0 }, 5), { ok: true });
+});
+
+test("a host request is told apart from a response", () => {
+    assert.equal(isHostRequest({ jsonrpc: "2.0", id: "h", method: "page.approve", params: {} }), true);
+    assert.equal(isHostRequest({ jsonrpc: "2.0", id: "h", method: "page.read", result: {} }), false);
+    assert.equal(isHostRequest({ jsonrpc: "2.0", id: "h", error: { code: 1, message: "x" } }), false);
+    assert.equal(isHostRequest({ jsonrpc: "2.0", id: "", method: "page.read" }), false);
+    assert.equal(isHostRequest({ id: "h", method: "page.read" }), false);
 });

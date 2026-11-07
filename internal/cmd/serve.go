@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agent-pane/internal/jsonrpc"
@@ -52,6 +53,19 @@ type Session struct {
 	rows         int
 	closed       bool
 	manager      *SessionManager
+
+	// Label names the terminal in approval prompts (agent name or Terminal).
+	Label string
+	// page is the host's end of the page channel; nil where there is none.
+	page *net.UnixConn
+	// pane is the pane tab this session runs in. Page-read grants live
+	// there, so they outlive this session when the panel replaces it.
+	pane *paneTab
+	// done closes with the session, ending reads still in flight.
+	done chan struct{}
+	// replies are the reply sockets of reads in flight; closing the
+	// session closes them, so nothing is delivered after it.
+	replies map[*os.File]struct{}
 }
 
 // extensionOrigins are the only origins that may open a PTY WebSocket. Add the
@@ -76,11 +90,45 @@ type SessionManager struct {
 
 	tokenMu sync.Mutex
 	tokens  []attachToken
+
+	callMu sync.Mutex
+	call   extensionCaller
+
+	// panes are the pane tabs the extension has open, by id; guarded by mu.
+	panes map[string]*paneTab
+	// pageReads counts page reads in flight across all sessions.
+	pageReads atomic.Int32
+}
+
+func (m *SessionManager) takePageRead() bool {
+	if m.pageReads.Add(1) > int32(maxHostPageReads) {
+		m.pageReads.Add(-1)
+		return false
+	}
+	return true
+}
+
+func (m *SessionManager) releasePageRead() {
+	m.pageReads.Add(-1)
+}
+
+// SetExtensionCaller sets how page reads reach the extension.
+func (m *SessionManager) SetExtensionCaller(call extensionCaller) {
+	m.callMu.Lock()
+	m.call = call
+	m.callMu.Unlock()
+}
+
+func (m *SessionManager) extensionCaller() extensionCaller {
+	m.callMu.Lock()
+	defer m.callMu.Unlock()
+	return m.call
 }
 
 func NewSessionManager(port int, logger *slog.Logger) *SessionManager {
 	return &SessionManager{
 		sessions: make(map[string]*Session),
+		panes:    make(map[string]*paneTab),
 		port:     port,
 		logger:   logger,
 	}
@@ -155,10 +203,14 @@ func (m *SessionManager) endpoint(id string) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create attach token: %w", err)
 	}
-	return map[string]string{
+	out := map[string]string{
 		"url": m.wsURL(id, token),
 		"id":  id,
-	}, nil
+	}
+	if s, ok := m.Get(id); ok && s.pane != nil {
+		out["pane"] = s.pane.id
+	}
+	return out, nil
 }
 
 func (m *SessionManager) Get(id string) (*Session, bool) {
@@ -187,7 +239,7 @@ func (m *SessionManager) wsURL(id, token string) string {
 	return fmt.Sprintf("ws://127.0.0.1:%d/tty/%s?token=%s", m.port, id, token)
 }
 
-func (m *SessionManager) Create(cmdFactory func(tty pty.Pty, id string) (*pty.Cmd, error)) (*Session, error) {
+func (m *SessionManager) Create(label, paneID string, cmdFactory func(tty pty.Pty, id string) (*pty.Cmd, error)) (*Session, error) {
 	tty, err := pty.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pty: %w", err)
@@ -200,8 +252,23 @@ func (m *SessionManager) Create(cmdFactory func(tty pty.Pty, id string) (*pty.Cm
 		return nil, err
 	}
 
-	wait, err := startPty(tty, cmd)
+	// A terminal without a page channel still works; page commands in it
+	// say they are not in an Agent Pane terminal.
+	page, child, err := newPageChannel()
 	if err != nil {
+		m.logger.Warn("no page channel for terminal", "error", err)
+	} else {
+		cmd.Env = mergePtyEnv(cmd.Env, map[string]string{pageFDEnv: fmt.Sprint(pageFD)})
+	}
+
+	wait, err := startPty(tty, cmd, child)
+	if child != nil {
+		_ = child.Close()
+	}
+	if err != nil {
+		if page != nil {
+			_ = page.Close()
+		}
 		tty.Close()
 		return nil, fmt.Errorf("failed to start pty: %w", err)
 	}
@@ -211,13 +278,18 @@ func (m *SessionManager) Create(cmdFactory func(tty pty.Pty, id string) (*pty.Cm
 		Pty:     tty,
 		Buf:     scrollback.New(scrollbackBytes),
 		manager: m,
+		Label:   label,
+		page:    page,
 	}
-
 	m.mu.Lock()
+	session.pane = m.paneLocked(paneID)
 	m.sessions[id] = session
 	m.mu.Unlock()
 
 	go session.readLoop(m.logger)
+	if page != nil {
+		go session.servePage(page, m.extensionCaller)
+	}
 	go func() {
 		_ = wait()
 		m.reap(id)
@@ -231,6 +303,7 @@ func (m *SessionManager) Destroy(id string) error {
 	session, ok := m.sessions[id]
 	if ok {
 		delete(m.sessions, id)
+		m.forgetIdlePaneLocked(session.pane)
 	}
 	m.mu.Unlock()
 	if !ok {
@@ -247,6 +320,7 @@ func (m *SessionManager) reap(id string) {
 	session, ok := m.sessions[id]
 	if ok {
 		delete(m.sessions, id)
+		m.forgetIdlePaneLocked(session.pane)
 	}
 	m.mu.Unlock()
 	if !ok {
@@ -266,6 +340,25 @@ func (s *Session) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
+	// A descriptor that outlives its terminal stops working.
+	if s.page != nil {
+		_ = s.page.Close()
+	}
+	// The pane tab's grants stay: the panel may replace this session in the
+	// same pane tab. Closing the pane tab is what revokes them.
+	if s.done == nil {
+		s.done = make(chan struct{})
+	}
+	close(s.done)
+	// Each tracked reply holds a host-wide read slot; untrackReply finds
+	// nothing to release once the map is cleared, so release them here.
+	for reply := range s.replies {
+		_ = reply.Close()
+		if s.manager != nil {
+			s.manager.releasePageRead()
+		}
+	}
+	s.replies = nil
 	if s.client != nil {
 		_ = s.client.Close()
 		s.client = nil
@@ -367,6 +460,8 @@ func NewCmdServe(version string) *cobra.Command {
 
 			sessions := NewSessionManager(port, logger)
 			messagingHost := NewMessagingHost(logger, sessions, version)
+			messagingHost.UseInterruptibleStdout()
+			sessions.SetExtensionCaller(nativeCaller(messagingHost))
 
 			handler := NewWebSocketHandler(sessions)
 
@@ -446,8 +541,10 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			Args []string `json:"args"`
 			Cwd  string   `json:"cwd"`
 			File string   `json:"file"`
-			Cols int      `json:"cols"`
-			Rows int      `json:"rows"`
+			// Pane is the pane tab this session replaces a dead one in.
+			Pane string `json:"pane"`
+			Cols int    `json:"cols"`
+			Rows int    `json:"rows"`
 		}
 
 		if len(input) > 0 {
@@ -457,6 +554,7 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 		}
 
 		mode, app := params.Mode, params.App
+		label := "Terminal"
 		switch mode {
 		case "shell":
 			mode, app = "", ""
@@ -464,14 +562,16 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			if !isSafeAppID(app) {
 				return nil, fmt.Errorf("invalid app id %q", app)
 			}
-			if _, ok := agentByID(app); !ok {
+			agent, ok := agentByID(app)
+			if !ok {
 				return nil, fmt.Errorf("unknown app %q", app)
 			}
+			label = agent.Name
 		default:
 			mode, app = "", ""
 		}
 
-		session, err := sessions.Create(func(tty pty.Pty, _ string) (*pty.Cmd, error) {
+		session, err := sessions.Create(label, params.Pane, func(tty pty.Pty, _ string) (*pty.Cmd, error) {
 			if err := tty.Resize(params.Cols, params.Rows); err != nil {
 				return nil, fmt.Errorf("failed to set size for tty: %w", err)
 			}
@@ -518,9 +618,15 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 	messagingHost.HandleRequest("tty.destroy", func(input []byte) (any, error) {
 		var params struct {
 			ID string `json:"id"`
+			// Pane, when set, is the pane tab being closed: its grants end
+			// even if its session has already died.
+			Pane string `json:"pane"`
 		}
 		if err := json.Unmarshal(input, &params); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal destroy params: %w", err)
+		}
+		if params.Pane != "" {
+			sessions.ClosePane(params.Pane)
 		}
 		if err := sessions.Destroy(params.ID); err != nil {
 			return nil, err

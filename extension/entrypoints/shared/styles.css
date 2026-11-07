@@ -656,3 +656,152 @@ body.at-options {
         border-color: rgba(255, 255, 255, 0.15);
     }
 }
+
+/* Footer row: status bar, then Send tab. */
+.at-footer {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: stretch;
+    min-width: 0;
+}
+
+.at-footer .at-status {
+    flex: 1 1 auto;
+}
+
+.at-send {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: stretch;
+    height: 22px;
+    border-top: 1px solid #d0d0d0;
+    border-left: 1px solid rgba(0, 0, 0, 0.12);
+    background: #f0f0f0;
+    font-size: 11px;
+
+    @media (prefers-color-scheme: dark) {
+        border-top-color: #3a3a3a;
+        border-left-color: rgba(255, 255, 255, 0.12);
+        background: #252525;
+    }
+}
+
+.at-send[hidden] {
+    display: none;
+}
+
+.at-send__primary,
+.at-send__chevron {
+    margin: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.at-send__primary {
+    padding: 0 6px 0 8px;
+}
+
+.at-send__chevron {
+    padding: 0 6px;
+    opacity: 0.7;
+}
+
+.at-send__primary:hover,
+.at-send__chevron:hover {
+    background: rgba(0, 0, 0, 0.06);
+
+    @media (prefers-color-scheme: dark) {
+        background: rgba(255, 255, 255, 0.08);
+    }
+}
+
+.at-approve {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 12px;
+    border-top: 1px solid #d0d0d0;
+    background: #fff8e1;
+    color: #1a1a1a;
+    font-size: 12px;
+
+    @media (prefers-color-scheme: dark) {
+        border-top-color: #3a3a3a;
+        background: #3a3320;
+        color: #e8eaed;
+    }
+}
+
+.at-approve[hidden],
+.at-notice[hidden] {
+    display: none;
+}
+
+.at-approve__title {
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.at-approve__tab,
+.at-approve__url {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.at-approve__url,
+.at-approve__note {
+    opacity: 0.75;
+}
+
+.at-approve__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.at-approve__button {
+    padding: 4px 10px;
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    border-radius: 6px;
+    background: #ffffff;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+
+    @media (prefers-color-scheme: dark) {
+        border-color: rgba(255, 255, 255, 0.2);
+        background: #2a2a2a;
+    }
+}
+
+.at-notice {
+    flex: 0 0 auto;
+    padding: 3px 8px;
+    border-top: 1px solid #d0d0d0;
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    background: #e8f0fe;
+
+    @media (prefers-color-scheme: dark) {
+        border-top-color: #3a3a3a;
+        background: #1f2a3a;
+    }
+}
+
+.at-notice--error {
+    background: #fce8e6;
+    color: #b3261e;
+
+    @media (prefers-color-scheme: dark) {
+        background: #3a2020;
+        color: #f2b8b5;
+    }
+}
