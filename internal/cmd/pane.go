@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -25,9 +28,23 @@ type paneTab struct {
 }
 
 func newPaneTab() *paneTab {
-	p := &paneTab{id: "pane-" + strings.ToLower(rand.Text()), turn: make(chan struct{}, 1)}
+	return newPaneTabWithID("pane-" + strings.ToLower(rand.Text()))
+}
+
+func newPaneTabWithID(id string) *paneTab {
+	p := &paneTab{id: id, turn: make(chan struct{}, 1)}
 	p.turn <- struct{}{}
 	return p
+}
+
+// paneIDRe matches the ids newPaneTab makes.
+var paneIDRe = regexp.MustCompile(`^pane-[a-z2-7]{26}$`)
+
+// publicID names a host id to programs in the terminal (AGENT_PANE_TAB_ID,
+// AGENT_PANE_SESSION_ID) without handing them the id itself.
+func publicID(prefix, id string) string {
+	sum := sha256.Sum256([]byte("agent-pane:" + prefix + ":" + id))
+	return prefix + "-" + hex.EncodeToString(sum[:16])
 }
 
 // isAllowed reports whether a grant already covers reads of tabID.
@@ -69,7 +86,9 @@ func (p *paneTab) close() {
 // existing pane tab (the panel replacing a dead one) joins that pane tab's
 // record, unless another live session already holds it. An id the host does
 // not know, such as one from before the host restarted, gets a fresh record
-// with no grants.
+// with no grants. It keeps that id when it is one the host could have made
+// and is free, so the pane tab's identity (AGENT_PANE_TAB_ID) outlives the
+// record being forgotten or the host restarting.
 func (m *SessionManager) paneLocked(id string) *paneTab {
 	if p, ok := m.panes[id]; ok && id != "" {
 		held := false
@@ -83,7 +102,12 @@ func (m *SessionManager) paneLocked(id string) *paneTab {
 			return p
 		}
 	}
-	p := newPaneTab()
+	var p *paneTab
+	if _, known := m.panes[id]; !known && paneIDRe.MatchString(id) {
+		p = newPaneTabWithID(id)
+	} else {
+		p = newPaneTab()
+	}
 	m.panes[p.id] = p
 	return p
 }
