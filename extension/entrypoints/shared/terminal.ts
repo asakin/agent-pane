@@ -37,7 +37,7 @@ import {
     trackedTabId,
 } from "./tabLock";
 import type { PageFormat } from "./pageContent";
-import { assertTabNotBlocked, isApproveMessage, isCancelMessage, isReadNotice, pasteBytes, readTab, sendTabContent } from "./pageAccess";
+import { assertTabNotBlocked, isApproveMessage, isCancelMessage, isReadNotice, pasteBytes, readTabDocument, sendTabContent } from "./pageAccess";
 import { blockedDomainsFromConfig } from "./blockedDomains";
 import { createApprovalPrompts, createReadNotice, mountSendTab } from "./pagePanel";
 import { isOwnExtensionPage } from "./sender";
@@ -584,12 +584,12 @@ async function main() {
         const pageApis = { tabs: browser.tabs, scripting: browser.scripting, blockedDomains: currentBlockedDomains };
         try {
             const sent = await sendTabContent({
-                read: () => readTab(pageApis, tabId, format, false),
+                read: () => readTabDocument(pageApis, tabId, format, false),
                 describe: async () => {
                     const tab = await browser.tabs.get(tabId).catch(() => undefined);
                     return tab?.title || describeUrl(tab?.url ?? "");
                 },
-                checkBlocked: () => assertTabNotBlocked(pageApis, tabId),
+                checkBlocked: (sourceUrl) => assertTabNotBlocked(pageApis, tabId, sourceUrl),
                 // Still the pane tab it was clicked for and attached; the
                 // attachment itself says whether it is taking input yet.
                 isDestination: () => !!state && state.activeId === tty && activeTtyId === tty

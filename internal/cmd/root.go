@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	jsonparser "github.com/knadh/koanf/parsers/json"
@@ -18,7 +19,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var k = koanf.New(".")
+// config holds the loaded configuration. loadConfig and the config.json
+// watcher replace it whole, so readers go through cfg().
+var (
+	configMu      sync.RWMutex
+	config        = koanf.New(".")
+	configWatcher *file.File
+	watchedPath   string
+)
+
+// cfg returns the current configuration snapshot.
+func cfg() *koanf.Koanf {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return config
+}
 
 var (
 	maxBufferSizeBytes   = 512
@@ -63,32 +78,13 @@ func NewCmdRoot(version string) *cobra.Command {
 func loadConfig() error {
 	migrateLegacyDirs()
 
-	confmapProvider := confmap.Provider(map[string]interface{}{
-		"command":   getDefaultShell(),
-		"theme":     "Tomorrow Night",
-		"themeDark": "Tomorrow Night",
-		"xterm": map[string]interface{}{
-			"fontSize": 13,
-		},
-	}, ".")
-	if err := k.Load(confmapProvider, nil); err != nil {
-		return fmt.Errorf("failed to load default config: %w", err)
-	}
-
 	configPath := filepath.Join(configDir, "config.json")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		if err := os.MkdirAll(configDir, 0755); err != nil {
 			return fmt.Errorf("failed to create config directory: %w", err)
 		}
 
-		configBytes, err := json.MarshalIndent(map[string]interface{}{
-			"command":   getDefaultShell(),
-			"theme":     "Tomorrow Night",
-			"themeDark": "Tomorrow Night",
-			"xterm": map[string]interface{}{
-				"fontSize": 13,
-			},
-		}, "", "  ")
+		configBytes, err := json.MarshalIndent(defaultConfig(), "", "  ")
 		if err != nil {
 			return fmt.Errorf("failed to marshal default config: %w", err)
 		}
@@ -98,23 +94,80 @@ func loadConfig() error {
 		}
 	}
 
-	f := file.Provider(configPath)
-	if err := k.Load(f, jsonparser.Parser()); err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
+	configMu.Lock()
+	defer configMu.Unlock()
 
-	f.Watch(func(event interface{}, err error) {
-		if err != nil {
-			log.Printf("watch error: %v", err)
+	next, err := readConfig(configPath)
+	if err != nil {
+		return err
+	}
+	config = next
+
+	if watchedPath == configPath {
+		return nil
+	}
+	if configWatcher != nil {
+		_ = configWatcher.Unwatch()
+		configWatcher, watchedPath = nil, ""
+	}
+	f := file.Provider(configPath)
+	err = f.Watch(func(event interface{}, err error) {
+		configMu.Lock()
+		defer configMu.Unlock()
+		if configWatcher != f {
 			return
 		}
-
-		k = koanf.New(".")
-		_ = k.Load(confmapProvider, nil)
-		_ = k.Load(f, jsonparser.Parser())
+		if err != nil {
+			// The watcher stops after any error; the next loadConfig starts
+			// another.
+			log.Printf("watch error: %v", err)
+			configWatcher, watchedPath = nil, ""
+			return
+		}
+		if next, err := readConfig(configPath); err == nil {
+			config = next
+		}
 	})
+	if err != nil {
+		log.Printf("watch error: %v", err)
+		return nil
+	}
+	configWatcher, watchedPath = f, configPath
 
 	return nil
+}
+
+func defaultConfig() map[string]interface{} {
+	return map[string]interface{}{
+		"command":   getDefaultShell(),
+		"theme":     "Tomorrow Night",
+		"themeDark": "Tomorrow Night",
+		"xterm": map[string]interface{}{
+			"fontSize": 13,
+		},
+	}
+}
+
+// readConfig builds a fresh configuration from the defaults and configPath.
+func readConfig(configPath string) (*koanf.Koanf, error) {
+	next := koanf.New(".")
+	if err := next.Load(confmap.Provider(defaultConfig(), "."), nil); err != nil {
+		return nil, fmt.Errorf("failed to load default config: %w", err)
+	}
+	if err := next.Load(file.Provider(configPath), jsonparser.Parser()); err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+	return next, nil
+}
+
+// unwatchConfig stops the config.json watcher, if one is running.
+func unwatchConfig() {
+	configMu.Lock()
+	defer configMu.Unlock()
+	if configWatcher != nil {
+		_ = configWatcher.Unwatch()
+	}
+	configWatcher, watchedPath = nil, ""
 }
 
 // migrateLegacyDirs renames old tweety XDG dirs to agent-pane once.

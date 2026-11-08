@@ -6,7 +6,14 @@ import type {
     ResponseConfigSet,
 } from "./rpc";
 import { clampFontSize } from "./fontSize";
-import { BLOCKED_DOMAINS_KEY, normalizeBlockedDomains, parseBlockedDomain } from "./blockedDomains";
+import {
+    BLOCKED_DOMAINS_KEY,
+    type BlockedDomainEdit,
+    blockedDomainsFromConfig,
+    createBlockedDomainEditor,
+    normalizeBlockedDomains,
+    parseBlockedDomain,
+} from "./blockedDomains";
 
 const form = document.getElementById("settings-form") as HTMLFormElement;
 const statusEl = document.getElementById("status") as HTMLDivElement;
@@ -133,28 +140,46 @@ function renderBlockedDomains(domains: string[]) {
         remove.className = "at-btn";
         remove.textContent = "Remove";
         remove.setAttribute("aria-label", `Remove ${domain}`);
-        remove.addEventListener("click", () => void saveBlockedDomains(domains.filter((d) => d !== domain), `Removed ${domain}.`));
+        remove.addEventListener("click", () => void editBlockedDomains({ remove: domain }, `Removed ${domain}.`));
         row.append(name, remove);
         blockedListEl.appendChild(row);
     }
 }
 
-// The list saves on its own, at once, so a new block applies to reads
-// without waiting for the form's Save.
-async function saveBlockedDomains(domains: string[], done: string) {
-    setStatus("Saving…");
-    const resp = await browser.runtime.sendMessage<RequestConfigSet, ResponseConfigSet>({
+// Each edit reads the stored list, so edits from this page made before an
+// earlier save answered, and edits from another Options page, are kept.
+const blockedDomainEditor = createBlockedDomainEditor({
+    load: async () => blockedDomainsFromConfig(await browser.runtime.sendMessage<RequestConfigGet, ResponseConfigGet>({
         jsonrpc: "2.0",
         id: crypto.randomUUID(),
-        method: "config.set",
-        params: { config: { [BLOCKED_DOMAINS_KEY]: domains } },
-    });
-    if ("error" in resp) {
-        setStatus(resp.error.message, "error");
+        method: "config.get",
+        params: undefined,
+    })),
+    save: async (domains) => {
+        const resp = await browser.runtime.sendMessage<RequestConfigSet, ResponseConfigSet>({
+            jsonrpc: "2.0",
+            id: crypto.randomUUID(),
+            method: "config.set",
+            params: { config: { [BLOCKED_DOMAINS_KEY]: domains } },
+        });
+        if ("error" in resp) {
+            throw new Error(resp.error.message);
+        }
+        loadedConfig = { ...loadedConfig, ...resp.result.config };
+        renderBlockedDomains(normalizeBlockedDomains(loadedConfig[BLOCKED_DOMAINS_KEY]));
+    },
+});
+
+// The list saves on its own, at once, so a new block applies to reads
+// without waiting for the form's Save.
+async function editBlockedDomains(edit: BlockedDomainEdit, done: string) {
+    setStatus("Saving…");
+    try {
+        await blockedDomainEditor(edit);
+    } catch (err) {
+        setStatus(err instanceof Error ? err.message : String(err), "error");
         return;
     }
-    loadedConfig = { ...loadedConfig, ...resp.result.config };
-    renderBlockedDomains(normalizeBlockedDomains(loadedConfig[BLOCKED_DOMAINS_KEY]));
     setStatus(done, "ok");
 }
 
@@ -164,13 +189,8 @@ function addBlockedDomain() {
         setStatus(parsed.error, "error");
         return;
     }
-    const current = normalizeBlockedDomains(loadedConfig[BLOCKED_DOMAINS_KEY]);
-    if (current.includes(parsed.domain)) {
-        setStatus(`${parsed.domain} is already blocked.`, "ok");
-        return;
-    }
     blockedInputEl.value = "";
-    void saveBlockedDomains([...current, parsed.domain], `Blocked ${parsed.domain} and its subdomains.`);
+    void editBlockedDomains({ add: parsed.domain }, `Blocked ${parsed.domain} and its subdomains.`);
 }
 
 function parseArgs(raw: string): string[] {
@@ -215,6 +235,8 @@ async function load() {
     alphabeticalEl.checked = config.agentMenuAlphabetical === true;
     renderAgents(knownAgents);
     renderBlockedDomains(normalizeBlockedDomains(config[BLOCKED_DOMAINS_KEY]));
+    blockedInputEl.disabled = false;
+    blockedAddEl.disabled = false;
     setStatus("Loaded.", "ok");
 }
 
