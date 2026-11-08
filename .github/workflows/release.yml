@@ -14,7 +14,35 @@ permissions:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    outputs:
+      signed: ${{ steps.apple.outputs.signed }}
     steps:
+      # The darwin binaries are signed and notarized only when every Apple
+      # secret is set (see CONTRIBUTING). A fork without them publishes
+      # unsigned binaries; this repository refuses to.
+      - name: Check the Apple signing secrets
+        id: apple
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+        run: |
+          missing=""
+          some=""
+          for name in MACOS_SIGN_P12 MACOS_SIGN_PASSWORD MACOS_NOTARY_ISSUER_ID MACOS_NOTARY_KEY_ID MACOS_NOTARY_KEY; do
+            if [ -z "$(printenv "$name")" ]; then missing="$missing $name"; else some=1; fi
+          done
+          if [ -z "$missing" ]; then
+            echo "signed=true" >>"$GITHUB_OUTPUT"
+          elif [ "$GITHUB_REPOSITORY" = asakin/agent-pane ] || [ -n "$some" ]; then
+            echo "::error::missing Apple signing secrets:$missing"
+            exit 1
+          else
+            echo "::warning::no Apple signing secrets: the darwin binaries will not be signed or notarized"
+            echo "signed=false" >>"$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -46,6 +74,12 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # .goreleaser.yaml signs and notarizes when MACOS_SIGN_P12 is set.
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
 
   # Install the published release the way a person does, and check it.
   verify:
@@ -73,3 +107,14 @@ jobs:
         run: |
           "$HOME/.local/bin/agent-pane" doctor
           "$HOME/.local/bin/agent-pane" --version | grep -F "${GITHUB_REF_NAME#v}"
+      # Gatekeeper accepts the installed binary as notarized Developer ID
+      # software. Skipped only for a fork that released without the secrets.
+      - name: Check the binary is signed and notarized
+        if: runner.os == 'macOS' && needs.goreleaser.outputs.signed == 'true'
+        run: |
+          bin="$HOME/.local/bin/agent-pane"
+          codesign --verify --strict --verbose=2 "$bin"
+          codesign --display --verbose=4 "$bin" 2>&1 | tee codesign.out
+          grep -q '^Authority=Developer ID Application: ' codesign.out
+          spctl --assess --type install --verbose=4 "$bin" 2>&1 | tee spctl.out
+          grep -q 'source=Notarized Developer ID' spctl.out

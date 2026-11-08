@@ -14,7 +14,28 @@ Contributions are provided under the repository's [MIT License](LICENSE). Preser
 
 ## Releasing
 
-Releases are made from tags. Pushing a `vX.Y.Z` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds the extension and the program, publishes the GitHub release with an `install.sh` that installs that tag, and then installs the published release on Linux and macOS and runs `agent-pane doctor` on it.
+Releases are made from tags. Pushing a `vX.Y.Z` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds the extension and the program, signs and notarizes the macOS binaries, publishes the GitHub release with an `install.sh` that installs that tag, and then installs the published release on Linux and macOS, runs `agent-pane doctor` on it, and on macOS checks that the binary passes `codesign --verify --strict` and that Gatekeeper accepts it as notarized Developer ID software.
+
+### One-time signing setup
+
+GoReleaser signs and notarizes the darwin binaries with its built-in `notarize.macos` step (`.goreleaser.yaml`), which runs on the Linux release runner and needs no Mac. A maintainer sets this up once:
+
+1. Join the [Apple Developer Program](https://developer.apple.com/programs/) as an organization or individual. Only the Account Holder can create a Developer ID certificate.
+2. Create a **Developer ID Application** certificate (Xcode > Settings > Accounts > Manage Certificates, or the Certificates page of the developer account), then export it with its private key from Keychain Access as a `.p12` file protected by a password.
+3. In [App Store Connect > Users and Access > Integrations > Team Keys](https://appstoreconnect.apple.com/access/integrations/api), create an API key with the Developer role. Download the `.p8` file (it can be downloaded only once) and note the key ID and the issuer ID shown above the key list.
+4. Add these repository secrets under Settings > Secrets and variables > Actions:
+
+   | Secret | Value |
+   | --- | --- |
+   | `MACOS_SIGN_P12` | the `.p12` file, base64-encoded: `base64 -i cert.p12 \| tr -d '\n'` |
+   | `MACOS_SIGN_PASSWORD` | the `.p12` password |
+   | `MACOS_NOTARY_KEY` | the `.p8` file, base64-encoded the same way |
+   | `MACOS_NOTARY_KEY_ID` | the API key ID |
+   | `MACOS_NOTARY_ISSUER_ID` | the issuer ID |
+
+The release workflow in `asakin/agent-pane` fails before building if any of these is missing. In a fork with none of them set, the release publishes unsigned darwin binaries with a warning and skips the signing check; a fork with only some of them set fails. The Developer ID certificate is valid for five years; renew it and update `MACOS_SIGN_P12` and `MACOS_SIGN_PASSWORD` before it expires.
+
+### Making a release
 
 1. If the extension now needs something older programs lack, raise `protocolVersion` in `internal/cmd/serve.go` and `MIN_HOST_PROTOCOL` in `extension/entrypoints/shared/hostVersion.ts`, and set `MIN_HOST_VERSION` to the version being released.
 2. Tag `main` and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. X, Y and Z are numbers only: the version becomes the extension's manifest version, which Chrome requires to be numeric, so a suffix such as `-rc.1` does not make a loadable release.
