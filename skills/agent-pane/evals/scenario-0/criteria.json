@@ -1,0 +1,56 @@
+{
+  "context": "Tests whether the agent correctly uses the agent-pane CLI to read a browser page on behalf of a user who asked for a summary. The agent should check the environment before issuing agent-pane commands, prefer the markdown or info format over dom, read the page autonomously without asking the user to paste content, and cite the page source in its output.",
+  "type": "weighted_checklist",
+  "checklist": [
+    {
+      "name": "Env check runs",
+      "description": "The agent runs a shell command containing `env` and `grep` before issuing any agent-pane page command",
+      "max_score": 10
+    },
+    {
+      "name": "Env check ordered first",
+      "description": "The env grep command is executed BEFORE the first `agent-pane page` command — not after",
+      "max_score": 10
+    },
+    {
+      "name": "AGENT_PANE in env pattern",
+      "description": "The env grep command's pattern matches `AGENT_PANE` (e.g. contains AGENT_PANE in the regex or as a literal string)",
+      "max_score": 10
+    },
+    {
+      "name": "TERM_PROGRAM in env pattern",
+      "description": "The env grep command's pattern also matches `TERM_PROGRAM` (e.g. the regex covers TERM_PROGRAM)",
+      "max_score": 10
+    },
+    {
+      "name": "No dom as first read",
+      "description": "The agent does NOT use `agent-pane page dom` as its first page-read command — the first page format is `info`, `markdown`, or another non-dom format",
+      "max_score": 10
+    },
+    {
+      "name": "Uses info or markdown",
+      "description": "The agent calls `agent-pane page info` or `agent-pane page markdown` at least once during the task",
+      "max_score": 10
+    },
+    {
+      "name": "No paste request",
+      "description": "The agent does NOT ask the user to paste, copy, or provide the article text — it fetches the content itself",
+      "max_score": 15
+    },
+    {
+      "name": "Autonomous page read",
+      "description": "The agent runs an `agent-pane page` command to fetch the page content rather than relying on the user to supply it",
+      "max_score": 10
+    },
+    {
+      "name": "Source citation in summary",
+      "description": "summary.md contains the page URL (https://www.wired.com/story/how-open-source-software-is-eating-the-world) or the page title (How Open Source Software Took Over the World)",
+      "max_score": 10
+    },
+    {
+      "name": "Summary file content",
+      "description": "A file named summary.md exists and contains a substantive multi-sentence summary of the article",
+      "max_score": 5
+    }
+  ]
+}

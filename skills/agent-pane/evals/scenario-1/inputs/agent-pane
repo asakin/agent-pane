@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stub for agent-pane that simulates a denied approval (nobody answered)
+echo "denied: nobody answered the approval prompt in the side panel" >&2
+exit 1

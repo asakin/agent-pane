@@ -1,0 +1,9 @@
+{
+  "name": "siglify/agent-pane",
+  "description": "Read the Chrome tab beside this Agent Pane terminal with the agent-pane CLI. Use when the user mentions \"this page\", \"the tab\", the article or docs they are looking at, text they selected in the browser, or the current URL, and AGENT_PANE=1 is set.",
+  "private": true,
+  "skills": [
+    "."
+  ],
+  "version": "0.1.0"
+}

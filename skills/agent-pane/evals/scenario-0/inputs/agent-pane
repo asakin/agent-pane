@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Mock agent-pane binary for eval scenario
+
+set -e
+
+if [[ "$1" == "page" ]]; then
+  shift
+  case "$1" in
+    --help)
+      echo "Usage: agent-pane page <format> [--help]"
+      echo ""
+      echo "Formats: info, markdown, text, dom, selection"
+      exit 0
+      ;;
+    info)
+      echo "URL: https://www.wired.com/story/how-open-source-software-is-eating-the-world"
+      echo "Title: How Open Source Software Took Over the World | WIRED"
+      exit 0
+      ;;
+    markdown)
+      cat << 'ARTICLE'
+# How Open Source Software Took Over the World
+
+**By Steven Levy | October 2026**
+
+URL: https://www.wired.com/story/how-open-source-software-is-eating-the-world
+
+---
+
+Two decades ago, the idea that the world's most critical infrastructure would run on
+software built by volunteers sharing code freely seemed laughable. Today, it is simply
+the state of things.
+
+Open source software powers the internet's backbone. Linux runs more than 90 percent
+of cloud servers worldwide. The Android operating system, based on the Linux kernel,
+runs billions of smartphones. Kubernetes orchestrates containers in data centers from
+Singapore to São Paulo. Curl, a command-line tool written largely by one developer,
+handles data transfer in everything from smart fridges to Tesla dashboards.
+
+The question is no longer whether open source won. It's what victory means for the
+software industry and for society.
+
+## The Corporate Embrace
+
+The model of adoption has shifted over the past decade. Major technology companies —
+Google, Microsoft, Amazon, Meta — that once viewed open source with suspicion or
+hostility now contribute billions of dollars and millions of engineering hours to
+open source projects.
+
+"It's not charity," says Nadia Asparouhova, a researcher who has studied open source
+sustainability. "These companies depend on the software. Contributing is cheaper than
+forking and maintaining your own version."
+
+## The Sustainability Question
+
+Despite corporate investment in flagship projects, thousands of smaller libraries
+remain maintained by individuals who do it in their spare time. These libraries often
+sit deep in the dependency chains of products used by millions.
+
+The Log4Shell vulnerability of 2021 illustrated the risk starkly. A flaw in a small
+Java logging library maintained by volunteers became one of the most exploited
+vulnerabilities in history, affecting systems across government and industry.
+
+## What Comes Next
+
+Lawmakers are increasingly focused on software supply chain security. The United States
+and European Union have both introduced legislation requiring software makers to
+document their dependencies — a kind of nutrition label for code.
+
+Meanwhile, artificial intelligence tools are changing how developers write open source
+software. AI coding assistants can now generate boilerplate, suggest fixes, and even
+catch common security bugs before they ship.
+
+Whether this accelerates the dominance of open source or complicates the already
+thorny questions of attribution, licensing, and sustainability remains an open question.
+
+One thing seems certain: the code that runs the world will, for the foreseeable future,
+be code that anyone can read.
+ARTICLE
+      exit 0
+      ;;
+    text)
+      echo "How Open Source Software Took Over the World"
+      echo "By Steven Levy | October 2026"
+      echo ""
+      echo "Two decades ago, the idea that the world's most critical infrastructure"
+      echo "would run on software built by volunteers sharing code freely seemed laughable."
+      echo "Today, it is simply the state of things."
+      exit 0
+      ;;
+    dom)
+      echo "<html><body><article><h1>How Open Source Software Took Over the World</h1><p>By Steven Levy</p></article></body></html>"
+      exit 0
+      ;;
+    selection)
+      echo ""
+      exit 0
+      ;;
+    *)
+      echo "agent-pane page: unknown format '$1'" >&2
+      echo "Run 'agent-pane page --help' for usage." >&2
+      exit 1
+      ;;
+  esac
+else
+  echo "Usage: agent-pane <command> [args]"
+  echo ""
+  echo "Commands:"
+  echo "  page    Read the current Chrome tab"
+  exit 0
+fi
