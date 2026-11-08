@@ -118,6 +118,16 @@ cmp "$root/skills/agent-pane/SKILL.md" "$home/.agents/skills/agent-pane/SKILL.md
 doctor >/dev/null
 doctor --fix | grep -q 'nothing to fix'
 
+# A binary with the right bytes but no execute bit is repaired too.
+chmod 644 "$home/.local/bin/agent-pane"
+if HOME="$home" "$data/release/agent-pane" doctor >"$tmp/doctor.out" 2>&1; then
+	echo "doctor passed with a non-executable binary" >&2
+	exit 1
+fi
+grep -q '^FAIL  binary' "$tmp/doctor.out"
+HOME="$home" "$data/release/agent-pane" doctor --fix >/dev/null
+[ -x "$home/.local/bin/agent-pane" ]
+
 # Updating replaces owned copies; folders that are not ours stay as they are.
 echo extra >"$home/.claude/skills/agent-pane/old.md"
 mkdir -p "$home/.agents/skills/mine"

@@ -36,6 +36,9 @@ host="$data_dir/native_messaging_host"
 config_dir="$home/.config/agent-pane"
 extension_id="eakooboihfgnikdhdldcmoiafgioeglm"
 skill_marker=".agent-pane-managed"
+# Present from the moment the binary or plist changes until the spawn agent has
+# been restarted on them, so a run cut short in between restarts it next time.
+restart_pending="$data_dir/spawn-restart-pending"
 
 sh_quote() {
 	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
@@ -60,7 +63,12 @@ same_tree() {
 # runs in a subshell, where fail would not stop the script.
 write_if_changed() {
 	tmp_file=$(mktemp "$(dirname "$1")/.agent-pane.XXXXXX") || fail "could not write in $(dirname "$1")"
-	cat >"$tmp_file"
+	# Callers sit in an if, where set -e is off: check the write explicitly so
+	# a partial copy never replaces the file.
+	if ! cat >"$tmp_file"; then
+		rm -f "$tmp_file"
+		fail "could not write $1"
+	fi
 	if [ -f "$1" ] && [ ! -L "$1" ] && cmp -s "$tmp_file" "$1"; then
 		rm -f "$tmp_file"
 		return 1
@@ -105,16 +113,17 @@ keep_release() {
 # Replace dest by a new inode. Copying onto a running Mach-O makes macOS
 # kill the next exec with a codesign failure.
 place_binary() {
-	binary_changed=""
 	mkdir -p "$bin_dir"
-	if [ -f "$dest" ] && cmp -s "$release/agent-pane" "$dest"; then
+	if [ -f "$dest" ] && [ -x "$dest" ] && cmp -s "$release/agent-pane" "$dest"; then
 		return 0
+	fi
+	if [ "$(uname -s)" = Darwin ]; then
+		: >"$restart_pending"
 	fi
 	staged=$(mktemp "$bin_dir/.agent-pane.XXXXXX") || fail "could not create a temporary binary"
 	cp "$release/agent-pane" "$staged" || fail "could not copy the binary"
 	chmod 755 "$staged" || fail "could not make the binary executable"
 	mv -f "$staged" "$dest" || fail "could not install the binary"
-	binary_changed=1
 	updated "$dest"
 }
 
@@ -183,13 +192,14 @@ write_manifests() {
 	[ "$count" -gt 0 ] || fail "no browser config directory was found, so no native messaging manifest was installed"
 }
 
-# The spawn agent restarts only when its binary or plist changed or it is not
-# running: a restart ends the shells open in pane tabs.
+# The spawn agent restarts only when its binary or plist changed since it was
+# last started (restart_pending) or it is not loaded: a restart ends the shells
+# open in pane tabs. The plist text is repeated in internal/cmd/doctor.go
+# spawnAgentPlist; change both.
 write_launchd() {
 	[ "$(uname -s)" = Darwin ] || return 0
 	plist="$home/Library/LaunchAgents/com.agentpane.spawn.plist"
 	mkdir -p "$(dirname "$plist")"
-	plist_changed=""
 	if write_if_changed "$plist" <<EOF; then
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -209,15 +219,16 @@ write_launchd() {
 </dict>
 </plist>
 EOF
-		plist_changed=1
+		: >"$restart_pending"
 		updated "$plist"
 	fi
 	if [ -n "${AGENT_PANE_SKIP_LAUNCHD:-}" ]; then
+		rm -f "$restart_pending"
 		return 0
 	fi
 	domain="gui/$(id -u)"
 	target="$domain/com.agentpane.spawn"
-	if [ -z "$binary_changed" ] && [ -z "$plist_changed" ] && launchctl print "$target" >/dev/null 2>&1; then
+	if [ ! -e "$restart_pending" ] && launchctl print "$target" >/dev/null 2>&1; then
 		return 0
 	fi
 	launchctl bootout "$target" 2>/dev/null || true
@@ -228,6 +239,7 @@ EOF
 		n=$((n + 1))
 		if [ "$n" -ge 20 ]; then
 			launchctl kickstart -k "$target" || fail "could not start the spawn agent"
+			rm -f "$restart_pending"
 			updated "spawn agent (restarted)"
 			return 0
 		fi
@@ -241,6 +253,7 @@ EOF
 		fi
 		sleep 0.25
 	done
+	rm -f "$restart_pending"
 	updated "spawn agent (restarted)"
 }
 

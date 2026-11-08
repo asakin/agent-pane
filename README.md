@@ -48,7 +48,7 @@ The installer is published with each release and installs that release only: it 
 
 ## Updating
 
-Run the install command again, then click the reload button on the Agent Pane card in `chrome://extensions`. A run with nothing to change changes nothing; the LaunchAgent restarts, ending open pane tabs, only when the program changed.
+Run the install command again, then click the reload button on the Agent Pane card in `chrome://extensions`. A run with nothing to change changes nothing. On macOS the LaunchAgent restarts, ending the shells open in pane tabs, when the program or its LaunchAgent plist changed, or when it is not running.
 
 When the extension and the program are out of step, the side panel shows an update screen with the install command instead of opening a terminal. Run it, then click **Retry**.
 
@@ -60,7 +60,7 @@ curl -fsSL https://github.com/asakin/agent-pane/releases/download/v0.3.0/install
 
 ## Checking and repairing an install
 
-`agent-pane doctor` checks every file the installer put in place against the installed release and reports each one. `agent-pane doctor --fix` puts the installed release back in place when a check fails. It uses only the copy in `~/.local/share/agent-pane/release`, downloads nothing, and does not change the version.
+`agent-pane doctor` checks the files the installer owns against the installed release and reports each one; `~/AGENTS.md` and `~/CLAUDE.md` are yours and are not checked. `agent-pane doctor --fix` puts the installed release back in place when a check fails. It uses only the copy in `~/.local/share/agent-pane/release`, downloads nothing, and does not change the version.
 
 ## How it works
 

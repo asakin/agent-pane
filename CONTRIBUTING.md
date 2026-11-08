@@ -17,4 +17,4 @@ Contributions are provided under the repository's [MIT License](LICENSE). Preser
 Releases are made from tags. Pushing a `vX.Y.Z` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds the extension and the program, publishes the GitHub release with an `install.sh` that installs that tag, and then installs the published release on Linux and macOS and runs `agent-pane doctor` on it.
 
 1. If the extension now needs something older programs lack, raise `protocolVersion` in `internal/cmd/serve.go` and `MIN_HOST_PROTOCOL` in `extension/entrypoints/shared/hostVersion.ts`, and set `MIN_HOST_VERSION` to the version being released.
-2. Tag `main` and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. A tag with a suffix, such as `v0.4.0-rc.1`, is published as a prerelease and is not what `releases/latest` installs.
+2. Tag `main` and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. X, Y and Z are numbers only: the version becomes the extension's manifest version, which Chrome requires to be numeric, so a suffix such as `-rc.1` does not make a loadable release.
