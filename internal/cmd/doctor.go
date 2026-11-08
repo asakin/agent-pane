@@ -110,8 +110,9 @@ func NewCmdDoctor(version string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check that Agent Pane is installed correctly, and repair it with --fix",
-		Long: `Checks every file the installer puts in place against the release it
-installed, kept in ~/.local/share/agent-pane/release, and reports each one.
+		Long: `Checks the files the installer owns against the release it installed,
+kept in ~/.local/share/agent-pane/release, and reports each one. ~/AGENTS.md
+and ~/CLAUDE.md are yours and are not checked.
 
 --fix runs that release's place.sh again when something is wrong. It uses
 only files already on this computer and does not change the installed version;
@@ -193,6 +194,8 @@ func runChecks(l installLayout, env doctorEnv) []checkResult {
 		add(checkFail, "binary", "%s: %v", l.binary, err)
 	} else if !same {
 		add(checkFail, "binary", "%s differs from the installed release", l.binary)
+	} else if info, err := os.Stat(l.binary); err != nil || info.Mode()&0o111 == 0 {
+		add(checkFail, "binary", "%s is not executable", l.binary)
 	} else {
 		add(checkOK, "binary", "%s (%s)", l.binary, env.version)
 	}
@@ -226,13 +229,16 @@ func runChecks(l installLayout, env doctorEnv) []checkResult {
 	if env.goos == "darwin" {
 		plist := filepath.Join(l.home, "Library", "LaunchAgents", spawnAgentLabel+".plist")
 		got, err := os.ReadFile(plist)
+		_, pendingErr := os.Stat(filepath.Join(l.dataDir, "spawn-restart-pending"))
 		switch {
 		case err != nil:
 			add(checkFail, "spawn agent", "%s is missing", plist)
-		case !bytes.Contains(got, []byte("<string>"+xmlEscape(l.binary)+"</string>")):
-			add(checkFail, "spawn agent", "%s does not start %s", plist, l.binary)
+		case string(got) != spawnAgentPlist(l.binary):
+			add(checkFail, "spawn agent", "%s is not the plist that starts `%s spawn`", plist, l.binary)
 		case env.spawnAgent != nil && !env.spawnAgent():
 			add(checkFail, "spawn agent", "%s is not loaded", spawnAgentLabel)
+		case pendingErr == nil:
+			add(checkFail, "spawn agent", "%s has not been restarted since the binary or plist changed", spawnAgentLabel)
 		default:
 			add(checkOK, "spawn agent", "%s", spawnAgentLabel)
 		}
@@ -241,10 +247,15 @@ func runChecks(l installLayout, env doctorEnv) []checkResult {
 	path := checkPath(l, env.path)
 	add(path.status, path.item, "%s", path.detail)
 
-	if _, err := os.Stat(filepath.Join(l.configDir, "AGENTS.md")); err != nil {
-		add(checkFail, "instructions", "%s is missing", filepath.Join(l.configDir, "AGENTS.md"))
+	// ~/AGENTS.md and ~/CLAUDE.md are the person's files: place.sh only
+	// updates a block they keep, so they are not checked.
+	instructions := filepath.Join(l.configDir, "AGENTS.md")
+	if data, err := os.ReadFile(instructions); err != nil {
+		add(checkFail, "instructions", "%s is missing", instructions)
+	} else if !bytes.HasPrefix(data, []byte("<!-- agent-pane:start -->\n")) || !bytes.HasSuffix(data, []byte("<!-- agent-pane:end -->\n")) {
+		add(checkFail, "instructions", "%s is not the Agent Pane instructions block", instructions)
 	} else {
-		add(checkOK, "instructions", "%s", filepath.Join(l.configDir, "AGENTS.md"))
+		add(checkOK, "instructions", "%s", instructions)
 	}
 
 	compareTree := func(item, from, to string) {
@@ -287,6 +298,29 @@ func runChecks(l installLayout, env doctorEnv) []checkResult {
 		}
 	}
 	return out
+}
+
+// spawnAgentPlist is the LaunchAgent plist scripts/place.sh write_launchd
+// writes; change both.
+func spawnAgentPlist(binary string) string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>` + spawnAgentLabel + `</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>` + xmlEscape(binary) + `</string>
+		<string>spawn</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+</dict>
+</plist>
+`
 }
 
 func checkManifest(path, host string) string {

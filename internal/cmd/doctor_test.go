@@ -43,10 +43,10 @@ func healthyInstall(t *testing.T, goos, extensionVersion string) installLayout {
 	writeFile(t, filepath.Join(browser.hosts, nativeHostName+".json"), string(manifest), 0o644)
 	if goos == "darwin" {
 		writeFile(t, filepath.Join(l.home, "Library", "LaunchAgents", spawnAgentLabel+".plist"),
-			"<string>"+xmlEscape(l.binary)+"</string>", 0o644)
+			spawnAgentPlist(l.binary), 0o644)
 	}
 	writeFile(t, filepath.Join(l.home, ".zshrc"), "# agent-pane:path\n", 0o644)
-	writeFile(t, filepath.Join(l.configDir, "AGENTS.md"), "x", 0o644)
+	writeFile(t, filepath.Join(l.configDir, "AGENTS.md"), "<!-- agent-pane:start -->\n# Agent Pane\n<!-- agent-pane:end -->\n", 0o644)
 	writeFile(t, filepath.Join(l.dataDir, "agents", "enabled.json"), release["agents/enabled.json"], 0o644)
 	writeFile(t, filepath.Join(l.dataDir, "skills", "agent-pane", "SKILL.md"), release["skills/agent-pane/SKILL.md"], 0o644)
 	for _, dir := range []string{".agents", ".claude"} {
@@ -100,6 +100,19 @@ func TestDoctorFindsProblems(t *testing.T) {
 		}},
 		{name: "binary missing", item: "binary", want: checkFail, damage: func(t *testing.T, l installLayout) {
 			os.Remove(l.binary)
+		}},
+		{name: "binary not executable", item: "binary", want: checkFail, damage: func(t *testing.T, l installLayout) {
+			os.Chmod(l.binary, 0o644)
+		}},
+		{name: "plist without the spawn argument", item: "spawn agent", want: checkFail, goos: "darwin", damage: func(t *testing.T, l installLayout) {
+			plist := filepath.Join(l.home, "Library", "LaunchAgents", spawnAgentLabel+".plist")
+			writeFile(t, plist, "<string>"+xmlEscape(l.binary)+"</string>", 0o644)
+		}},
+		{name: "spawn agent restart pending", item: "spawn agent", want: checkFail, goos: "darwin", damage: func(t *testing.T, l installLayout) {
+			writeFile(t, filepath.Join(l.dataDir, "spawn-restart-pending"), "", 0o644)
+		}},
+		{name: "instructions emptied", item: "instructions", want: checkFail, damage: func(t *testing.T, l installLayout) {
+			writeFile(t, filepath.Join(l.configDir, "AGENTS.md"), "", 0o644)
 		}},
 		{name: "host runs another binary", item: "native host", want: checkFail, damage: func(t *testing.T, l installLayout) {
 			writeFile(t, l.host, "#!/bin/sh\nexec /elsewhere serve\n", 0o755)
