@@ -17,7 +17,7 @@ npm --prefix extension run build
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-cp bin/agent-pane scripts/place.sh README.md LICENSE "$tmp/"
+cp bin/agent-pane scripts/place.sh scripts/instructions.md README.md LICENSE "$tmp/"
 mkdir -p "$tmp/extensions" "$tmp/skills"
 cp -R extension/dist/chrome-mv3 "$tmp/extensions/chrome"
 cp -R agents "$tmp/agents"
