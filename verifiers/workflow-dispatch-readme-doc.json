@@ -1,0 +1,22 @@
+{
+  "name": "Manual CI trigger matches README Checks",
+  "instruction": "README Checks tells maintainers how to run the ci workflow manually exactly when that workflow can be run manually.",
+  "relevant_when": "Diff that adds, removes, or changes workflow_dispatch or the workflow name in .github/workflows/ci.yml, or changes README.md's Checks section about running CI manually.",
+  "context": "README.md's Checks section currently says: to run the suite manually, open Actions → ci → Run workflow. That instruction is true only while .github/workflows/ci.yml has a workflow_dispatch trigger, and it names the workflow by its name field.",
+  "scope": "diff",
+  "scope_reason": "The invariant depends on the workflow trigger and README documentation changing together in one diff.",
+  "checklist": [
+    {
+      "name": "manual-ci-doc-present-when-enabled",
+      "rule": "If .github/workflows/ci.yml has workflow_dispatch after the diff, README.md's Checks section tells maintainers how to run it from GitHub Actions. Return not applicable if the diff does not add, remove, or change workflow_dispatch, the workflow name, or the manual-CI Checks text."
+    },
+    {
+      "name": "manual-ci-doc-absent-when-disabled",
+      "rule": "If .github/workflows/ci.yml has no workflow_dispatch after the diff, README.md's Checks section does not tell maintainers to run the workflow manually. Return not applicable if the diff does not add, remove, or change workflow_dispatch, the workflow name, or the manual-CI Checks text."
+    },
+    {
+      "name": "docs-match-workflow-name",
+      "rule": "Any manual-run instructions in README.md's Checks section name the workflow by the name field in .github/workflows/ci.yml after the diff. Return not applicable if the Checks section has no manual-run instructions after the diff, or if the diff does not change workflow_dispatch, the workflow name, or the manual-CI Checks text."
+    }
+  ]
+}

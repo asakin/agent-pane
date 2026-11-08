@@ -1,0 +1,22 @@
+{
+  "name": "Native RPC methods wired through all layers",
+  "instruction": "A native-messaging RPC method that is added or renamed, or whose request or response shape changes, must stay consistent on both sides of the pipe and be covered by tests.",
+  "relevant_when": "Diff that adds, renames, removes, or changes the parameters or result of a native-messaging RPC method: extension-to-host methods typed in extension/entrypoints/shared/rpc.ts and handled with HandleRequest in internal/cmd/serve.go, or host-to-extension requests such as page.resolve, page.approve, page.cancel, and page.read sent from internal/cmd/page.go and answered in extension/entrypoints/background.ts.",
+  "context": "AGENTS.md lists the layers for adding an extension-to-host method: types in extension/entrypoints/shared/rpc.ts, forwarding in extension/entrypoints/background.ts (which currently passes side-panel requests through host.handle generically), a handler in internal/cmd/serve.go, and tests in extension/tests/nativeRpc.test.mjs and internal/cmd tests. Host-to-extension requests are sent from internal/cmd/page.go and answered by answerHost in background.ts. A fix that keeps a method's contract does not need companion edits in layers whose code already supports it.",
+  "scope": "diff",
+  "scope_reason": "The invariant depends on companion changes across TypeScript, Go, and tests in one pull request.",
+  "checklist": [
+    {
+      "name": "both-sides-agree",
+      "rule": "For each added or renamed method, and each method whose parameters or result change, both the sender and the receiver handle the new name and shape after the diff: types in extension/entrypoints/shared/rpc.ts and a HandleRequest handler for extension-to-host methods, or the page.go call and the background answerHost case for host-to-extension requests. A side already compatible without edits passes; generic forwarding needs no per-method change. Return not applicable if no method is added, renamed, or changes its parameters or result."
+    },
+    {
+      "name": "removed-methods-have-no-callers",
+      "rule": "A method removed from one side has no remaining callers or handlers for it on the other side. Return not applicable if no method is removed or renamed."
+    },
+    {
+      "name": "new-contract-tested",
+      "rule": "For each added or renamed method, and each method whose parameters or result change, the diff adds or updates tests that exercise the new name or shape on each side it changed: Go tests under internal/cmd for host code, and extension tests under extension/tests for extension code. Unchanged sides with existing coverage need no new tests. Return not applicable if no method is added, renamed, or changes its parameters or result."
+    }
+  ]
+}

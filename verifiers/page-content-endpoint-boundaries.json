@@ -1,0 +1,30 @@
+{
+  "name": "Page reads keep the documented boundary",
+  "instruction": "Page content may reach only the PTY session that asked for it, and only for reads its pane tab's approval covers or the person approves in the side panel.",
+  "relevant_when": "Diff that adds or changes page reading: the page.resolve, page.approve, page.cancel, or page.read requests, the per-session page channel, `agent-pane page` commands, pane-tab approval grants, the side panel approval prompt, browser.scripting.executeScript page extraction, or Send tab.",
+  "context": "README.md (Reading pages, Security) describes current page reading. A coding agent runs `agent-pane page` in a pane tab; the host asks the extension over Chrome's native-messaging pipe to resolve, approve, and read the Chrome tab (internal/cmd/page.go, extension/entrypoints/background.ts). The content comes back to the requesting PTY session over that session's page channel, a socket pair whose end is inherited by the shell (internal/cmd/page_unix.go), not a listening socket. Approval belongs to the pane tab (internal/cmd/pane.go): the host makes pane-tab ids and gives them only to the extension, grants are kept in host memory and survive coding agents exiting and PTY sessions being replaced in that pane tab, and reads a grant covers proceed without another prompt. Uncovered reads prompt in the side panel holding that pane tab with Allow this Chrome tab, Allow all Chrome tabs for this pane tab, and Deny; a prompted read is pinned to the URL the prompt showed. Behavior may change when the diff also updates README.md to describe the new behavior.",
+  "scope": "diff",
+  "scope_reason": "The boundary depends on host, extension, side panel, and README changes made together.",
+  "checklist": [
+    {
+      "name": "content-reaches-only-requesting-session",
+      "rule": "Page content is returned only to the PTY session whose request caused the read, and is not exposed over the PTY WebSocket, a listening TCP port, a named socket another local process can open, a file, or an environment variable. Return not applicable if the diff does not change where page content is delivered."
+    },
+    {
+      "name": "reads-gated-by-pane-tab-approval",
+      "rule": "A read proceeds only when the requesting pane tab's grant covers the Chrome tab or the person approves it in the side panel holding that pane tab; a denied, timed-out, or unanswered prompt fails the read. Grants stay scoped to one host-made pane-tab id that terminal processes cannot choose, and end when that pane tab closes. Return not applicable if the diff does not change approval, grants, or pane-tab identity. Do not require a prompt or user action for reads an existing grant covers."
+    },
+    {
+      "name": "prompted-read-pinned-to-shown-url",
+      "rule": "A read that just prompted delivers only the document whose URL the prompt showed, and fails if the Chrome tab has moved to another page. Return not applicable if the diff does not change the approval prompt or the read that follows it."
+    },
+    {
+      "name": "page-text-treated-as-untrusted",
+      "rule": "Page content given to a terminal or coding agent stays marked as untrusted page text, and text pasted by Send tab still has control characters removed and cannot press Enter. Return not applicable if the diff does not change how page content is printed, pasted, or labelled."
+    },
+    {
+      "name": "readme-matches-behavior",
+      "rule": "If the diff changes page-read behavior that README.md's Reading pages or Security sections describe, the diff updates those sections to match. Return not applicable if no README-described page-read behavior changes."
+    }
+  ]
+}

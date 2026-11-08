@@ -277,5 +277,57 @@
         }
       }
     }
+  },
+  "verify": {
+    "groups": {
+      "extension-background-senders": {
+        "path": "verifiers/background-senders-own-extension-only.json",
+        "level": "error",
+        "include": [
+          "extension/entrypoints/background.ts",
+          "extension/entrypoints/shared/sender.ts",
+          "extension/entrypoints/shared/terminal.ts"
+        ]
+      },
+      "pty-websocket-security": {
+        "path": "verifiers/pty-websocket-origin-token.json",
+        "level": "error",
+        "include": [
+          "internal/cmd/serve.go"
+        ]
+      },
+      "native-rpc-coverage": {
+        "path": "verifiers/native-rpc-method-cross-layer-coverage.json",
+        "level": "error",
+        "include": [
+          "extension/entrypoints/shared/rpc.ts",
+          "extension/entrypoints/background.ts",
+          "internal/cmd/serve.go",
+          "internal/cmd/page.go",
+          "extension/tests/*.test.mjs",
+          "internal/cmd/**/*_test.go"
+        ]
+      },
+      "page-content-security": {
+        "path": "verifiers/page-content-endpoint-boundaries.json",
+        "level": "error",
+        "include": [
+          "README.md",
+          "extension/entrypoints/**/*.ts",
+          "internal/cmd/**/*.go"
+        ],
+        "exclude": [
+          "internal/cmd/themes/**"
+        ]
+      },
+      "workflow-dispatch-docs": {
+        "path": "verifiers/workflow-dispatch-readme-doc.json",
+        "level": "error",
+        "include": [
+          ".github/workflows/ci.yml",
+          "README.md"
+        ]
+      }
+    }
   }
 }

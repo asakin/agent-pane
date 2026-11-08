@@ -1,0 +1,18 @@
+{
+  "name": "Background messages only from extension pages",
+  "instruction": "Background runtime message and port handlers must only answer this extension's own pages.",
+  "relevant_when": "TypeScript file that defines browser.runtime.onMessage or browser.runtime.onConnect handlers in extension pages or the background, or the isOwnExtensionPage sender check.",
+  "context": "README.md (Security) states the background accepts messages from the extension's own pages. extension/entrypoints/shared/sender.ts defines isOwnExtensionPage, and extension/entrypoints/background.ts and extension/entrypoints/shared/terminal.ts use it to refuse runtime messages and ports from content scripts and injected page code, which carry the extension id but a web page's URL.",
+  "scope": "file",
+  "scope_reason": "Each background or sender-check file contains the sender validation logic it owns.",
+  "checklist": [
+    {
+      "name": "own-extension-page-required",
+      "rule": "The handler or helper requires both the sender id to match this extension and the sender URL to be on this extension's origin before allowing access. Return not applicable if the file does not define sender validation or a runtime message/port handler."
+    },
+    {
+      "name": "web-page-senders-rejected",
+      "rule": "The logic rejects missing senders, non-extension URLs, look-alike origins, other extension ids, and content-script or injected-page senders with web page URLs. Return not applicable if the file does not define sender validation or a runtime message/port handler."
+    }
+  ]
+}
