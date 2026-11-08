@@ -2,7 +2,7 @@
   "name": "PTY WebSocket origin and token boundary",
   "instruction": "PTY WebSocket attach paths must require both an allowed extension Origin and a one-time attach token before exposing a terminal session.",
   "relevant_when": "Go file that defines the PTY WebSocket handler, WebSocket upgrader, allowedOrigin check, attach token issuance, or token redemption for tty.create or tty.attach.",
-  "context": "AGENTS.md states that web pages and other local processes must not be able to attach to terminals. The PTY WebSocket boundary relies on extension-origin checking plus one-time attach tokens issued over native messaging.",
+  "context": "README.md (Security) states terminal WebSocket connections use the extension's origin and a one-time attach token obtained over native messaging, and that a token expires when used, when replaced by a newer token for that terminal, or when the native-messaging connection closes. internal/cmd/serve.go implements this in NewWebSocketHandler, allowedOrigin, issueToken, and redeemToken.",
   "scope": "file",
   "scope_reason": "The WebSocket boundary and token lifecycle are implemented together in the server file.",
   "checklist": [
