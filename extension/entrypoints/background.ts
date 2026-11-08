@@ -1,13 +1,15 @@
 import { createHostConnection, type HostPort } from "~/entrypoints/shared/hostConnection"
 import { requestNative } from "~/entrypoints/shared/nativeRpc"
-import type { RequestDestroyTTY } from "~/entrypoints/shared/rpc"
+import type { RequestConfigGet, RequestDestroyTTY } from "~/entrypoints/shared/rpc"
 import { isOwnExtensionPage } from "~/entrypoints/shared/sender"
+import { blockedDomainsFromConfig } from "~/entrypoints/shared/blockedDomains"
 import {
   type ApproveMessage,
   type CancelMessage,
   type ReadNotice,
   approvalChoice,
   approveTimeoutMs,
+  assertTabNotBlocked,
   readTab,
   resolveTab,
 } from "~/entrypoints/shared/pageAccess"
@@ -34,6 +36,12 @@ export default defineBackground(() => {
   });
 
   const pageApis = {
+    // Read from config.json at every check, so a change in Options applies
+    // to pane tabs and reads that already exist.
+    blockedDomains: async () => {
+      const msg = { jsonrpc: "2.0", id: crypto.randomUUID(), method: "config.get", params: undefined } satisfies RequestConfigGet
+      return blockedDomainsFromConfig(await host.handle(msg))
+    },
     storageSession: browser.storage.session,
     tabs: browser.tabs,
     scripting: browser.scripting,
@@ -62,6 +70,8 @@ export default defineBackground(() => {
           url: typeof p.url === "string" ? p.url : "",
           timeoutMs: approveTimeoutMs(Number(p.timeoutMs), p.expiresAt, Date.now()),
         };
+        // A blocked page is never offered for approval.
+        await assertTabNotBlocked(pageApis, ask.tabId)
         // No panel holding this terminal (closed, or a terminal in its own
         // window) means nobody can approve: deny.
         let answer: unknown;
@@ -73,6 +83,8 @@ export default defineBackground(() => {
         if (answer === undefined) {
           throw new Error("denied: open the Agent Pane side panel for this terminal to approve the read");
         }
+        // Blocked while the prompt was up: the answer grants nothing.
+        await assertTabNotBlocked(pageApis, ask.tabId)
         return { choice: approvalChoice(answer) };
       }
       case "page.cancel": {

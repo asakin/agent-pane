@@ -61,8 +61,8 @@ func TestWithSessionEnvReplacesReservedKeys(t *testing.T) {
 }
 
 func TestBuildPtyCommandKeepsUserEnvButNotReservedKeys(t *testing.T) {
-	k.Set("env", map[string]any{"PATH": "/configured/bin", "AGENT_PANE_TAB_ID": "forged", "FOO": "bar"})
-	t.Cleanup(func() { k.Delete("env") })
+	cfg().Set("env", map[string]any{"PATH": "/configured/bin", "AGENT_PANE_TAB_ID": "forged", "FOO": "bar"})
+	t.Cleanup(func() { cfg().Delete("env") })
 	t.Setenv("AGENT_PANE_SESSION_ID", "inherited")
 	tty, err := pty.New()
 	if err != nil {
