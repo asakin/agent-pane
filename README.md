@@ -121,7 +121,7 @@ Markdown output rewrites link and image targets as absolute URLs, resolved again
 
 ### Blocked domains
 
-**Blocked domains** in Options lists domains whose pages Agent Pane never reads. The list starts empty and is saved in `config.json` as `blockedDomains`; adding or removing an entry saves it at once, applied to the list as it is stored then, so edits from another Options page are kept.
+**Blocked domains** in Options lists domains whose pages Agent Pane never reads. The list starts empty and is saved in `config.json` as `blockedDomains`; adding or removing an entry saves it at once, applied to the list as it is stored then, so an entry another Options page saved earlier is kept. Two Options pages editing at the same moment can still lose one of the edits, because the host replaces the whole list on each save.
 
 - **An entry covers its domain and subdomains.** `bank.example` blocks `bank.example` and `login.bank.example`, but not `notbank.example` or `bank.example.evil.test`. Entries are hostnames: letter case, trailing dots and ports are ignored, and a pasted URL is reduced to its hostname. Wildcards, paths and spaces are refused.
 - **A block applies to every read.** It covers all `agent-pane page` formats and Send tab. A pane tab's approval does not override it, and a blocked page never gets an approval prompt. A refused read reports `blocked: the page's domain matches <entry> in Agent Pane's Blocked domains` and returns no page data.
