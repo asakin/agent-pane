@@ -180,14 +180,6 @@ export async function ensureWindowAlive(windowId: number, ttyId: string): Promis
     }
 }
 
-export function shortTabLabel(id: string, title?: string): string {
-    const t = title?.trim();
-    if (t) {
-        return t.length > 16 ? `${t.slice(0, 15)}…` : t;
-    }
-    return id.slice(0, 8);
-}
-
 /** Drop a dead id; pick a new activeId. Returns null if tabs empty. */
 export function pruneTab(state: WindowTabState, deadId: string): WindowTabState | null {
     const deadIndex = state.tabs.findIndex((tab) => tab.id === deadId);
