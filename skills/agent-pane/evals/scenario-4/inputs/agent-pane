@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Stub for agent-pane that simulates page navigation between calls.
+# State is tracked via a call counter file.
+
+STATE_FILE="${TMPDIR:-/tmp}/agent_pane_call_count"
+
+get_count() {
+  if [ -f "$STATE_FILE" ]; then
+    cat "$STATE_FILE"
+  else
+    echo 0
+  fi
+}
+
+increment_count() {
+  local count
+  count=$(get_count)
+  echo $((count + 1)) > "$STATE_FILE"
+}
+
+if [ "$1" = "page" ]; then
+  shift
+  case "$1" in
+    --help)
+      echo "Usage: agent-pane page <format> [options]"
+      echo ""
+      echo "Formats:"
+      echo "  info      Print current page URL and title"
+      echo "  markdown  Print page content as markdown"
+      echo "  dom       Print page DOM as HTML"
+      echo ""
+      echo "Options:"
+      echo "  --help    Show this help"
+      ;;
+    info)
+      count=$(get_count)
+      increment_count
+      if [ "$count" -eq 0 ]; then
+        # First call: original page
+        echo "URL: https://docs.example.com/api/authentication"
+        echo "Title: Authentication — Example API Docs"
+      else
+        # Subsequent calls: user has navigated to a different page
+        echo "URL: https://docs.example.com/api/rate-limiting"
+        echo "Title: Rate Limiting — Example API Docs"
+      fi
+      ;;
+    markdown)
+      count=$(get_count)
+      # markdown does not advance the counter on its own;
+      # check if we've seen any info calls yet
+      if [ "$count" -eq 0 ]; then
+        # Still on the first page
+        cat << 'MARKDOWN'
+# Authentication — Example API Docs
+
+## Overview
+
+The Example API uses API keys for authentication. All requests must include
+your API key in the `Authorization` header.
+
+## Getting Your API Key
+
+1. Log in to your dashboard at https://dashboard.example.com
+2. Navigate to **Settings → API Keys**
+3. Click **Create new key**
+
+## Making Authenticated Requests
+
+Include your key as a Bearer token:
+
+```
+Authorization: Bearer YOUR_API_KEY
+```
+
+API keys do not expire by default, but you can set an expiry date in the
+dashboard. Keys can be rotated without downtime by creating a new key before
+revoking the old one.
+
+## Key Scopes
+
+| Scope       | Description                        |
+|-------------|------------------------------------|
+| read        | Read-only access to all resources  |
+| write       | Create and update resources        |
+| admin       | Full access including key management |
+
+The default scope for new keys is `read`.
+MARKDOWN
+      else
+        cat << 'MARKDOWN'
+# Rate Limiting — Example API Docs
+
+## Overview
+
+The Example API enforces rate limits to ensure fair usage across all clients.
+
+## Default Limits
+
+| Plan       | Requests per minute | Requests per day |
+|------------|---------------------|-----------------|
+| Free       | 60                  | 1,000           |
+| Pro        | 600                 | 50,000          |
+| Enterprise | 6,000               | Unlimited       |
+
+## Rate Limit Headers
+
+Every response includes headers showing your current rate limit status:
+
+```
+X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 45
+X-RateLimit-Reset: 1699900800
+```
+
+`X-RateLimit-Reset` is a Unix timestamp indicating when the limit resets.
+
+## Handling 429 Responses
+
+When you exceed the rate limit, the API returns HTTP 429. Implement
+exponential back-off: wait at least `Retry-After` seconds before retrying.
+MARKDOWN
+      fi
+      ;;
+    dom)
+      echo "<html><body><p>DOM output not recommended for most use cases — it is large. Use markdown or info instead.</p></body></html>"
+      ;;
+    *)
+      echo "agent-pane page: unknown format '$1'"
+      echo "Run 'agent-pane page --help' for usage."
+      exit 1
+      ;;
+  esac
+else
+  echo "agent-pane: unknown command '$1'"
+  echo "Usage: agent-pane page <format>"
+  exit 1
+fi

@@ -11,8 +11,11 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$root"
 
-go build -o bin/agent-pane .
-npm --prefix extension ci
+# Without VCS stamps, unchanged Go source builds an identical binary, so
+# place.sh leaves the binary and the LaunchAgent (and its shells) alone.
+go build -buildvcs=false -o bin/agent-pane .
+# install, not ci: a no-op when node_modules already matches the lockfile.
+npm --prefix extension install
 npm --prefix extension run build
 
 tmp=$(mktemp -d)
@@ -24,3 +27,4 @@ cp -R agents "$tmp/agents"
 cp -R skills/agent-pane "$tmp/skills/agent-pane"
 
 sh "$tmp/place.sh"
+echo "agent-pane: in Chrome, load the extension with Load unpacked from $root/extension/dist/chrome-mv3 (chrome://extensions, Developer mode); after a rebuild, click its reload button"

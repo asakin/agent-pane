@@ -1,0 +1,36 @@
+{
+  "context": "Tests whether the agent re-checks the current page via agent-pane page info before answering the second question (rather than reusing the URL from the first read), starts with info or markdown rather than dom, and attributes each answer to the correct page URL or title.",
+  "type": "weighted_checklist",
+  "checklist": [
+    {
+      "name": "First read uses info or markdown",
+      "description": "research.md command log shows the agent ran `agent-pane page info` or `agent-pane page markdown` as its first page read (not `agent-pane page dom`)",
+      "max_score": 15
+    },
+    {
+      "name": "Re-runs page info before Part 2",
+      "description": "research.md command log shows `agent-pane page info` was run a second time before answering Part 2 — confirming the agent did not simply reuse the URL or title from the first read",
+      "max_score": 25
+    },
+    {
+      "name": "Part 1 attributed to correct page",
+      "description": "research.md attributes the Part 1 answer (default API key scope) to the Authentication page — either URL https://docs.example.com/api/authentication or title 'Authentication — Example API Docs'",
+      "max_score": 20
+    },
+    {
+      "name": "Part 2 attributed to correct page",
+      "description": "research.md attributes the Part 2 answer (rate limit status code and retry guidance) to the Rate Limiting page — either URL https://docs.example.com/api/rate-limiting or title 'Rate Limiting — Example API Docs'",
+      "max_score": 20
+    },
+    {
+      "name": "No dom used",
+      "description": "research.md command log does NOT contain `agent-pane page dom`",
+      "max_score": 10
+    },
+    {
+      "name": "Commands log present",
+      "description": "research.md contains a section listing the agent-pane commands it ran, in order",
+      "max_score": 10
+    }
+  ]
+}

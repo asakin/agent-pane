@@ -10,6 +10,7 @@ Development instructions for coding agents working on this repository. See [READ
 - **Stack:** Go (version in `go.mod`) for the native host and PTY server; TypeScript, WXT, and `@xterm/xterm` 6 in `extension/` (tested with `node --test tests/*.test.mjs`).
 - **Adding a native-messaging RPC method:** define request/response types in `extension/entrypoints/shared/rpc.ts`, forward the method through `sendNative` in `extension/entrypoints/background.ts`, handle it in `internal/cmd/serve.go`, and cover both sides in `extension/tests/nativeRpc.test.mjs` and `internal/cmd/agents_test.go`.
 - **Adding an agent definition:** create `agents/<id>/agent.json` and `icon.svg` (or `icon.png`); copy `agents/pi/agent.json` as a starting point.
+- **Herdr-core work:** When changing terminal/session architecture, the PTY host, tab lifecycle, agent launching, or terminal attachment to use Herdr behind Agent Pane's own side-panel UI, read `docs/herdr-core-integration.md` first.
 
 ## Editing guidance
 
