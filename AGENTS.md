@@ -5,6 +5,7 @@ Development instructions for coding agents working on this repository. See [READ
 ## Essential knowledge
 
 - **Documentation:** Use the [README glossary](README.md#terminology). Describe current behavior without treating it as a permanent restriction on future features. Keep feature requirements scoped to their implementation issues, and update descriptive docs when behavior changes.
+- **Design proposals:** For substantial product or architecture changes, check [`rfcs/README.md`](rfcs/README.md). Implement accepted RFCs in separate focused issues and pull requests.
 - **Working directory:** Run every command below from the repository root (pass `--prefix extension` to `npm`, or `cd extension` first).
 - **Stack:** Go (version in `go.mod`) for the native host and PTY server; TypeScript, WXT, and `@xterm/xterm` 6 in `extension/` (tested with `node --test tests/*.test.mjs`).
 - **Adding a native-messaging RPC method:** define request/response types in `extension/entrypoints/shared/rpc.ts`, forward the method through `sendNative` in `extension/entrypoints/background.ts`, handle it in `internal/cmd/serve.go`, and cover both sides in `extension/tests/nativeRpc.test.mjs` and `internal/cmd/agents_test.go`.
