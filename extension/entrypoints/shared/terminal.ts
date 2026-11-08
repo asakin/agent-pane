@@ -24,6 +24,7 @@ import {
     optsFromAppId,
 } from "./agentLauncher";
 import { NativeUnavailable } from "./nativeRpc";
+import { renderTabList } from "./tabStrip";
 import { type PtyAttachHandle, attachPtySocket } from "./ptyAttach";
 import { RECONNECT_GAVE_UP, createReconnectBackoff } from "./reconnect";
 import { canStepFontSize, clampFontSize, configWithFontSize, stepFontSize } from "./fontSize";
@@ -76,7 +77,6 @@ import {
     saveWindowState,
     tabApp,
     tabCwd,
-    shortTabLabel,
     type TtyDimensions,
 } from "./windowTabs";
 
@@ -287,45 +287,6 @@ function initializeHost(reconnect = false) {
         method: "initialize",
         params: { reconnect },
     });
-}
-
-/** Rebuild tab list only — launcher host is a stable sibling. */
-function renderTabList(
-    list: HTMLElement,
-    state: WindowTabState,
-    titles: Map<string, string>,
-    handlers: {
-        onSelect: (id: string) => void;
-        onClose: (id: string) => void;
-    },
-) {
-    list.replaceChildren();
-
-    for (const entry of state.tabs) {
-        const id = entry.id;
-        const tab = document.createElement("button");
-        tab.type = "button";
-        tab.className = "at-tabs__tab" + (id === state.activeId ? " at-tabs__tab--active" : "");
-        tab.title = titles.get(id) || id;
-
-        const label = document.createElement("span");
-        label.className = "at-tabs__label";
-        label.textContent = shortTabLabel(id, titles.get(id));
-        tab.appendChild(label);
-
-        const close = document.createElement("span");
-        close.className = "at-tabs__close";
-        close.textContent = "×";
-        close.title = "Close terminal";
-        close.addEventListener("click", (e) => {
-            e.stopPropagation();
-            handlers.onClose(id);
-        });
-        tab.appendChild(close);
-
-        tab.addEventListener("click", () => handlers.onSelect(id));
-        list.appendChild(tab);
-    }
 }
 
 function renderStatusBar(bar: HTMLElement, tab: WindowTab | undefined, chromeTab: ChromeTabLike | undefined) {
