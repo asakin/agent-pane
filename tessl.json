@@ -285,7 +285,8 @@
         "level": "error",
         "include": [
           "extension/entrypoints/background.ts",
-          "extension/entrypoints/shared/sender.ts"
+          "extension/entrypoints/shared/sender.ts",
+          "extension/entrypoints/shared/terminal.ts"
         ]
       },
       "pty-websocket-security": {
@@ -302,7 +303,8 @@
           "extension/entrypoints/shared/rpc.ts",
           "extension/entrypoints/background.ts",
           "internal/cmd/serve.go",
-          "extension/tests/nativeRpc.test.mjs",
+          "internal/cmd/page.go",
+          "extension/tests/*.test.mjs",
           "internal/cmd/**/*_test.go"
         ]
       },
@@ -311,10 +313,8 @@
         "level": "error",
         "include": [
           "README.md",
-          "AGENTS.md",
           "extension/entrypoints/**/*.ts",
-          "internal/cmd/**/*.go",
-          "internal/peercred/**/*.go"
+          "internal/cmd/**/*.go"
         ],
         "exclude": [
           "internal/cmd/themes/**"
