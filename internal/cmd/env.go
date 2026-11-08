@@ -36,7 +36,7 @@ var reservedEnv = []string{
 	envSkillPath,
 }
 
-// skillPath is where install.sh puts the canonical Agent Pane skill.
+// skillPath is where scripts/place.sh puts the canonical Agent Pane skill.
 var skillPath = filepath.Join(dataDir, "skills", "agent-pane", "SKILL.md")
 
 // sessionEnv is the reserved environment for one session. agent is the

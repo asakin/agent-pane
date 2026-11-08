@@ -33,6 +33,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # The published install.sh installs this tag and nothing else.
+      - name: Stamp install.sh with this release
+        run: |
+          mkdir -p .release
+          sed "s/^VERSION=\"\"\$/VERSION=\"${GITHUB_REF_NAME}\"/" install.sh >.release/install.sh
+          grep -qx "VERSION=\"${GITHUB_REF_NAME}\"" .release/install.sh
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -40,3 +46,30 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Install the published release the way a person does, and check it.
+  verify:
+    needs: goreleaser
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Create a browser config folder
+        run: |
+          if [ "$(uname -s)" = Darwin ]; then
+            mkdir -p "$HOME/Library/Application Support/Google/Chrome"
+          else
+            mkdir -p "$HOME/.config/google-chrome"
+          fi
+      - name: Install with the published install.sh
+        run: curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/install.sh" | sh
+      - name: Run it again and check nothing changes
+        run: |
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/install.sh" | sh >second.out
+          if grep '^agent-pane: updated' second.out; then exit 1; fi
+      - name: Check the installed version
+        run: |
+          "$HOME/.local/bin/agent-pane" doctor
+          "$HOME/.local/bin/agent-pane" --version | grep -F "${GITHUB_REF_NAME#v}"

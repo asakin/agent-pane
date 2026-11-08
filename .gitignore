@@ -9,6 +9,7 @@
 /completions/
 /bin/
 /agent-pane
+/.release/
 
 # extension
 extension/node_modules/

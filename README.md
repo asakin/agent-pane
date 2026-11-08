@@ -32,28 +32,35 @@ The side panel is a terminal next to the browser, in the same window.
 
 ## Install
 
-**For the current Agent Pane code, [run a checkout](#run-a-checkout).** The Chrome Web Store listing is not available yet. The preserved `v0.1.x` and `v0.2.0` releases are historical Agent Terminal builds, not releases of the current Agent Pane code. The release installation flow below will apply once an Agent Pane release is published.
+Agent Pane is two parts: the Chrome extension, and the `agent-pane` program it talks to on your computer. The install command puts both in place, from the latest [release](https://github.com/asakin/agent-pane/releases):
 
-1. Add Agent Pane from the Chrome Web Store: <!-- TODO: replace with the Chrome Web Store listing link once it exists --> **[Chrome Web Store link: coming soon]**
-2. Install the program the extension talks to:
+```sh
+curl -fsSL https://github.com/asakin/agent-pane/releases/latest/download/install.sh | sh
+```
 
-   ```sh
-   curl -fsSL https://raw.githubusercontent.com/asakin/agent-pane/main/install.sh | sh
-   ```
+Then add the extension to Chrome. Until the Chrome Web Store listing exists, load it from the folder the installer wrote:
 
+1. Open `chrome://extensions` and turn on **Developer mode**
+2. Click **Load unpacked** and choose `~/.local/share/agent-pane/extensions/chrome` (in the file dialog, **Cmd+Shift+.** on macOS shows hidden folders)
 3. Open the side panel from the Agent Pane extension icon
 
-The script downloads the binary for this machine, puts `~/.local/bin` on `PATH`, and writes the native-messaging manifest Chrome needs. On macOS it also starts a LaunchAgent that launches the shell independently of Chrome. If that manifest is not written, the script exits with an error. Running it again writes the same files again.
+The installer is published with each release and installs that release only: it downloads the release's archive for this machine, checks it against the release's `checksums.txt`, and runs the archive's `place.sh`. That script puts the program in `~/.local/bin`, adds `~/.local/bin` to `PATH`, writes the native-messaging manifest for each Chromium browser it finds, installs the [agent skill](#agent-skill), and on macOS starts the LaunchAgent that launches shells independently of Chrome. It keeps a copy of the release in `~/.local/share/agent-pane/release` and ends by running `agent-pane doctor`. Nothing comes from the repository's `main` branch.
 
 ## Updating
 
-The Chrome Web Store updates the extension by itself. The program is updated by running the same command again:
+Run the install command again, then click the reload button on the Agent Pane card in `chrome://extensions`. A run with nothing to change changes nothing; the LaunchAgent restarts, ending open pane tabs, only when the program changed.
+
+When the extension and the program are out of step, the side panel shows an update screen with the install command instead of opening a terminal. Run it, then click **Retry**.
+
+To install a particular release instead of the latest, use that release's installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/asakin/agent-pane/main/install.sh | sh
+curl -fsSL https://github.com/asakin/agent-pane/releases/download/v0.3.0/install.sh | sh
 ```
 
-When the two are out of step, the side panel shows an update screen with that command instead of opening a terminal. Run it, then click **Retry**.
+## Checking and repairing an install
+
+`agent-pane doctor` checks every file the installer put in place against the installed release and reports each one. `agent-pane doctor --fix` puts the installed release back in place when a check fails. It uses only the copy in `~/.local/share/agent-pane/release`, downloads nothing, and does not change the version.
 
 ## How it works
 
@@ -130,22 +137,22 @@ Every PTY session Agent Pane starts (plain shells, agent definitions and configu
 | `AGENT_PANE_AGENT` | The agent-definition id the launch chose, such as `claude`. Unset for Terminal and for a replacement started as a shell. It describes the launch only, not whatever runs in the terminal later. |
 | `AGENT_PANE_FD` | The descriptor number of the session's page connection (`3`). Unset when the host could not make one. |
 | `AGENT_PANE_SOCKET` | Path of the session's page socket, under `~/.local/share/agent-pane/run/`, for processes that did not inherit the descriptor. Unset when the host could not make one. The socket is removed when the PTY session ends. |
-| `AGENT_PANE_SKILL_PATH` | The installed [skill](#agent-skill), when `install.sh` has put it in place. |
+| `AGENT_PANE_SKILL_PATH` | The installed [skill](#agent-skill), when the installer has put it in place. |
 
 These names are reserved. Values inherited by the host (for example a host started from inside a pane tab) and entries in the Settings env are replaced, and a variable with no value for this session is removed. Other variables, `PATH` included, keep their inherited or configured values. A program sees the values from when its PTY session started; a later replacement session does not change them for programs still running elsewhere.
 
 ### Agent skill
 
-`skills/agent-pane/SKILL.md` teaches coding agents to detect Agent Pane and read the Chrome tab with `agent-pane page`. `install.sh` copies it to `~/.local/share/agent-pane/skills/agent-pane/` and installs a copy in each user skills folder the supported agents read:
+`skills/agent-pane/SKILL.md` teaches coding agents to detect Agent Pane and read the Chrome tab with `agent-pane page`. The installer copies it to `~/.local/share/agent-pane/skills/agent-pane/` and installs a copy in each user skills folder the supported agents read:
 
 | Folder | Read by |
 | --- | --- |
 | `~/.claude/skills/agent-pane/` | Claude Code; OpenCode, Goose and Cursor also read it |
 | `~/.agents/skills/agent-pane/` | Codex, Pi, OpenCode, Goose and Cursor |
 
-Each copy holds an `.agent-pane-managed` marker. Running `install.sh` again replaces marked copies with the current skill. A folder of that name without the marker, or a symlink, belongs to you and is left alone with a warning. To remove the skill, delete the `agent-pane` folders; the installer has no uninstall step. The skill reaches an agent started from Terminal too, because these are user-level folders. `~/AGENTS.md` and `~/CLAUDE.md`, when they hold the Agent Pane block, also point to it. An agent configured to read skills from elsewhere (for example `CLAUDE_CONFIG_DIR` or `PI_CODING_AGENT_DIR`) does not see these copies; point it at `$AGENT_PANE_SKILL_PATH`.
+Each copy holds an `.agent-pane-managed` marker. Installing again replaces marked copies with the current skill. A folder of that name without the marker, or a symlink, belongs to you and is left alone with a warning. To remove the skill, delete the `agent-pane` folders; the installer has no uninstall step. The skill reaches an agent started from Terminal too, because these are user-level folders. `~/AGENTS.md` and `~/CLAUDE.md`, when they hold the Agent Pane block, also point to it. An agent configured to read skills from elsewhere (for example `CLAUDE_CONFIG_DIR` or `PI_CODING_AGENT_DIR`) does not see these copies; point it at `$AGENT_PANE_SKILL_PATH`.
 
-`agent-pane page` uses the inherited descriptor when it has one. Some command tools start commands with only stdin, stdout and stderr; Claude Code's Bash tool does (checked with 2.1.287 on Linux). Such a command falls back to `AGENT_PANE_SOCKET`. The host answers a connection on that socket only when the connecting process, checked by peer credentials, has the host's uid and is the process the PTY session started or one of its descendants. Knowing the path grants nothing to a process started elsewhere, which gets `only processes started in it may read its page`. On macOS, an older spawn agent does not report the pid it started; the socket is then not served until `install.sh` is run again.
+`agent-pane page` uses the inherited descriptor when it has one. Some command tools start commands with only stdin, stdout and stderr; Claude Code's Bash tool does (checked with 2.1.287 on Linux). Such a command falls back to `AGENT_PANE_SOCKET`. The host answers a connection on that socket only when the connecting process, checked by peer credentials, has the host's uid and is the process the PTY session started or one of its descendants. Knowing the path grants nothing to a process started elsewhere, which gets `only processes started in it may read its page`. On macOS, an older spawn agent does not report the pid it started; the socket is then not served until the installer is run again.
 
 Markdown output rewrites link and image targets as absolute URLs, resolved against the page's `<base href>` when it has one.
 
@@ -197,28 +204,28 @@ On macOS, the spawn helper checks the connecting process's user and executable (
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution process and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations. Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
 
-### Run a checkout
+### Build from source
 
-Build the binary and point the install script at it, then build the extension:
+To work on Agent Pane, or to run code that is not released yet, build and install it from a checkout (Go and Node are needed):
 
 ```sh
 git clone https://github.com/asakin/agent-pane.git
 cd agent-pane
-go build -o agent-pane .
-AGENT_PANE_BIN="$PWD/agent-pane" ./install.sh
-cd extension && npm install && npm run build
+scripts/dev-install.sh
 ```
 
-A local build reports version `dev`, which passes the side panel's version check. Load the extension in Chrome:
+`scripts/dev-install.sh` builds the program and the extension, lays them out like a release archive, and installs them with the same `place.sh` a release uses. It downloads nothing of Agent Pane; npm fetches the extension's dependencies. The program reports version `dev`, which passes the side panel's version check, and `agent-pane doctor --fix` repairs from this build. Running the install command from [Install](#install) goes back to a release.
 
-1. Open `chrome://extensions`
-2. Turn on **Developer mode**
-3. Click **Load unpacked** and choose `extension/dist/chrome-mv3` from the checkout
-4. Open the side panel from the Agent Pane extension icon
+For the extension, load the build output instead of the installed copy, so a rebuild needs no install:
+
+1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose `extension/dist/chrome-mv3` from the checkout
+2. After a change, run `npm --prefix extension run build` and click the reload button on the Agent Pane card; close and reopen the side panel
+
+Changes to the Go program, `agents/` or `skills/` need `scripts/dev-install.sh` again. On macOS that restarts the LaunchAgent, which ends the shells open in pane tabs.
 
 ### Checks
 
-Every pull request and every push to `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml): extension and Go checks on Ubuntu, plus Go vet and race tests on macOS. To run the suite manually, open **Actions** → **ci** → **Run workflow**. To run the same checks locally:
+Every pull request and every push to `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml): extension and Go checks on Ubuntu, Go vet and race tests on macOS, the installer tests on both, and `goreleaser check`. To run the suite manually, open **Actions** → **ci** → **Run workflow**. To run the same checks locally:
 
 **extension** (Node 26):
 
@@ -237,6 +244,7 @@ gofmt -l .        # prints nothing when formatting is clean
 go vet ./...
 go test -race ./...
 go build ./...
+sh scripts/install_test.sh   # install.sh, place.sh and doctor, in a temporary HOME
 ```
 
 The extension job uploads `extension/dist/chrome-mv3` as the `extension-chrome-mv3` artifact, kept for 7 days. Download it from the workflow run's summary page, unzip it, and load the folder with **Load unpacked** in `chrome://extensions`.
