@@ -12,8 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/aymanbagabas/go-pty"
 )
 
 func TestMain(m *testing.M) {
@@ -48,9 +46,7 @@ func waitOutput(t *testing.T, s *Session, want string) string {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		s.writeMu.Lock()
-		got := string(s.Buf.Bytes())
-		s.writeMu.Unlock()
+		got := sessionOutput(s)
 		if strings.Contains(got, want) {
 			return got
 		}
@@ -71,11 +67,11 @@ func TestPageSocketServesOnlyTheSessionsProcesses(t *testing.T) {
 	// A shell that starts the reader with fd 3 closed, as Claude Code's Bash
 	// tool does, prints the socket path, and waits.
 	prog := `printf 'SOCK[%s]\n' "$AGENT_PANE_SOCKET"; "$0" -test.run='^TestPageSocketHelperProcess$' 3>&-; sleep 30`
-	s, err := m.Create("Terminal", "", "claude", func(tty pty.Pty, _ string) (*pty.Cmd, error) {
-		cmd := tty.Command("/bin/sh", "-c", prog, os.Args[0])
+	s, err := m.Create("Terminal", "", "claude", func() *terminalCommand {
+		cmd := newTerminalCommand("/bin/sh", "-c", prog, os.Args[0])
 		cmd.Env = append(os.Environ(), "PAGE_SOCKET_HELPER=1", envSocket+"=/stale/path.sock")
-		return cmd, nil
-	})
+		return cmd
+	}())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,9 +145,7 @@ func TestStartingSessionIsNotLive(t *testing.T) {
 	hook := startHook
 	startHook = func() { close(release); <-checked }
 	t.Cleanup(func() { startHook = hook })
-	s, err := m.Create("Terminal", "", "", func(tty pty.Pty, _ string) (*pty.Cmd, error) {
-		return tty.Command("/bin/sh", "-c", "sleep 30"), nil
-	})
+	s, err := m.Create("Terminal", "", "", newTerminalCommand("/bin/sh", "-c", "sleep 30"))
 	if err != nil {
 		t.Fatal(err)
 	}

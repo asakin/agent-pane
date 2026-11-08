@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"log/slog"
 	"net"
@@ -25,8 +24,6 @@ import (
 	"time"
 
 	"agent-pane/internal/jsonrpc"
-	"agent-pane/internal/scrollback"
-	"github.com/aymanbagabas/go-pty"
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
 )
@@ -39,16 +36,12 @@ const terminalFontFamily = `"JetBrainsMono Nerd Font Mono", monospace`
 const scrollbackBytes = 2 << 20 // 2 MiB
 
 type Session struct {
-	ID  string
-	Pty pty.Pty
-	Buf *scrollback.Ring
-	// Modes restores the terminal modes the replay lost once Buf wraps.
-	Modes scrollback.Modes
+	ID string
+	// term is the session's terminal, made by the manager's backend.
+	term terminal
 
 	mu           sync.Mutex
-	writeMu      sync.Mutex // serializes websocket writes (replay, live, ping)
 	teardownOnce sync.Once
-	client       *websocket.Conn
 	cols         int
 	rows         int
 	closed       bool
@@ -91,6 +84,7 @@ type attachToken struct {
 type SessionManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	backend  terminalBackend
 	port     int
 	logger   *slog.Logger
 
@@ -135,6 +129,7 @@ func NewSessionManager(port int, logger *slog.Logger) *SessionManager {
 	return &SessionManager{
 		sessions: make(map[string]*Session),
 		panes:    make(map[string]*paneTab),
+		backend:  ptyBackend{logger: logger},
 		port:     port,
 		logger:   logger,
 	}
@@ -252,19 +247,13 @@ func (m *SessionManager) wsURL(id, token string) string {
 // Tests hold a start there.
 var startHook = func() {}
 
-// Create starts a PTY session in the pane tab paneID (a new pane tab when it
-// is empty or cannot be joined). agent is the agent-definition id the launch
-// chose, or "" for a shell.
-func (m *SessionManager) Create(label, paneID, agent string, cmdFactory func(tty pty.Pty, id string) (*pty.Cmd, error)) (*Session, error) {
-	tty, err := pty.New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create pty: %w", err)
-	}
-
+// Create starts a session running command in the pane tab paneID (a new pane
+// tab when it is empty or cannot be joined). agent is the agent-definition id
+// the launch chose, or "" for a shell.
+func (m *SessionManager) Create(label, paneID, agent string, command *terminalCommand) (*Session, error) {
 	id := strings.ToLower(rand.Text())
-	cmd, err := cmdFactory(tty, id)
+	term, err := m.backend.open(id, command)
 	if err != nil {
-		tty.Close()
 		return nil, err
 	}
 
@@ -287,8 +276,7 @@ func (m *SessionManager) Create(label, paneID, agent string, cmdFactory func(tty
 
 	session := &Session{
 		ID:         id,
-		Pty:        tty,
-		Buf:        scrollback.New(scrollbackBytes),
+		term:       term,
 		manager:    m,
 		Label:      label,
 		page:       page,
@@ -300,10 +288,10 @@ func (m *SessionManager) Create(label, paneID, agent string, cmdFactory func(tty
 	session.pane = m.paneLocked(paneID)
 	m.sessions[id] = session
 	m.mu.Unlock()
-	cmd.Env = withSessionEnv(cmd.Env, sessionEnv(session, agent, page != nil, sockPath))
+	command.Env = withSessionEnv(command.Env, sessionEnv(session, agent, page != nil, sockPath))
 
 	startHook()
-	wait, pid, err := startPty(tty, cmd, child)
+	pid, err := term.start(command, child)
 	if child != nil {
 		_ = child.Close()
 	}
@@ -315,7 +303,8 @@ func (m *SessionManager) Create(label, paneID, agent string, cmdFactory func(tty
 	session.started = true
 	session.mu.Unlock()
 
-	go session.readLoop(m.logger)
+	// The session is reaped when its program exits or its terminal ends.
+	term.run(func() { m.reap(id) })
 	if page != nil {
 		go session.servePage(page, m.extensionCaller)
 	}
@@ -326,10 +315,6 @@ func (m *SessionManager) Create(label, paneID, agent string, cmdFactory func(tty
 		// started, so nothing could be checked against it.
 		_ = sock.Close()
 	}
-	go func() {
-		_ = wait()
-		m.reap(id)
-	}()
 
 	return session, nil
 }
@@ -354,7 +339,7 @@ func (m *SessionManager) Destroy(id string) error {
 	return nil
 }
 
-// reap removes a dead session after the PTY child exits (or PTY EOF).
+// reap removes a dead session after its program exits or its terminal ends.
 func (m *SessionManager) reap(id string) {
 	m.remove(id)
 }
@@ -407,11 +392,7 @@ func (s *Session) close() {
 		}
 	}
 	s.replies = nil
-	if s.client != nil {
-		_ = s.client.Close()
-		s.client = nil
-	}
-	_ = s.Pty.Close()
+	_ = s.term.close()
 }
 
 func (s *Session) isStarted() bool {
@@ -424,61 +405,6 @@ func (s *Session) isClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.closed
-}
-
-func (s *Session) readLoop(logger *slog.Logger) {
-	buf := make([]byte, maxBufferSizeBytes)
-	for {
-		n, err := s.Pty.Read(buf)
-		if n > 0 {
-			chunk := append([]byte(nil), buf[:n]...)
-			// Under writeMu so a replay sees Buf and Modes at the same point.
-			s.writeMu.Lock()
-			_, _ = s.Buf.Write(chunk)
-			s.Modes.Write(chunk)
-			s.writeMu.Unlock()
-
-			s.mu.Lock()
-			conn := s.client
-			s.mu.Unlock()
-			if conn != nil {
-				s.writeMu.Lock()
-				writeErr := conn.WriteMessage(websocket.BinaryMessage, chunk)
-				s.writeMu.Unlock()
-				if writeErr != nil {
-					logger.Debug("failed to write tty output to websocket", "error", writeErr)
-				}
-			}
-		}
-		if err != nil {
-			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
-				logger.Debug("pty read ended", "error", err, "session", s.ID)
-			}
-			if s.manager != nil {
-				s.manager.reap(s.ID)
-			} else {
-				s.finalize()
-			}
-			return
-		}
-	}
-}
-
-func (s *Session) attach(conn *websocket.Conn) {
-	s.mu.Lock()
-	if s.client != nil {
-		_ = s.client.Close()
-	}
-	s.client = conn
-	s.mu.Unlock()
-}
-
-func (s *Session) detach(conn *websocket.Conn) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.client == conn {
-		s.client = nil
-	}
 }
 
 func NewCmdServe(version string) *cobra.Command {
@@ -625,12 +551,12 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			mode, app = "", ""
 		}
 
-		session, err := sessions.Create(label, params.Pane, app, func(tty pty.Pty, _ string) (*pty.Cmd, error) {
-			if err := tty.Resize(params.Cols, params.Rows); err != nil {
-				return nil, fmt.Errorf("failed to set size for tty: %w", err)
-			}
-			return buildPtyCommand(tty, mode, app, params.Args, params.Cwd)
-		})
+		command, err := buildTerminalCommand(mode, app, params.Args, params.Cwd)
+		if err != nil {
+			return nil, err
+		}
+		command.Cols, command.Rows = params.Cols, params.Rows
+		session, err := sessions.Create(label, params.Pane, app, command)
 		if err != nil {
 			return nil, err
 		}
@@ -703,7 +629,7 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			return nil, fmt.Errorf("invalid tty ID")
 		}
 
-		if err := session.Pty.Resize(requestParams.Cols, requestParams.Rows); err != nil {
+		if err := session.term.resize(requestParams.Cols, requestParams.Rows); err != nil {
 			return nil, fmt.Errorf("failed to set size for tty: %w", err)
 		}
 		session.mu.Lock()
@@ -901,8 +827,8 @@ func isSafeAppID(app string) bool {
 	return app != "" && safeAppIDRe.MatchString(app)
 }
 
-func buildPtyCommand(tty pty.Pty, mode, app string, args []string, cwd string) (*pty.Cmd, error) {
-	var cmd *pty.Cmd
+func buildTerminalCommand(mode, app string, args []string, cwd string) (*terminalCommand, error) {
+	var cmd *terminalCommand
 	overlay := map[string]string{
 		"TERM": "xterm-256color",
 	}
@@ -914,13 +840,13 @@ func buildPtyCommand(tty pty.Pty, mode, app string, args []string, cwd string) (
 		shell := configuredShell()
 		argv := append([]string{agent.Bin}, agent.Args...)
 		argv = append(argv, args...)
-		cmd = tty.Command(shell, agentExecArgs(shell, argv)...)
+		cmd = newTerminalCommand(shell, agentExecArgs(shell, argv)...)
 	} else {
 		shell := cfg().String("command")
 		if shell == "" {
 			shell = getDefaultShell()
 		}
-		cmd = tty.Command(shell, loginShellArgs(shell, cfg().Strings("args"))...)
+		cmd = newTerminalCommand(shell, loginShellArgs(shell, cfg().Strings("args"))...)
 	}
 
 	cmd.Env = mergePtyEnv(os.Environ(), overlay, cfg().StringMap("env"))
@@ -1031,23 +957,13 @@ func HandleWebsocket(session *Session) http.HandlerFunc {
 		// Always send one binary replay frame (possibly empty) so the client
 		// can gate onData until xterm finishes parsing it — prevents DA replies
 		// from scrollback CSI queries leaking into the PTY as "1;2c".
-		session.writeMu.Lock()
-		snapshot := session.Buf.Bytes()
-		if snapshot == nil {
-			snapshot = []byte{}
-		}
-		if session.Buf.Dropped() {
-			prefix, suffix := session.Modes.Restore()
-			snapshot = append(append([]byte(prefix), snapshot...), suffix...)
-		}
-		if err := connection.WriteMessage(websocket.BinaryMessage, snapshot); err != nil {
-			session.writeMu.Unlock()
+		viewer := &wsViewer{conn: connection}
+		detach, err := session.term.attach(viewer)
+		if err != nil {
 			log.Printf("failed to replay scrollback: %s", err)
 			return
 		}
-		session.attach(connection)
-		session.writeMu.Unlock()
-		defer session.detach(connection)
+		defer detach()
 
 		lastPingTime := time.Now()
 		connection.SetPongHandler(func(appData string) error {
@@ -1065,10 +981,7 @@ func HandleWebsocket(session *Session) http.HandlerFunc {
 				case <-done:
 					return
 				case <-ticker.C:
-					session.writeMu.Lock()
-					err := connection.WriteMessage(websocket.PingMessage, []byte("keepalive"))
-					session.writeMu.Unlock()
-					if err != nil {
+					if err := viewer.ping(); err != nil {
 						return
 					}
 					if time.Since(lastPingTime) > keepalivePingTimeout {
@@ -1079,7 +992,7 @@ func HandleWebsocket(session *Session) http.HandlerFunc {
 			}
 		}()
 
-		// Client input → PTY (binary only; ignore text control frames)
+		// Client input → terminal (binary only; ignore text control frames)
 		for {
 			msgType, data, err := connection.ReadMessage()
 			if err != nil {
@@ -1093,13 +1006,36 @@ func HandleWebsocket(session *Session) http.HandlerFunc {
 				close(done)
 				return
 			}
-			if _, err := session.Pty.Write(data); err != nil {
+			if _, err := session.term.write(data); err != nil {
 				log.Printf("failed to write to tty: %s", err)
 				close(done)
 				return
 			}
 		}
 	}
+}
+
+// wsViewer is a WebSocket attached to a terminal. mu serializes its writes
+// (replay, live output, ping).
+type wsViewer struct {
+	mu   sync.Mutex
+	conn *websocket.Conn
+}
+
+func (v *wsViewer) send(p []byte) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.conn.WriteMessage(websocket.BinaryMessage, p)
+}
+
+func (v *wsViewer) ping() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.conn.WriteMessage(websocket.PingMessage, []byte("keepalive"))
+}
+
+func (v *wsViewer) close() error {
+	return v.conn.Close()
 }
 
 func getConnectionUpgrader(

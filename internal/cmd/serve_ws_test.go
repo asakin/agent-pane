@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-pane/internal/scrollback"
 	"github.com/aymanbagabas/go-pty"
 	"github.com/gorilla/websocket"
 )
@@ -25,8 +24,9 @@ func newWSHarness(t *testing.T, ids ...string) *wsHarness {
 	h := &wsHarness{}
 	h.sessions = NewSessionManager(0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	for _, id := range ids {
-		s := &Session{ID: id, Buf: scrollback.New(1024), manager: h.sessions, started: true}
-		_, _ = s.Buf.Write([]byte("replay-" + id))
+		term := newPtyTerminal(nil, 1024)
+		_, _ = term.buf.Write([]byte("replay-" + id))
+		s := &Session{ID: id, term: term, manager: h.sessions, started: true}
 		h.sessions.sessions[id] = s
 	}
 	h.server = httptest.NewServer(NewWebSocketHandler(h.sessions))
@@ -183,7 +183,7 @@ func TestDestroyDropsTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.sessions.sessions["aaa"].Pty = tty
+	h.sessions.sessions["aaa"].term.(*ptyTerminal).tty = tty
 	h.token(t, "aaa")
 	h.token(t, "bbb")
 	if err := h.sessions.Destroy("aaa"); err != nil {

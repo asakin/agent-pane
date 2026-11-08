@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-pane/internal/scrollback"
 	"github.com/aymanbagabas/go-pty"
 )
 
@@ -109,7 +108,7 @@ func sessionInPane(t *testing.T, m *SessionManager, id, paneID string) (*Session
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Session{ID: id, Pty: tty, Buf: scrollback.New(64), manager: m, Label: "Claude Code", page: host, started: true}
+	s := &Session{ID: id, term: newPtyTerminal(tty, 64), manager: m, Label: "Claude Code", page: host, started: true}
 	m.mu.Lock()
 	s.pane = m.paneLocked(paneID)
 	m.sessions[s.ID] = s
@@ -310,20 +309,18 @@ func TestPageDescriptorIsInheritedOnlyInsideTheTerminal(t *testing.T) {
 	ext := &fakeExtension{tab: pageTab{TabID: 7}, choice: "all", content: "from the tab"}
 	m := NewSessionManager(0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	m.SetExtensionCaller(ext.call)
-	s, err := m.Create("Terminal", "", "", func(tty pty.Pty, _ string) (*pty.Cmd, error) {
-		cmd := tty.Command(os.Args[0], "-test.run=^TestPageHelperProcess$")
+	s, err := m.Create("Terminal", "", "", func() *terminalCommand {
+		cmd := newTerminalCommand(os.Args[0], "-test.run=^TestPageHelperProcess$")
 		cmd.Env = append(os.Environ(), "PAGE_HELPER=1")
-		return cmd, nil
-	})
+		return cmd
+	}())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer m.Destroy(s.ID)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		s.writeMu.Lock()
-		got := string(s.Buf.Bytes())
-		s.writeMu.Unlock()
+		got := sessionOutput(s)
 		if strings.Contains(got, "OK[from the tab]") {
 			break
 		}
@@ -720,9 +717,7 @@ func TestCreateJoinsTheDeadSessionsPaneTab(t *testing.T) {
 	}
 	m := NewSessionManager(0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	start := func(pane, prog string) *Session {
-		s, err := m.Create("Terminal", pane, "", func(tty pty.Pty, _ string) (*pty.Cmd, error) {
-			return tty.Command("/bin/sh", "-c", prog), nil
-		})
+		s, err := m.Create("Terminal", pane, "", newTerminalCommand("/bin/sh", "-c", prog))
 		if err != nil {
 			t.Fatal(err)
 		}
