@@ -29,10 +29,10 @@ go test -race ./...
 go build ./...
 ```
 
-When changing `install.sh`, also run:
+When changing `install.sh`, `scripts/place.sh` or `agent-pane doctor`, also run:
 
 ```sh
-./install_test.sh
+sh scripts/install_test.sh
 ```
 
 ### Extension (from repository root)
@@ -46,11 +46,13 @@ npm --prefix extension run build
 
 ## Map
 
-- `main.go`, `internal/cmd/`: Go CLI entry point, native-messaging host (`serve.go`), PTY session environment (`env.go`), page channel, page socket and `agent-pane page` commands (`page.go`, `page_unix.go`), agent catalog loader (`agents.go`), and macOS LaunchAgent spawn (`spawn_darwin.go`).
+- `main.go`, `internal/cmd/`: Go CLI entry point, native-messaging host (`serve.go`), PTY session environment (`env.go`), page channel, page socket and `agent-pane page` commands (`page.go`, `page_unix.go`), agent catalog loader (`agents.go`), install checks (`doctor.go`), and macOS LaunchAgent spawn (`spawn_darwin.go`).
 - `internal/jsonrpc/`, `internal/scrollback/`: JSON-RPC framing and terminal scrollback ring/mode replay.
 - `internal/peercred/`: unix socket peer checks (uid, executable, ancestry) for Linux and macOS.
 - `extension/entrypoints/`: WXT extension entry points (`background.ts`, `sidepanel.html`, `options.html`, the injected `page-reader.ts`) and shared terminal/tab/RPC/page modules in `extension/entrypoints/shared/`.
 - `extension/tests/`: Node test runner suites (`*.test.mjs`).
-- `skills/agent-pane/`: the canonical skill `install.sh` installs for coding agents; see [README](README.md#agent-skill).
+- `skills/agent-pane/`: the canonical skill the installer installs for coding agents; see [README](README.md#agent-skill).
 - `agents/`: shipped agent definitions and `agents/enabled.json`; see [agents/README.md](agents/README.md).
-- `install.sh`, `install_test.sh`: curl installer and its test script.
+- `install.sh`: the release installer template; `release.yml` publishes it with `VERSION` set to the tag, and the repository copy refuses to run.
+- `scripts/place.sh`: puts a release-shaped folder in place (binary, manifests, LaunchAgent, skill, extension); shipped in every archive. `internal/cmd/doctor.go` checks the same paths, so change both.
+- `scripts/dev-install.sh`: builds a checkout and installs it with `place.sh`. `scripts/install_test.sh`: tests for all three.

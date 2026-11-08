@@ -1,4 +1,4 @@
-const SETUP_COMMANDS = `curl -fsSL https://raw.githubusercontent.com/asakin/agent-pane/main/install.sh | sh`;
+const SETUP_COMMANDS = `curl -fsSL https://github.com/asakin/agent-pane/releases/latest/download/install.sh | sh`;
 
 /** Minimal native-host disconnect screen: error + install commands + Retry. */
 export function renderSetupScreen(errorMessage?: string): HTMLElement {
