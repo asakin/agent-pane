@@ -18,6 +18,7 @@ const (
 	envSessionID   = "AGENT_PANE_SESSION_ID"
 	envAgent       = "AGENT_PANE_AGENT"
 	envSkillPath   = "AGENT_PANE_SKILL_PATH"
+	envSocket      = "AGENT_PANE_SOCKET"
 )
 
 // reservedEnv lists every key withSessionEnv owns. TERM_PROGRAM_VERSION is
@@ -31,6 +32,7 @@ var reservedEnv = []string{
 	envSessionID,
 	envAgent,
 	pageFDEnv,
+	envSocket,
 	envSkillPath,
 }
 
@@ -38,8 +40,9 @@ var reservedEnv = []string{
 var skillPath = filepath.Join(dataDir, "skills", "agent-pane", "SKILL.md")
 
 // sessionEnv is the reserved environment for one session. agent is the
-// agent-definition id the launch chose, "" for a shell or custom command.
-func sessionEnv(s *Session, agent string, hasPage bool) map[string]string {
+// agent-definition id the launch chose, "" for a shell or custom command;
+// socket is the session's page socket, "" when it has none.
+func sessionEnv(s *Session, agent string, hasPage bool, socket string) map[string]string {
 	env := map[string]string{
 		envPresence:    "1",
 		envTermProgram: "agent-pane",
@@ -53,6 +56,9 @@ func sessionEnv(s *Session, agent string, hasPage bool) map[string]string {
 	}
 	if hasPage {
 		env[pageFDEnv] = fmt.Sprint(pageFD)
+	}
+	if socket != "" {
+		env[envSocket] = socket
 	}
 	if info, err := os.Stat(skillPath); err == nil && info.Mode().IsRegular() {
 		env[envSkillPath] = skillPath

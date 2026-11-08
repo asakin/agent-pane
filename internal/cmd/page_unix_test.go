@@ -105,7 +105,7 @@ func sessionInPane(t *testing.T, m *SessionManager, id, paneID string) (*Session
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Session{ID: id, Pty: tty, Buf: scrollback.New(64), manager: m, Label: "Claude Code", page: host}
+	s := &Session{ID: id, Pty: tty, Buf: scrollback.New(64), manager: m, Label: "Claude Code", page: host, started: true}
 	m.mu.Lock()
 	s.pane = m.paneLocked(paneID)
 	m.sessions[s.ID] = s

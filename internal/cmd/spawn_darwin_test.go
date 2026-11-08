@@ -70,7 +70,7 @@ func TestSpawnRefusesOtherExecutable(t *testing.T) {
 
 	marker := filepath.Join(t.TempDir(), "ran")
 	cmd := tty.Command("/bin/sh", "-c", "touch "+marker)
-	if _, err := dialSpawn(sock, tty, cmd, nil); err == nil {
+	if _, _, err := dialSpawn(sock, tty, cmd, nil); err == nil {
 		t.Fatal("spawn accepted a client that is not the allowed executable")
 	}
 	if _, err := os.Stat(marker); err == nil {
@@ -95,7 +95,7 @@ func TestSpawnChildParentIsHelper(t *testing.T) {
 		out <- buf[:n]
 	}()
 	cmd := tty.Command("/bin/sh", "-c", "echo hello-from-child; ps -o ppid= -p $$ > "+marker)
-	wait, err := dialSpawn(sock, tty, cmd, nil)
+	wait, _, err := dialSpawn(sock, tty, cmd, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

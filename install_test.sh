@@ -77,6 +77,15 @@ cmp "$root/skills/agent-pane/SKILL.md" "$home/.agents/skills/agent-pane/SKILL.md
 [ ! -e "$home/.claude/skills/agent-pane/old.md" ]
 grep -qx mine "$home/.agents/skills/mine/SKILL.md"
 
+# A run cut short leaves its staging folder; the next run still installs.
+rm -rf "$home/.claude/skills/agent-pane"
+mkdir -p "$home/.local/share/agent-pane/skills/.agent-pane-copy"
+echo partial >"$home/.local/share/agent-pane/skills/.agent-pane-copy/SKILL.md"
+HOME="$home" SHELL=/bin/zsh AGENT_PANE_BIN="$bin" "$root/install.sh" >/dev/null
+cmp "$root/skills/agent-pane/SKILL.md" "$home/.claude/skills/agent-pane/SKILL.md"
+[ -f "$home/.claude/skills/agent-pane/.agent-pane-managed" ]
+[ ! -e "$home/.local/share/agent-pane/skills/.agent-pane-copy" ]
+
 rm -rf "$home/.claude/skills/agent-pane"
 mkdir -p "$home/.claude/skills/agent-pane"
 echo user >"$home/.claude/skills/agent-pane/SKILL.md"

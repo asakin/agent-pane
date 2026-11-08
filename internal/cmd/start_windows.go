@@ -10,9 +10,9 @@ import (
 
 // startPty starts cmd on the terminal. Page reading is not available here, so
 // extra is always nil.
-func startPty(_ pty.Pty, cmd *pty.Cmd, _ *os.File) (func() error, error) {
+func startPty(_ pty.Pty, cmd *pty.Cmd, _ *os.File) (func() error, int, error) {
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return cmd.Wait, nil
+	return cmd.Wait, cmd.Process.Pid, nil
 }

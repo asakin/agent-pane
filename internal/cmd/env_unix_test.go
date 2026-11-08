@@ -201,7 +201,7 @@ func TestSessionEnvWithoutSkillOrPageChannel(t *testing.T) {
 	old := skillPath
 	skillPath = filepath.Join(t.TempDir(), "missing", "SKILL.md")
 	t.Cleanup(func() { skillPath = old })
-	env := sessionEnv(&Session{ID: "x", pane: newPaneTab()}, "", false)
+	env := sessionEnv(&Session{ID: "x", pane: newPaneTab()}, "", false, "")
 	for _, k := range []string{pageFDEnv, envSkillPath, envAgent} {
 		if _, ok := env[k]; ok {
 			t.Errorf("%s set: %q", k, env[k])

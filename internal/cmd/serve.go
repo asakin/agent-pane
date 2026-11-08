@@ -58,6 +58,12 @@ type Session struct {
 	Label string
 	// page is the host's end of the page channel; nil where there is none.
 	page *net.UnixConn
+	// pageSocket serves the session's processes that did not inherit the
+	// page channel; nil where there is none.
+	pageSocket *net.UnixListener
+	// started is set once the session's process runs. Until then the
+	// session only holds its pane tab: lookups and listings skip it.
+	started bool
 	// pane is the pane tab this session runs in. Page-read grants live
 	// there, so they outlive this session when the panel replaces it.
 	pane *paneTab
@@ -217,7 +223,10 @@ func (m *SessionManager) Get(id string) (*Session, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	s, ok := m.sessions[id]
-	return s, ok
+	if !ok || !s.isStarted() {
+		return nil, false
+	}
+	return s, true
 }
 
 func (m *SessionManager) List() []string {
@@ -226,9 +235,9 @@ func (m *SessionManager) List() []string {
 	ids := make([]string, 0, len(m.sessions))
 	for id, s := range m.sessions {
 		s.mu.Lock()
-		closed := s.closed
+		live := s.started && !s.closed
 		s.mu.Unlock()
-		if !closed {
+		if live {
 			ids = append(ids, id)
 		}
 	}
@@ -238,6 +247,10 @@ func (m *SessionManager) List() []string {
 func (m *SessionManager) wsURL(id, token string) string {
 	return fmt.Sprintf("ws://127.0.0.1:%d/tty/%s?token=%s", m.port, id, token)
 }
+
+// startHook runs in Create between registering a session and starting it.
+// Tests hold a start there.
+var startHook = func() {}
 
 // Create starts a PTY session in the pane tab paneID (a new pane tab when it
 // is empty or cannot be joined). agent is the agent-definition id the launch
@@ -262,34 +275,56 @@ func (m *SessionManager) Create(label, paneID, agent string, cmdFactory func(tty
 		m.logger.Warn("no page channel for terminal", "error", err)
 	}
 
+	// Commands that do not inherit the page channel (a coding agent's
+	// command tool) reach the session through this socket instead.
+	var sock *net.UnixListener
+	sockPath := ""
+	if page != nil {
+		if sock, sockPath, err = newPageSocket(); err != nil {
+			m.logger.Warn("no page socket for terminal", "error", err)
+		}
+	}
+
 	session := &Session{
-		ID:      id,
-		Pty:     tty,
-		Buf:     scrollback.New(scrollbackBytes),
-		manager: m,
-		Label:   label,
-		page:    page,
+		ID:         id,
+		Pty:        tty,
+		Buf:        scrollback.New(scrollbackBytes),
+		manager:    m,
+		Label:      label,
+		page:       page,
+		pageSocket: sock,
 	}
 	// Register the session before it starts, so its pane tab is held and
-	// its environment can name it.
+	// its environment can name it. It is not live until it has started.
 	m.mu.Lock()
 	session.pane = m.paneLocked(paneID)
 	m.sessions[id] = session
 	m.mu.Unlock()
-	cmd.Env = withSessionEnv(cmd.Env, sessionEnv(session, agent, page != nil))
+	cmd.Env = withSessionEnv(cmd.Env, sessionEnv(session, agent, page != nil, sockPath))
 
-	wait, err := startPty(tty, cmd, child)
+	startHook()
+	wait, pid, err := startPty(tty, cmd, child)
 	if child != nil {
 		_ = child.Close()
 	}
 	if err != nil {
-		_ = m.Destroy(id)
+		m.remove(id)
 		return nil, fmt.Errorf("failed to start pty: %w", err)
 	}
+	session.mu.Lock()
+	session.started = true
+	session.mu.Unlock()
 
 	go session.readLoop(m.logger)
 	if page != nil {
 		go session.servePage(page, m.extensionCaller)
+	}
+	if sock != nil && pid > 0 {
+		go session.servePageSocket(sock, pid, m.extensionCaller)
+	} else if sock != nil {
+		// An older macOS spawn agent does not say which process it
+		// started, so nothing could be checked against it.
+		_ = sock.Close()
 	}
 	go func() {
 		_ = wait()
@@ -299,9 +334,13 @@ func (m *SessionManager) Create(label, paneID, agent string, cmdFactory func(tty
 	return session, nil
 }
 
+// Destroy ends a live session. One still starting is not the caller's yet.
 func (m *SessionManager) Destroy(id string) error {
 	m.mu.Lock()
 	session, ok := m.sessions[id]
+	if ok && !session.isStarted() {
+		ok = false
+	}
 	if ok {
 		delete(m.sessions, id)
 		m.forgetIdlePaneLocked(session.pane)
@@ -317,6 +356,11 @@ func (m *SessionManager) Destroy(id string) error {
 
 // reap removes a dead session after the PTY child exits (or PTY EOF).
 func (m *SessionManager) reap(id string) {
+	m.remove(id)
+}
+
+// remove drops a session, started or not, and tears it down.
+func (m *SessionManager) remove(id string) {
 	m.mu.Lock()
 	session, ok := m.sessions[id]
 	if ok {
@@ -345,6 +389,9 @@ func (s *Session) close() {
 	if s.page != nil {
 		_ = s.page.Close()
 	}
+	if s.pageSocket != nil {
+		_ = s.pageSocket.Close()
+	}
 	// The pane tab's grants stay: the panel may replace this session in the
 	// same pane tab. Closing the pane tab is what revokes them.
 	if s.done == nil {
@@ -365,6 +412,12 @@ func (s *Session) close() {
 		s.client = nil
 	}
 	_ = s.Pty.Close()
+}
+
+func (s *Session) isStarted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.started
 }
 
 func (s *Session) isClosed() bool {
