@@ -325,9 +325,16 @@ install_skill_copy() {
 		return 0
 	fi
 	mkdir -p "$(dirname "$to")"
+	# Build the copy in the data folder, where no agent looks for skills,
+	# marker first, then swap it in. A run cut short leaves the old marked
+	# copy, or no copy, and never an unmarked one, so the next run repairs it.
+	tmp_copy="$data_dir/skills/.agent-pane-copy"
+	rm -rf "$tmp_copy"
+	mkdir -p "$tmp_copy"
+	printf 'Installed by Agent Pane install.sh; replaced on every run. Delete this folder to remove the skill.\n' >"$tmp_copy/$skill_marker"
+	cp -R "$from/." "$tmp_copy/"
 	rm -rf "$to"
-	cp -R "$from" "$to"
-	printf 'Installed by Agent Pane install.sh; replaced on every run. Delete this folder to remove the skill.\n' >"$to/$skill_marker"
+	mv "$tmp_copy" "$to"
 	echo "agent-pane: installed the agent-pane skill in $to"
 }
 

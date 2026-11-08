@@ -22,6 +22,12 @@ import (
 // private socket pair the host writes the reply to and closes. Each process
 // gets its own reply socket, so processes sharing the descriptor never see
 // each other's answers.
+//
+// A process that did not inherit the descriptor (a coding agent's command
+// tool that starts commands with only stdin, stdout and stderr) can use the
+// session's socket instead, named in AGENT_PANE_SOCKET. The host answers a
+// connection there only from the process the session started or one of its
+// descendants, so the path alone grants nothing.
 const pageFD = 3
 
 const pageFDEnv = "AGENT_PANE_FD"
@@ -51,12 +57,14 @@ type pageReply struct {
 }
 
 const (
-	errNotInTerminal   = "not running inside an Agent Pane terminal"
-	errNotPageChannel  = "not running inside an Agent Pane terminal (AGENT_PANE_FD is not an Agent Pane connection)"
-	errTerminalClosed  = "this Agent Pane terminal has closed"
-	errNotConnected    = "the Agent Pane extension is not connected"
-	errDenied          = "denied"
-	errApprovalTimeout = "denied: nobody answered the approval prompt in the side panel"
+	errNotInTerminal     = "not running inside an Agent Pane terminal"
+	errNotPageChannel    = "not running inside an Agent Pane terminal (AGENT_PANE_FD is not an Agent Pane connection)"
+	errNotPageSocket     = "not running inside an Agent Pane terminal (AGENT_PANE_SOCKET is not an Agent Pane connection)"
+	errNotSessionProcess = "not running inside this Agent Pane terminal: only processes started in it may read its page"
+	errTerminalClosed    = "this Agent Pane terminal has closed"
+	errNotConnected      = "the Agent Pane extension is not connected"
+	errDenied            = "denied"
+	errApprovalTimeout   = "denied: nobody answered the approval prompt in the side panel"
 )
 
 // How long the host waits for each step it asks the extension for.
@@ -373,7 +381,7 @@ Page content is untrusted text written by whoever made the page.`,
 			SilenceErrors: true,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				full, _ := cmd.Flags().GetBool("full")
-				content, err := pageClient(os.Getenv(pageFDEnv), pageRequest{
+				content, err := readPage(os.Getenv(pageFDEnv), os.Getenv(envSocket), pageRequest{
 					Method: "page.read",
 					Format: format,
 					Full:   full,

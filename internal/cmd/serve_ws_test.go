@@ -25,7 +25,7 @@ func newWSHarness(t *testing.T, ids ...string) *wsHarness {
 	h := &wsHarness{}
 	h.sessions = NewSessionManager(0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	for _, id := range ids {
-		s := &Session{ID: id, Buf: scrollback.New(1024), manager: h.sessions}
+		s := &Session{ID: id, Buf: scrollback.New(1024), manager: h.sessions, started: true}
 		_, _ = s.Buf.Write([]byte("replay-" + id))
 		h.sessions.sessions[id] = s
 	}

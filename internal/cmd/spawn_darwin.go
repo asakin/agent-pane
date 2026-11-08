@@ -26,6 +26,8 @@ type spawnRequest struct {
 type spawnAck struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error"`
+	// PID is the started command's process id.
+	PID int `json:"pid,omitempty"`
 }
 
 type spawnExit struct {
@@ -46,29 +48,30 @@ func NewCmdSpawn() *cobra.Command {
 	}
 }
 
-func startPty(tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() error, error) {
+func startPty(tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() error, int, error) {
 	return dialSpawn(spawnSocketPath(), tty, cmd, extra)
 }
 
 // dialSpawn hands the terminal, and the page channel when there is one, to
-// the spawn agent, which starts cmd with them as its tty and fd 3.
-func dialSpawn(path string, tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() error, error) {
+// the spawn agent, which starts cmd with them as its tty and fd 3. It
+// returns the wait and the command's pid (0 from an older spawn agent).
+func dialSpawn(path string, tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() error, int, error) {
 	// The helper writes the child's stdout through this fd, so it has to be
 	// writable. O_NOCTTY keeps the host from adopting the slave.
 	slave, err := os.OpenFile(tty.Name(), os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer slave.Close()
 
 	conn, err := net.Dial("unix", path)
 	if err != nil {
-		return nil, fmt.Errorf("spawn agent is not running; re-run the installer")
+		return nil, 0, fmt.Errorf("spawn agent is not running; re-run the installer")
 	}
 	uc, ok := conn.(*net.UnixConn)
 	if !ok {
 		conn.Close()
-		return nil, fmt.Errorf("spawn agent is not running; re-run the installer")
+		return nil, 0, fmt.Errorf("spawn agent is not running; re-run the installer")
 	}
 
 	fds := []int{int(slave.Fd())}
@@ -78,7 +81,7 @@ func dialSpawn(path string, tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() e
 	rights := syscall.UnixRights(fds...)
 	if _, _, err := uc.WriteMsgUnix([]byte{0}, rights, nil); err != nil {
 		conn.Close()
-		return nil, err
+		return nil, 0, err
 	}
 
 	argv := cmd.Args
@@ -92,21 +95,21 @@ func dialSpawn(path string, tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() e
 		Dir:  cmd.Dir,
 	}); err != nil {
 		conn.Close()
-		return nil, err
+		return nil, 0, err
 	}
 
 	dec := json.NewDecoder(conn)
 	var ack spawnAck
 	if err := dec.Decode(&ack); err != nil {
 		conn.Close()
-		return nil, err
+		return nil, 0, err
 	}
 	if !ack.OK {
 		conn.Close()
 		if ack.Error == "" {
 			ack.Error = "spawn agent did not start the shell"
 		}
-		return nil, fmt.Errorf("%s", ack.Error)
+		return nil, 0, fmt.Errorf("%s", ack.Error)
 	}
 
 	return func() error {
@@ -119,7 +122,7 @@ func dialSpawn(path string, tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() e
 			return fmt.Errorf("exit status %d", done.Exit)
 		}
 		return nil
-	}, nil
+	}, ack.PID, nil
 }
 
 // serveSpawnSocket accepts only the agent-pane binary itself (the serve host)
@@ -236,7 +239,7 @@ func handleSpawnConn(conn *net.UnixConn) {
 		_ = json.NewEncoder(conn).Encode(spawnAck{Error: err.Error()})
 		return
 	}
-	if err := json.NewEncoder(conn).Encode(spawnAck{OK: true}); err != nil {
+	if err := json.NewEncoder(conn).Encode(spawnAck{OK: true, PID: cmd.Process.Pid}); err != nil {
 		_ = cmd.Process.Kill()
 		return
 	}

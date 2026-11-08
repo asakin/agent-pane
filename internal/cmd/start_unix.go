@@ -11,13 +11,13 @@ import (
 	"github.com/aymanbagabas/go-pty"
 )
 
-// startPty starts cmd on the terminal. pty.Cmd has no ExtraFiles, so the
-// command is started the way go-pty does it, plus the inherited page channel,
-// which the child sees as fd 3.
-func startPty(tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() error, error) {
+// startPty starts cmd on the terminal and returns its wait and pid. pty.Cmd
+// has no ExtraFiles, so the command is started the way go-pty does it, plus
+// the inherited page channel, which the child sees as fd 3.
+func startPty(tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() error, int, error) {
 	unixTty, ok := tty.(pty.UnixPty)
 	if !ok {
-		return nil, fmt.Errorf("not a unix terminal")
+		return nil, 0, fmt.Errorf("not a unix terminal")
 	}
 	argv := cmd.Args
 	if len(argv) == 0 {
@@ -36,7 +36,7 @@ func startPty(tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() error, error) {
 	}
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 	if err := c.Start(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return c.Wait, nil
+	return c.Wait, c.Process.Pid, nil
 }
