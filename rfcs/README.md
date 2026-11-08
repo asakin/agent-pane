@@ -49,4 +49,4 @@ Use these sections, adapted from the Rust RFC template. Leave a section in with 
 
 | RFC | Title | Status |
 | --- | --- | --- |
-| [0001](0001-herdr-core-backend.md) | Herdr core as Agent Pane's terminal backend | Proposed |
+| [0001](0001-herdr-core-backend.md) | Herdr core as Agent Pane's terminal backend | Accepted |

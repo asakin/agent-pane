@@ -1,6 +1,6 @@
 # RFC 0001: Herdr core as Agent Pane's terminal backend
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Issue:** #16
 - **Author:** Tessl, for @asakin
 
