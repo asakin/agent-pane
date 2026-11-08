@@ -6,6 +6,14 @@ import type {
     ResponseConfigSet,
 } from "./rpc";
 import { clampFontSize } from "./fontSize";
+import {
+    BLOCKED_DOMAINS_KEY,
+    type BlockedDomainEdit,
+    blockedDomainsFromConfig,
+    createBlockedDomainEditor,
+    normalizeBlockedDomains,
+    parseBlockedDomain,
+} from "./blockedDomains";
 
 const form = document.getElementById("settings-form") as HTMLFormElement;
 const statusEl = document.getElementById("status") as HTMLDivElement;
@@ -18,6 +26,9 @@ const envEl = document.getElementById("env") as HTMLTextAreaElement;
 const cwdEl = document.getElementById("cwd") as HTMLInputElement;
 const agentsEl = document.getElementById("agents") as HTMLDivElement;
 const alphabeticalEl = document.getElementById("agentMenuAlphabetical") as HTMLInputElement;
+const blockedInputEl = document.getElementById("blockedDomainInput") as HTMLInputElement;
+const blockedAddEl = document.getElementById("blockedDomainAdd") as HTMLButtonElement;
+const blockedListEl = document.getElementById("blockedDomains") as HTMLUListElement;
 
 let loadedConfig: Record<string, unknown> = {};
 let knownAgents: AgentInfo[] = [];
@@ -112,6 +123,76 @@ function agentOverrides(): Record<string, unknown> {
     return out;
 }
 
+function renderBlockedDomains(domains: string[]) {
+    blockedListEl.replaceChildren();
+    if (domains.length === 0) {
+        const empty = document.createElement("li");
+        empty.textContent = "No blocked domains.";
+        blockedListEl.appendChild(empty);
+        return;
+    }
+    for (const domain of domains) {
+        const row = document.createElement("li");
+        const name = document.createElement("span");
+        name.textContent = domain;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "at-btn";
+        remove.textContent = "Remove";
+        remove.setAttribute("aria-label", `Remove ${domain}`);
+        remove.addEventListener("click", () => void editBlockedDomains({ remove: domain }, `Removed ${domain}.`));
+        row.append(name, remove);
+        blockedListEl.appendChild(row);
+    }
+}
+
+// Each edit reads the stored list, so edits from this page made before an
+// earlier save answered, and edits from another Options page, are kept.
+const blockedDomainEditor = createBlockedDomainEditor({
+    load: async () => blockedDomainsFromConfig(await browser.runtime.sendMessage<RequestConfigGet, ResponseConfigGet>({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "config.get",
+        params: undefined,
+    })),
+    save: async (domains) => {
+        const resp = await browser.runtime.sendMessage<RequestConfigSet, ResponseConfigSet>({
+            jsonrpc: "2.0",
+            id: crypto.randomUUID(),
+            method: "config.set",
+            params: { config: { [BLOCKED_DOMAINS_KEY]: domains } },
+        });
+        if ("error" in resp) {
+            throw new Error(resp.error.message);
+        }
+        loadedConfig = { ...loadedConfig, ...resp.result.config };
+        renderBlockedDomains(normalizeBlockedDomains(loadedConfig[BLOCKED_DOMAINS_KEY]));
+    },
+});
+
+// The list saves on its own, at once, so a new block applies to reads
+// without waiting for the form's Save.
+async function editBlockedDomains(edit: BlockedDomainEdit, done: string) {
+    setStatus("Saving…");
+    try {
+        await blockedDomainEditor(edit);
+    } catch (err) {
+        setStatus(err instanceof Error ? err.message : String(err), "error");
+        return;
+    }
+    setStatus(done, "ok");
+}
+
+function addBlockedDomain() {
+    const parsed = parseBlockedDomain(blockedInputEl.value);
+    if ("error" in parsed) {
+        setStatus(parsed.error, "error");
+        return;
+    }
+    blockedInputEl.value = "";
+    void editBlockedDomains({ add: parsed.domain }, `Blocked ${parsed.domain} and its subdomains.`);
+}
+
 function parseArgs(raw: string): string[] {
     return raw
         .trim()
@@ -153,6 +234,9 @@ async function load() {
     cwdEl.value = typeof config.cwd === "string" ? config.cwd : "";
     alphabeticalEl.checked = config.agentMenuAlphabetical === true;
     renderAgents(knownAgents);
+    renderBlockedDomains(normalizeBlockedDomains(config[BLOCKED_DOMAINS_KEY]));
+    blockedInputEl.disabled = false;
+    blockedAddEl.disabled = false;
     setStatus("Loaded.", "ok");
 }
 
@@ -190,5 +274,13 @@ async function save(event: Event) {
 }
 
 form.addEventListener("submit", (e) => void save(e));
+blockedAddEl.addEventListener("click", addBlockedDomain);
+blockedInputEl.addEventListener("keydown", (e) => {
+    // Enter adds the entry instead of submitting the form.
+    if (e.key === "Enter") {
+        e.preventDefault();
+        addBlockedDomain();
+    }
+});
 
 void load();

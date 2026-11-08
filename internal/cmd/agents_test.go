@@ -217,3 +217,63 @@ func TestInitializeRejectsBadParams(t *testing.T) {
 		t.Fatal("expected error for malformed params")
 	}
 }
+
+// The Blocked domains list is one config.json key: Options saves it on its
+// own and the form's Save, which leaves it out, keeps it.
+func TestBlockedDomainsPersistAcrossConfigSaves(t *testing.T) {
+	old := configDir
+	configDir = t.TempDir()
+	t.Cleanup(func() { configDir = old })
+	t.Cleanup(unwatchConfig)
+
+	if err := writeConfigMap(map[string]any{"blockedDomains": []any{"bank.example"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeConfigMap(map[string]any{"theme": "Tomorrow Night", "cwd": nil}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := readConfigMap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(cfg["blockedDomains"]); got != "[bank.example]" {
+		t.Fatalf("blockedDomains after a form save: %s", got)
+	}
+	if err := writeConfigMap(map[string]any{"blockedDomains": []any{}}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, _ = readConfigMap(); fmt.Sprint(cfg["blockedDomains"]) != "[]" {
+		t.Fatalf("removing the last entry: %v", cfg["blockedDomains"])
+	}
+}
+
+// Saves, file watcher reloads and readers can overlap without racing on the
+// loaded configuration, and each save is visible to the next reader.
+func TestConfigReloadsDoNotRace(t *testing.T) {
+	old := configDir
+	configDir = t.TempDir()
+	t.Cleanup(func() { configDir = old })
+	t.Cleanup(unwatchConfig)
+
+	if err := loadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			_ = cfg().String("theme")
+			_ = cfg().StringMap("env")
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		theme := fmt.Sprintf("theme-%d", i)
+		if err := writeConfigMap(map[string]any{"theme": theme}); err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg().String("theme"); got != theme {
+			t.Fatalf("theme after save = %q, want %q", got, theme)
+		}
+	}
+	<-done
+}

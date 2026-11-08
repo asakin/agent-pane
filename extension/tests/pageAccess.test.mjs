@@ -123,6 +123,7 @@ test("the tab is the lock, else the focused tab in the terminal's window", async
 
     const queries = [];
     const apis = {
+        blockedDomains: async () => [],
         storageSession: { get: async () => stored },
         tabs: {
             get: async (id) => {
@@ -146,18 +147,19 @@ test("the tab is the lock, else the focused tab in the terminal's window", async
 test("a read injects the reader into the main frame and returns its result", async () => {
     const calls = [];
     const apis = {
+        blockedDomains: async () => [],
         tabs: { get: async () => ({ id: 3, url: "https://example.com/" }) },
         scripting: {
             executeScript: async (injection) => {
                 calls.push(injection);
-                return injection.files ? [{}] : [{ result: { content: "page text" } }];
+                return injection.files ? [{}] : [{ result: { content: "page text", url: "https://example.com/" } }];
             },
         },
     };
     assert.equal(await readTab(apis, 3, "text", false), "page text");
     assert.deepEqual(calls[0], { target: { tabId: 3, frameIds: [0] }, files: ["/page-reader.js"] });
     assert.deepEqual(calls[1].target, { tabId: 3, frameIds: [0] });
-    assert.deepEqual(calls[1].args, ["text", false, null]);
+    assert.deepEqual(calls[1].args, ["text", false, null, []]);
     assert.equal(calls[1].world, undefined, "isolated world, the default");
 
     const chrome = { ...apis, tabs: { get: async () => ({ id: 3, url: "chrome://extensions/" }) } };
@@ -265,8 +267,9 @@ test("Send tab does not deliver when the terminal changes during the last await"
     let release;
     const describing = new Promise((r) => { release = r; });
     const sending = sendTabContent({
-        read: async () => "page of A",
+        read: async () => ({ content: "page of A", url: "https://a.example/" }),
         describe: () => describing,
+        checkBlocked: async () => {},
         isDestination: () => active === "A",
         deliver: (c) => (delivered.push([active, c]), true),
     });
@@ -279,8 +282,9 @@ test("Send tab does not deliver when the terminal changes during the last await"
 
     active = "A";
     const sent = await sendTabContent({
-        read: async () => "page of A",
+        read: async () => ({ content: "page of A", url: "https://a.example/" }),
         describe: async () => "Title",
+        checkBlocked: async () => {},
         isDestination: () => active === "A",
         deliver: (c) => (delivered.push([active, c]), true),
     });
@@ -300,8 +304,9 @@ test("Send tab reports nothing sent while a reattached socket is still replaying
     const attachment = attachPtySocket(terminal, socket);
     t.after(() => { attachment.dispose(); terminal.dispose(); });
     const steps = {
-        read: async () => "page",
+        read: async () => ({ content: "page", url: "https://a.example/" }),
         describe: async () => "Title",
+        checkBlocked: async () => {},
         isDestination: () => true,
         deliver: (c) => attachment.sendInput(c),
     };
@@ -344,6 +349,7 @@ test("a prompted read delivers only the document the prompt named", async () => 
 
     // The prompt names the committed document, not a navigation still pending.
     const apis = {
+        blockedDomains: async () => [],
         storageSession: { get: async () => ({}) },
         tabs: { query: async () => [{ id: 7, title: "Old", url: "https://old.example/", pendingUrl: "https://new.example/" }] },
     };

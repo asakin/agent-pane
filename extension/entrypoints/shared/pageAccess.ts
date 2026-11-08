@@ -6,6 +6,7 @@
  */
 import { trackMode } from "./tabLock.ts";
 import type { PageFormat, PageResult } from "./pageContent.ts";
+import { assertNotBlocked } from "./blockedDomains.ts";
 
 /** Side panel menu order. Markdown is the default. */
 export const SEND_FORMATS: { format: PageFormat; label: string }[] = [
@@ -225,6 +226,8 @@ export function findTerminal(stored: Record<string, unknown>, tty: string): Term
 type ChromeTab = { id?: number; title?: string; url?: string; pendingUrl?: string };
 
 export type PageApis = {
+    /** The Blocked domains list as it is now, read again at every call. */
+    blockedDomains(): Promise<string[]>;
     storageSession: { get(keys: null): Promise<Record<string, unknown>> };
     tabs: {
         get(tabId: number): Promise<ChromeTab>;
@@ -268,14 +271,40 @@ export async function resolveTab(apis: PageApis, tty: string): Promise<ResolvedT
     if (!tab || tab.id === undefined) {
         throw new Error("no Chrome tab is focused in this terminal's window");
     }
+    // A blocked page, or a navigation to one, is refused before anyone is
+    // asked about it.
+    assertNotBlocked([tab.url, tab.pendingUrl], await apis.blockedDomains());
     // The committed document, which is what a read gets; a navigation still
     // pending has not replaced it yet. A prompted read checks it is still
     // this document before anything is delivered.
     return { tabId: tab.id, title: tab.title ?? "", url: tab.url || tab.pendingUrl || "" };
 }
 
-/** Reads one tab: main frame, isolated world, result returned once. */
-export async function readTab(apis: Pick<PageApis, "tabs" | "scripting">, tabId: number, format: string, full: boolean, expectUrl?: string): Promise<string> {
+/**
+ * Refuses a tab whose committed page, or the page it is navigating to, is
+ * blocked by the current list.
+ */
+export async function assertTabNotBlocked(apis: Pick<PageApis, "tabs" | "blockedDomains">, tabId: number, ...alsoUrls: string[]): Promise<void> {
+    const tab = await apis.tabs.get(tabId).catch(() => {
+        throw new Error("the tab was closed");
+    });
+    // Loaded after the last await, so no later save is missed.
+    assertNotBlocked([...alsoUrls, tab.url, tab.pendingUrl], await apis.blockedDomains());
+}
+
+/**
+ * Reads one tab: main frame, isolated world, result returned once. The
+ * Blocked domains list is checked before the reader runs, by the reader
+ * against the document it reads, and again, as it is then, against that
+ * document and the tab after the read, so a navigation, a redirect or a block
+ * added while the read runs never delivers a blocked page.
+ */
+export async function readTab(apis: Pick<PageApis, "tabs" | "scripting" | "blockedDomains">, tabId: number, format: string, full: boolean, expectUrl?: string): Promise<string> {
+    return (await readTabDocument(apis, tabId, format, full, expectUrl)).content;
+}
+
+/** readTab, also naming the document the content came from. */
+export async function readTabDocument(apis: Pick<PageApis, "tabs" | "scripting" | "blockedDomains">, tabId: number, format: string, full: boolean, expectUrl?: string): Promise<{ content: string; url: string }> {
     const tab = await apis.tabs.get(tabId).catch(() => {
         throw new Error("the tab was closed");
     });
@@ -284,29 +313,40 @@ export async function readTab(apis: Pick<PageApis, "tabs" | "scripting">, tabId:
     if (reason) {
         throw new Error(reason);
     }
+    const blocked = await apis.blockedDomains();
+    assertNotBlocked([tab.url, tab.pendingUrl], blocked);
     let results: { result?: unknown }[];
     try {
         const target = { tabId, frameIds: [0] };
         await apis.scripting.executeScript({ target, files: ["/page-reader.js"] });
         results = await apis.scripting.executeScript({
             target,
-            func: (f: string, all: boolean, expect: string | null) =>
-                (globalThis as unknown as { __agentPaneRead: (f: string, all: boolean, expect?: string) => unknown })
-                    .__agentPaneRead(f, all, expect ?? undefined),
+            func: (f: string, all: boolean, expect: string | null, block: string[]) =>
+                (globalThis as unknown as { __agentPaneRead: (f: string, all: boolean, expect: string | undefined, block: string[]) => unknown })
+                    .__agentPaneRead(f, all, expect ?? undefined, block),
             // executeScript arguments must be JSON: null, not undefined.
-            args: [format, full, expectUrl ?? null],
+            args: [format, full, expectUrl ?? null, blocked],
         });
     } catch (err) {
         throw new Error(scriptingFailure(url, err));
     }
-    const result = results[0]?.result as PageResult | undefined;
+    const result = results[0]?.result as (PageResult & { url?: unknown }) | undefined;
     if (!result) {
         throw new Error(scriptingFailure(url, undefined));
     }
     if ("error" in result) {
         throw new Error(result.error);
     }
-    return typeof result.content === "string" ? result.content : "";
+    // The reader names the document it read; without it nothing is known
+    // to be safe to deliver.
+    if (typeof result.url !== "string") {
+        throw new Error(scriptingFailure(url, undefined));
+    }
+    // The list is loaded after the tab lookup, the last await, so a block
+    // saved while either runs is enforced.
+    const after = await apis.tabs.get(tabId).catch(() => undefined);
+    assertNotBlocked([result.url, after?.url, after?.pendingUrl], await apis.blockedDomains());
+    return { content: typeof result.content === "string" ? result.content : "", url: result.url };
 }
 
 /**
@@ -331,21 +371,28 @@ export function pasteBytes(text: string, bracketed: boolean): string {
 }
 
 /**
- * Send tab's steps after the click. The destination is checked after the
- * last await, immediately before delivery, so switching terminals while the
- * page is read never pastes it into the wrong one. Delivery reports whether
+ * Send tab's steps after the click. The Blocked domains list is checked
+ * again after the page is described, against the document the content came
+ * from and the tab as it is then, and the destination after the last
+ * await, immediately before delivery, so a block added while the page is
+ * read never delivers it, and switching terminals never pastes it into the
+ * wrong one. Delivery reports whether
  * the attached session took the input: while a reattached socket replays
  * scrollback, input is dropped. Returns the tab's description, or null when
  * nothing was delivered.
  */
 export async function sendTabContent(steps: {
-    read(): Promise<string>;
+    /** The content and the URL of the document it came from. */
+    read(): Promise<{ content: string; url: string }>;
     describe(): Promise<string>;
+    /** Throws when sourceUrl, or the tab's page, is blocked now. */
+    checkBlocked(sourceUrl: string): Promise<void>;
     isDestination(): boolean;
     deliver(content: string): boolean;
 }): Promise<string | null> {
-    const content = await steps.read();
+    const { content, url } = await steps.read();
     const description = await steps.describe();
+    await steps.checkBlocked(url);
     if (!steps.isDestination()) {
         return null;
     }

@@ -5,6 +5,7 @@
  */
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
+import { blockedError, blockingDomain } from "./blockedDomains.ts";
 
 export const PAGE_FORMATS = ["info", "selection", "text", "dom", "markdown"] as const;
 export type PageFormat = typeof PAGE_FORMATS[number];
@@ -123,7 +124,11 @@ function selectedText(doc: Document): string {
     return doc.defaultView?.getSelection?.()?.toString() ?? "";
 }
 
-export function readPage(doc: Document, url: string, format: string, full = false, expectUrl?: string): PageResult {
+export function readPage(doc: Document, url: string, format: string, full = false, expectUrl?: string, blocked: readonly string[] = []): PageResult {
+    const domain = blockingDomain(url, blocked);
+    if (domain) {
+        return { error: blockedError(domain) };
+    }
     if (expectUrl !== undefined && !sameDocument(url, expectUrl)) {
         return { error: "the tab moved to another page after the read was approved; run the command again" };
     }

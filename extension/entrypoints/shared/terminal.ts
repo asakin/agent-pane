@@ -37,7 +37,8 @@ import {
     trackedTabId,
 } from "./tabLock";
 import type { PageFormat } from "./pageContent";
-import { isApproveMessage, isCancelMessage, isReadNotice, pasteBytes, readTab, sendTabContent } from "./pageAccess";
+import { assertTabNotBlocked, isApproveMessage, isCancelMessage, isReadNotice, pasteBytes, readTabDocument, sendTabContent } from "./pageAccess";
+import { blockedDomainsFromConfig } from "./blockedDomains";
 import { createApprovalPrompts, createReadNotice, mountSendTab } from "./pagePanel";
 import { isOwnExtensionPage } from "./sender";
 import { describeUrl } from "./tabLock";
@@ -171,6 +172,16 @@ function watchTerminalBox(
     };
     apply();
     new ResizeObserver(apply).observe(anchor);
+}
+
+/** The Blocked domains list as config.json has it now. */
+async function currentBlockedDomains(): Promise<string[]> {
+    return blockedDomainsFromConfig(await browser.runtime.sendMessage<RequestConfigGet, ResponseConfigGet>({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "config.get",
+        params: undefined,
+    }));
 }
 
 async function saveFontSize(size: number) {
@@ -569,13 +580,16 @@ async function main() {
         }
         const tty = agentTab.id;
         const gen = switchGen;
+        // The same checks as an agent's read, with no approval to bypass.
+        const pageApis = { tabs: browser.tabs, scripting: browser.scripting, blockedDomains: currentBlockedDomains };
         try {
             const sent = await sendTabContent({
-                read: () => readTab(browser, tabId, format, false),
+                read: () => readTabDocument(pageApis, tabId, format, false),
                 describe: async () => {
                     const tab = await browser.tabs.get(tabId).catch(() => undefined);
                     return tab?.title || describeUrl(tab?.url ?? "");
                 },
+                checkBlocked: (sourceUrl) => assertTabNotBlocked(pageApis, tabId, sourceUrl),
                 // Still the pane tab it was clicked for and attached; the
                 // attachment itself says whether it is taking input yet.
                 isDestination: () => !!state && state.activeId === tty && activeTtyId === tty
