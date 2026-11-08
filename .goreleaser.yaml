@@ -17,6 +17,23 @@ builds:
     goos:
       - linux
       - darwin
+# Sign the darwin binaries with a Developer ID certificate and notarize them,
+# when release.yml passes the Apple credentials. Without them (a fork, or a
+# local snapshot) the binaries are built unsigned. The release workflow
+# refuses to publish unsigned binaries from the upstream repository.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      sign:
+        certificate: "{{.Env.MACOS_SIGN_P12}}"
+        password: "{{.Env.MACOS_SIGN_PASSWORD}}"
+      notarize:
+        issuer_id: "{{.Env.MACOS_NOTARY_ISSUER_ID}}"
+        key_id: "{{.Env.MACOS_NOTARY_KEY_ID}}"
+        key: "{{.Env.MACOS_NOTARY_KEY}}"
+        # Wait for Apple's verdict so a rejected binary fails the release.
+        wait: true
+        timeout: 20m
 archives:
   - name_template: "agent-pane-{{ .Version }}-{{ .Os }}_{{ .Arch }}"
     format_overrides:
