@@ -24,6 +24,7 @@ func healthyInstall(t *testing.T, goos, extensionVersion string) installLayout {
 	l := layoutFor(t.TempDir())
 	release := map[string]string{
 		"agent-pane":                      "binary",
+		"instructions.md":                 "<!-- agent-pane:start -->\n# Agent Pane\n<!-- agent-pane:end -->\n",
 		"place.sh":                        "#!/bin/sh\n",
 		"agents/enabled.json":             `{"agents":{}}`,
 		"skills/agent-pane/SKILL.md":      "name: agent-pane\n",
@@ -46,7 +47,7 @@ func healthyInstall(t *testing.T, goos, extensionVersion string) installLayout {
 			spawnAgentPlist(l.binary), 0o644)
 	}
 	writeFile(t, filepath.Join(l.home, ".zshrc"), "# agent-pane:path\n", 0o644)
-	writeFile(t, filepath.Join(l.configDir, "AGENTS.md"), "<!-- agent-pane:start -->\n# Agent Pane\n<!-- agent-pane:end -->\n", 0o644)
+	writeFile(t, filepath.Join(l.configDir, "AGENTS.md"), release["instructions.md"], 0o644)
 	writeFile(t, filepath.Join(l.dataDir, "agents", "enabled.json"), release["agents/enabled.json"], 0o644)
 	writeFile(t, filepath.Join(l.dataDir, "skills", "agent-pane", "SKILL.md"), release["skills/agent-pane/SKILL.md"], 0o644)
 	for _, dir := range []string{".agents", ".claude"} {
@@ -113,6 +114,9 @@ func TestDoctorFindsProblems(t *testing.T) {
 		}},
 		{name: "instructions emptied", item: "instructions", want: checkFail, damage: func(t *testing.T, l installLayout) {
 			writeFile(t, filepath.Join(l.configDir, "AGENTS.md"), "", 0o644)
+		}},
+		{name: "instructions block without content", item: "instructions", want: checkFail, damage: func(t *testing.T, l installLayout) {
+			writeFile(t, filepath.Join(l.configDir, "AGENTS.md"), "<!-- agent-pane:start -->\n<!-- agent-pane:end -->\n", 0o644)
 		}},
 		{name: "host runs another binary", item: "native host", want: checkFail, damage: func(t *testing.T, l installLayout) {
 			writeFile(t, l.host, "#!/bin/sh\nexec /elsewhere serve\n", 0o755)

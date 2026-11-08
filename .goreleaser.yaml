@@ -34,6 +34,9 @@ archives:
       - src: scripts/place.sh
         dst: .
         strip_parent: true
+      - src: scripts/instructions.md
+        dst: .
+        strip_parent: true
 release:
   prerelease: auto
   # install.sh with VERSION set to this tag, written by release.yml.

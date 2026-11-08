@@ -15,6 +15,7 @@ rel="$tmp/release-src"
 mkdir -p "$rel/extensions/chrome" "$rel/skills"
 (cd "$root" && go build -o "$rel/agent-pane" .)
 cp "$root/scripts/place.sh" "$rel/place.sh"
+cp "$root/scripts/instructions.md" "$rel/instructions.md"
 cp -R "$root/agents" "$rel/agents"
 cp -R "$root/skills/agent-pane" "$rel/skills/agent-pane"
 printf '{"manifest_version":3,"name":"Agent Pane","version":"0.0.0"}\n' >"$rel/extensions/chrome/manifest.json"

@@ -54,5 +54,5 @@ npm --prefix extension run build
 - `skills/agent-pane/`: the canonical skill the installer installs for coding agents; see [README](README.md#agent-skill).
 - `agents/`: shipped agent definitions and `agents/enabled.json`; see [agents/README.md](agents/README.md).
 - `install.sh`: the release installer template; `release.yml` publishes it with `VERSION` set to the tag, and the repository copy refuses to run.
-- `scripts/place.sh`: puts a release-shaped folder in place (binary, manifests, LaunchAgent, skill, extension); shipped in every archive. `internal/cmd/doctor.go` checks the same paths, so change both.
+- `scripts/place.sh`, `scripts/instructions.md` (the `~/.config/agent-pane/AGENTS.md` block): place.sh puts a release-shaped folder in place (binary, manifests, LaunchAgent, skill, extension); shipped in every archive. `internal/cmd/doctor.go` checks the same paths, so change both.
 - `scripts/dev-install.sh`: builds a checkout and installs it with `place.sh`. `scripts/install_test.sh`: tests for all three.

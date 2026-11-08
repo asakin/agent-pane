@@ -250,10 +250,10 @@ func runChecks(l installLayout, env doctorEnv) []checkResult {
 	// ~/AGENTS.md and ~/CLAUDE.md are the person's files: place.sh only
 	// updates a block they keep, so they are not checked.
 	instructions := filepath.Join(l.configDir, "AGENTS.md")
-	if data, err := os.ReadFile(instructions); err != nil {
-		add(checkFail, "instructions", "%s is missing", instructions)
-	} else if !bytes.HasPrefix(data, []byte("<!-- agent-pane:start -->\n")) || !bytes.HasSuffix(data, []byte("<!-- agent-pane:end -->\n")) {
-		add(checkFail, "instructions", "%s is not the Agent Pane instructions block", instructions)
+	if same, err := sameFile(filepath.Join(l.release, "instructions.md"), instructions); err != nil {
+		add(checkFail, "instructions", "%s: %v", instructions, err)
+	} else if !same {
+		add(checkFail, "instructions", "%s differs from the installed release", instructions)
 	} else {
 		add(checkOK, "instructions", "%s", instructions)
 	}
