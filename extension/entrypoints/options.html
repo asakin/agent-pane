@@ -53,8 +53,8 @@
             <label for="blockedDomainInput">Blocked domains</label>
             <p class="at-field__help" id="blockedDomainsHelp">Agents and Send tab never read pages on these domains, even in a pane tab that already has approval. An entry such as bank.example also blocks its subdomains, such as login.bank.example, but not notbank.example or bank.example.evil.test. Ports and letter case are ignored. Changes save at once and apply to open pane tabs.</p>
             <div class="at-blocked__add">
-                <input id="blockedDomainInput" type="text" spellcheck="false" autocomplete="off" placeholder="bank.example" aria-describedby="blockedDomainsHelp" />
-                <button type="button" id="blockedDomainAdd" class="at-btn">Add</button>
+                <input id="blockedDomainInput" type="text" spellcheck="false" autocomplete="off" placeholder="bank.example" aria-describedby="blockedDomainsHelp" disabled />
+                <button type="button" id="blockedDomainAdd" class="at-btn" disabled>Add</button>
             </div>
             <ul id="blockedDomains" class="at-blocked"></ul>
         </div>

@@ -670,10 +670,10 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 		}
 
 		var theme string
-		if darkTheme := k.String("themeDark"); params.Variant == "dark" && darkTheme != "" {
+		if darkTheme := cfg().String("themeDark"); params.Variant == "dark" && darkTheme != "" {
 			theme = darkTheme
 		} else {
-			theme = k.String("theme")
+			theme = cfg().String("theme")
 		}
 
 		themeBytes, err := themeFs.ReadFile(filepath.Join("themes", theme+".json"))
@@ -692,7 +692,7 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			"theme":                         json.RawMessage(themeBytes),
 		}
 
-		if err := k.Unmarshal("xterm", &xtermConfig); err != nil {
+		if err := cfg().Unmarshal("xterm", &xtermConfig); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal xterm config: %w", err)
 		}
 		if family, _ := xtermConfig["fontFamily"].(string); family == "" {
@@ -865,15 +865,15 @@ func buildPtyCommand(tty pty.Pty, mode, app string, args []string, cwd string) (
 		cmd = tty.Command(shell, agentExecArgs(shell, argv)...)
 		overlay["AGENT_PANE_AGENT"] = agent.ID
 	} else {
-		shell := k.String("command")
+		shell := cfg().String("command")
 		if shell == "" {
 			shell = getDefaultShell()
 		}
-		cmd = tty.Command(shell, loginShellArgs(shell, k.Strings("args"))...)
+		cmd = tty.Command(shell, loginShellArgs(shell, cfg().Strings("args"))...)
 	}
 
-	cmd.Env = mergePtyEnv(os.Environ(), overlay, k.StringMap("env"))
-	cmd.Dir = sessionDir(cwd, k.String("cwd"), mode == "app" && app != "")
+	cmd.Env = mergePtyEnv(os.Environ(), overlay, cfg().StringMap("env"))
+	cmd.Dir = sessionDir(cwd, cfg().String("cwd"), mode == "app" && app != "")
 
 	return cmd, nil
 }

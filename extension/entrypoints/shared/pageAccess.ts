@@ -284,11 +284,12 @@ export async function resolveTab(apis: PageApis, tty: string): Promise<ResolvedT
  * Refuses a tab whose committed page, or the page it is navigating to, is
  * blocked by the current list.
  */
-export async function assertTabNotBlocked(apis: Pick<PageApis, "tabs" | "blockedDomains">, tabId: number): Promise<void> {
+export async function assertTabNotBlocked(apis: Pick<PageApis, "tabs" | "blockedDomains">, tabId: number, ...alsoUrls: string[]): Promise<void> {
     const tab = await apis.tabs.get(tabId).catch(() => {
         throw new Error("the tab was closed");
     });
-    assertNotBlocked([tab.url, tab.pendingUrl], await apis.blockedDomains());
+    // Loaded after the last await, so no later save is missed.
+    assertNotBlocked([...alsoUrls, tab.url, tab.pendingUrl], await apis.blockedDomains());
 }
 
 /**
@@ -299,6 +300,11 @@ export async function assertTabNotBlocked(apis: Pick<PageApis, "tabs" | "blocked
  * added while the read runs never delivers a blocked page.
  */
 export async function readTab(apis: Pick<PageApis, "tabs" | "scripting" | "blockedDomains">, tabId: number, format: string, full: boolean, expectUrl?: string): Promise<string> {
+    return (await readTabDocument(apis, tabId, format, full, expectUrl)).content;
+}
+
+/** readTab, also naming the document the content came from. */
+export async function readTabDocument(apis: Pick<PageApis, "tabs" | "scripting" | "blockedDomains">, tabId: number, format: string, full: boolean, expectUrl?: string): Promise<{ content: string; url: string }> {
     const tab = await apis.tabs.get(tabId).catch(() => {
         throw new Error("the tab was closed");
     });
@@ -336,10 +342,11 @@ export async function readTab(apis: Pick<PageApis, "tabs" | "scripting" | "block
     if (typeof result.url !== "string") {
         throw new Error(scriptingFailure(url, undefined));
     }
-    const now = await apis.blockedDomains();
+    // The list is loaded after the tab lookup, the last await, so a block
+    // saved while either runs is enforced.
     const after = await apis.tabs.get(tabId).catch(() => undefined);
-    assertNotBlocked([result.url, after?.url, after?.pendingUrl], now);
-    return typeof result.content === "string" ? result.content : "";
+    assertNotBlocked([result.url, after?.url, after?.pendingUrl], await apis.blockedDomains());
+    return { content: typeof result.content === "string" ? result.content : "", url: result.url };
 }
 
 /**
@@ -365,7 +372,8 @@ export function pasteBytes(text: string, bracketed: boolean): string {
 
 /**
  * Send tab's steps after the click. The Blocked domains list is checked
- * again after the page is described, and the destination after the last
+ * again after the page is described, against the document the content came
+ * from and the tab as it is then, and the destination after the last
  * await, immediately before delivery, so a block added while the page is
  * read never delivers it, and switching terminals never pastes it into the
  * wrong one. Delivery reports whether
@@ -374,16 +382,17 @@ export function pasteBytes(text: string, bracketed: boolean): string {
  * nothing was delivered.
  */
 export async function sendTabContent(steps: {
-    read(): Promise<string>;
+    /** The content and the URL of the document it came from. */
+    read(): Promise<{ content: string; url: string }>;
     describe(): Promise<string>;
-    /** Throws when the page is blocked now. */
-    checkBlocked(): Promise<void>;
+    /** Throws when sourceUrl, or the tab's page, is blocked now. */
+    checkBlocked(sourceUrl: string): Promise<void>;
     isDestination(): boolean;
     deliver(content: string): boolean;
 }): Promise<string | null> {
-    const content = await steps.read();
+    const { content, url } = await steps.read();
     const description = await steps.describe();
-    await steps.checkBlocked();
+    await steps.checkBlocked(url);
     if (!steps.isDestination()) {
         return null;
     }

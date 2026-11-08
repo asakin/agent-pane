@@ -2,14 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseHTML } from "linkedom";
 import {
+    applyBlockedDomainEdit,
     blockedDomainsFromConfig,
+    createBlockedDomainEditor,
     blockingDomain,
     normalizeBlockedDomains,
     parseBlockedDomain,
 } from "../entrypoints/shared/blockedDomains.ts";
 import { readPage } from "../entrypoints/shared/pageContent.ts";
 import { PAGE_FORMATS } from "../entrypoints/shared/pageContent.ts";
-import { assertTabNotBlocked, readTab, resolveTab, sendTabContent } from "../entrypoints/shared/pageAccess.ts";
+import { assertTabNotBlocked, readTab, readTabDocument, resolveTab, sendTabContent } from "../entrypoints/shared/pageAccess.ts";
 
 const SECRET = "account 12345 balance";
 
@@ -163,13 +165,13 @@ test("Send tab delivers nothing when the page is blocked during the read", async
         const { state, apis } = fakeChrome({ url: "https://bank.example/" });
         const delivered = [];
         const steps = {
-            read: () => readTab(apis, 7, format, false),
+            read: () => readTabDocument(apis, 7, format, false),
             describe: async () => {
                 // Blocked after the content was read, before delivery.
                 state.blocked = ["bank.example"];
                 return "Bank";
             },
-            checkBlocked: () => assertTabNotBlocked(apis, 7),
+            checkBlocked: (sourceUrl) => assertTabNotBlocked(apis, 7, sourceUrl),
             isDestination: () => true,
             deliver: (c) => (delivered.push(c), true),
         };
@@ -180,11 +182,89 @@ test("Send tab delivers nothing when the page is blocked during the read", async
     const { apis } = fakeChrome({ url: "https://bank.example/", blocked: ["bank.example"] });
     const delivered = [];
     await assert.rejects(sendTabContent({
-        read: () => readTab(apis, 7, "markdown", false),
+        read: () => readTabDocument(apis, 7, "markdown", false),
         describe: async () => "Bank",
-        checkBlocked: () => assertTabNotBlocked(apis, 7),
+        checkBlocked: (sourceUrl) => assertTabNotBlocked(apis, 7, sourceUrl),
         isDestination: () => true,
         deliver: (c) => (delivered.push(c), true),
     }), /blocked/);
     assert.deepEqual(delivered, []);
+});
+
+test("Send tab checks the document it read, even after the tab moves on", async () => {
+    // bank.example is read, the tab navigates to an allowed page, and then
+    // bank.example is blocked: the buffered bank content is not delivered.
+    const { state, apis } = fakeChrome({ url: "https://bank.example/" });
+    const delivered = [];
+    await assert.rejects(sendTabContent({
+        read: () => readTabDocument(apis, 7, "markdown", false),
+        describe: async () => {
+            state.url = "https://news.example/";
+            state.blocked = ["bank.example"];
+            return "News";
+        },
+        checkBlocked: (sourceUrl) => assertTabNotBlocked(apis, 7, sourceUrl),
+        isDestination: () => true,
+        deliver: (c) => (delivered.push(c), true),
+    }), /blocked: .*bank\.example/);
+    assert.deepEqual(delivered, []);
+});
+
+test("a block saved during the read's final tab lookup stops its delivery", async () => {
+    const { state, apis } = fakeChrome({ url: "https://bank.example/" });
+    let reads = 0;
+    const get = apis.tabs.get;
+    apis.tabs.get = async (id) => {
+        // The first lookup is before the read; the second is the last one.
+        if (++reads === 2) {
+            state.blocked = ["bank.example"];
+        }
+        return get(id);
+    };
+    await assert.rejects(readTab(apis, 7, "text", false), /blocked/);
+});
+
+test("list edits apply to the stored list, one at a time", async () => {
+    assert.deepEqual(applyBlockedDomainEdit(["a.example"], { add: "b.example" }), ["a.example", "b.example"]);
+    assert.deepEqual(applyBlockedDomainEdit(["a.example"], { add: "a.example" }), ["a.example"]);
+    assert.deepEqual(applyBlockedDomainEdit(["a.example", "b.example"], { remove: "a.example" }), ["b.example"]);
+
+    // A store whose saves answer late, as config.set does.
+    function store(initial) {
+        const s = { value: [...initial] };
+        s.load = async () => [...s.value];
+        s.save = async (domains) => {
+            await new Promise((r) => setTimeout(r, 5));
+            s.value = domains;
+        };
+        return s;
+    }
+
+    // Two adds before the first save answers keep both.
+    const adds = store([]);
+    const editAdds = createBlockedDomainEditor(adds);
+    await Promise.all([editAdds({ add: "a.example" }), editAdds({ add: "b.example" })]);
+    assert.deepEqual(adds.value, ["a.example", "b.example"]);
+
+    // Two removes before the first answers restore neither.
+    const removes = store(["a.example", "b.example"]);
+    const editRemoves = createBlockedDomainEditor(removes);
+    await Promise.all([editRemoves({ remove: "a.example" }), editRemoves({ remove: "b.example" })]);
+    assert.deepEqual(removes.value, []);
+
+    // An edit keeps entries stored by someone else since this page loaded.
+    const shared = store(["a.example"]);
+    const editShared = createBlockedDomainEditor(shared);
+    shared.value = ["a.example", "other.example"];
+    await editShared({ add: "b.example" });
+    assert.deepEqual(shared.value, ["a.example", "other.example", "b.example"]);
+
+    // A failed save does not stop later edits.
+    const failing = store([]);
+    const editFailing = createBlockedDomainEditor(failing);
+    const save = failing.save;
+    failing.save = async () => { failing.save = save; throw new Error("host gone"); };
+    await assert.rejects(editFailing({ add: "a.example" }), /host gone/);
+    await editFailing({ add: "b.example" });
+    assert.deepEqual(failing.value, ["b.example"]);
 });

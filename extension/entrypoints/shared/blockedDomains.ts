@@ -113,3 +113,35 @@ export function blockedDomainsFromConfig(resp: unknown): string[] {
     }
     return normalizeBlockedDomains(config[BLOCKED_DOMAINS_KEY]);
 }
+
+/** One change a person makes to the list in Options. */
+export type BlockedDomainEdit = { add: string } | { remove: string };
+
+/**
+ * The list after one edit, applied to the list as it is stored now rather
+ * than as a page last showed it, so other edits survive.
+ */
+export function applyBlockedDomainEdit(current: unknown, edit: BlockedDomainEdit): string[] {
+    const list = normalizeBlockedDomains(current);
+    if ("add" in edit) {
+        return list.includes(edit.add) ? list : [...list, edit.add];
+    }
+    return list.filter((d) => d !== edit.remove);
+}
+
+/**
+ * Runs list edits one at a time. Each loads the stored list, applies its
+ * edit and saves the result before the next edit loads, so edits made
+ * before an earlier save answers are kept rather than overwritten.
+ */
+export function createBlockedDomainEditor(store: {
+    load(): Promise<unknown>;
+    save(domains: string[]): Promise<unknown>;
+}): (edit: BlockedDomainEdit) => Promise<unknown> {
+    let last: Promise<unknown> = Promise.resolve();
+    return (edit) => {
+        const run = last.catch(() => {}).then(async () => store.save(applyBlockedDomainEdit(await store.load(), edit)));
+        last = run;
+        return run;
+    };
+}

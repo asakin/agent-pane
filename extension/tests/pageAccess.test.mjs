@@ -267,7 +267,7 @@ test("Send tab does not deliver when the terminal changes during the last await"
     let release;
     const describing = new Promise((r) => { release = r; });
     const sending = sendTabContent({
-        read: async () => "page of A",
+        read: async () => ({ content: "page of A", url: "https://a.example/" }),
         describe: () => describing,
         checkBlocked: async () => {},
         isDestination: () => active === "A",
@@ -282,7 +282,7 @@ test("Send tab does not deliver when the terminal changes during the last await"
 
     active = "A";
     const sent = await sendTabContent({
-        read: async () => "page of A",
+        read: async () => ({ content: "page of A", url: "https://a.example/" }),
         describe: async () => "Title",
         checkBlocked: async () => {},
         isDestination: () => active === "A",
@@ -304,7 +304,7 @@ test("Send tab reports nothing sent while a reattached socket is still replaying
     const attachment = attachPtySocket(terminal, socket);
     t.after(() => { attachment.dispose(); terminal.dispose(); });
     const steps = {
-        read: async () => "page",
+        read: async () => ({ content: "page", url: "https://a.example/" }),
         describe: async () => "Title",
         checkBlocked: async () => {},
         isDestination: () => true,

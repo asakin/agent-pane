@@ -245,7 +245,7 @@ func lookPathIn(env []string, name string) (string, bool) {
 }
 
 func configuredShell() string {
-	shell := k.String("command")
+	shell := cfg().String("command")
 	if shell == "" {
 		return getDefaultShell()
 	}

@@ -121,11 +121,11 @@ Markdown output rewrites link and image targets as absolute URLs, resolved again
 
 ### Blocked domains
 
-**Blocked domains** in Options lists domains whose pages Agent Pane never reads. The list starts empty and is saved in `config.json` as `blockedDomains`; adding or removing an entry saves it at once.
+**Blocked domains** in Options lists domains whose pages Agent Pane never reads. The list starts empty and is saved in `config.json` as `blockedDomains`; adding or removing an entry saves it at once, applied to the list as it is stored then, so edits from another Options page are kept.
 
 - **An entry covers its domain and subdomains.** `bank.example` blocks `bank.example` and `login.bank.example`, but not `notbank.example` or `bank.example.evil.test`. Entries are hostnames: letter case, trailing dots and ports are ignored, and a pasted URL is reduced to its hostname. Wildcards, paths and spaces are refused.
 - **A block applies to every read.** It covers all `agent-pane page` formats and Send tab. A pane tab's approval does not override it, and a blocked page never gets an approval prompt. A refused read reports `blocked: the page's domain matches <entry> in Agent Pane's Blocked domains` and returns no page data.
-- **The current list is checked against the actual page.** Each read loads the list again and checks the Chrome tab's page and any navigation in progress before prompting, again when an approval arrives, inside the page before reading it, and again against that document and the Chrome tab before the result is delivered. A block added, or a navigation or redirect to a blocked page, while a read is under way stops that read. If the list cannot be loaded, the read fails.
+- **The current list is checked against the actual page.** Each read loads the list again and checks the Chrome tab's page and any navigation in progress before prompting, again when an approval arrives, inside the page before reading it, and again against that document and the Chrome tab before the result is delivered. Send tab checks the document it read once more just before pasting, even if the Chrome tab has moved on. A block added, or a navigation or redirect to a blocked page, while a read is under way stops that read. If the list cannot be loaded, the read fails.
 - **Changes apply to existing pane tabs.** Removing an entry lets pages on that domain go through the normal approval flow again. It grants nothing; an approval the pane tab already had still applies.
 
 Chrome restricts extension access to protected pages, including `chrome://` pages, the Chrome Web Store, other extensions' pages, and its built-in PDF viewer. Reads of these pages report an error.
