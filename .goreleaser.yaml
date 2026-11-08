@@ -28,9 +28,23 @@ archives:
       - completions/*
       - src: extension/dist/chrome-mv3/*
         dst: extensions/chrome
+      # The rest of the layout scripts/place.sh installs from.
+      - agents
+      - skills/agent-pane
+      - src: scripts/place.sh
+        dst: .
+        strip_parent: true
+      - src: scripts/instructions.md
+        dst: .
+        strip_parent: true
 release:
   prerelease: auto
+  # install.sh with VERSION set to this tag, written by release.yml.
+  extra_files:
+    - glob: ./.release/install.sh
 checksum:
   name_template: "checksums.txt"
+  extra_files:
+    - glob: ./.release/install.sh
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
