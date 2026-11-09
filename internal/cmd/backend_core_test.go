@@ -730,6 +730,41 @@ func TestDurableStatusComesFromTheSnapshotAfterMissedEvents(t *testing.T) {
 	}
 }
 
+func TestDurableDroppedStatusIsSentAgain(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	old := notifyRetry
+	notifyRetry = 10 * time.Millisecond
+	t.Cleanup(func() { notifyRetry = old })
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	// The pipe is stalled for the first two tries, then drains.
+	var mu sync.Mutex
+	var sent []ttyEvent
+	failures := 2
+	h.sessions.SetExtensionNotifier(func(method string, params any) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if failures > 0 {
+			failures--
+			return context.DeadlineExceeded
+		}
+		sent = append(sent, params.(ttyEvent))
+		return nil
+	})
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	core.send(core.runs[0].Labels[coreSessionLabel], herdrcore.Event{Seq: 3, Type: "status", Terminal: "t1", Data: json.RawMessage(`{"status":{"state":"blocked","kind":"permission"}}`)})
+	eventually(t, "the dropped status sent again", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(sent) > 0
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if e := sent[len(sent)-1]; e.TTY != ep.ID || !sameStatus(e.Status, &paneStatus{State: "blocked", Kind: "permission"}) {
+		t.Fatalf("sent %+v %+v", e, e.Status)
+	}
+}
+
 func TestBuiltinSessionsReportNoStatus(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("macOS terminals start through the spawn agent")
