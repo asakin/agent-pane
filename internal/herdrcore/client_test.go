@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -47,8 +48,16 @@ func helloReply(generation int) string {
 // gotHello.
 func startFake(t *testing.T, reply string, gotHello func(map[string]any)) (*Client, *fakeCore, error) {
 	t.Helper()
+	return startFakeBuffered(t, reply, gotHello, 64)
+}
+
+// startFakeBuffered is startFake with room for buffered frames the test has
+// not read. Past that, the client's writes block, as on a socket whose
+// buffer is full.
+func startFakeBuffered(t *testing.T, reply string, gotHello func(map[string]any), buffered int) (*Client, *fakeCore, error) {
+	t.Helper()
 	clientConn, coreConn := net.Pipe()
-	core := &fakeCore{t: t, conn: coreConn, r: bufio.NewReader(coreConn), frames: make(chan frame, 64)}
+	core := &fakeCore{t: t, conn: coreConn, r: bufio.NewReader(coreConn), frames: make(chan frame, buffered)}
 	go func() {
 		line, err := core.r.ReadBytes('\n')
 		if err != nil {
@@ -74,6 +83,33 @@ func startFake(t *testing.T, reply string, gotHello func(map[string]any)) (*Clie
 		c.Close()
 	})
 	return c, core, nil
+}
+
+// newUnbufferedFake returns a client whose writes block once the core holds
+// one frame the test has not read.
+func newUnbufferedFake(t *testing.T) (*Client, *fakeCore) {
+	t.Helper()
+	c, core, err := startFakeBuffered(t, helloReply(Generation), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, core
+}
+
+// stallWrites leaves the client's writer blocked on the socket: the core
+// holds one Get it has not handed to the test, and the writer is sending a
+// second. The test reads both requests back later.
+func stallWrites(c *Client) {
+	go c.Get(context.Background(), "stall1")
+	time.Sleep(20 * time.Millisecond)
+	go c.Get(context.Background(), "stall2")
+	time.Sleep(20 * time.Millisecond)
+}
+
+func pendingCalls(c *Client) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.calls)
 }
 
 func newFake(t *testing.T) (*Client, *fakeCore) {
@@ -658,5 +694,156 @@ func TestSubscribe(t *testing.T) {
 	core.write(5, frameClose, nil)
 	if _, err := s.Next(ctx); err != io.EOF {
 		t.Fatalf("Next err = %v, want io.EOF", err)
+	}
+}
+
+func TestHandshakeCancelAfterSuccessLeavesClientUsable(t *testing.T) {
+	clientConn, coreConn := net.Pipe()
+	core := &fakeCore{t: t, conn: coreConn, r: bufio.NewReader(coreConn), frames: make(chan frame, 64)}
+	go func() {
+		if _, err := core.r.ReadBytes('\n'); err != nil {
+			return
+		}
+		coreConn.Write([]byte(helloReply(Generation) + "\n"))
+		core.readFrames()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	c, err := NewClient(ctx, clientConn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		coreConn.Close()
+		c.Close()
+	})
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Get(context.Background(), "t7")
+		done <- err
+	}()
+	req := core.readRequest()
+	core.reply(req.ID, terminalFacts("t7"))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCanceledCallSendsNothing(t *testing.T) {
+	c, core := newFake(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.Kill(ctx, "t7"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want Canceled", err)
+	}
+	go c.Get(context.Background(), "t8")
+	if req := core.readRequest(); req.Method != "terminal.get" {
+		t.Fatalf("first request = %s, want terminal.get", req.Method)
+	}
+}
+
+func TestCallDeadlineCoversBlockedSend(t *testing.T) {
+	c, core := newUnbufferedFake(t)
+	stallWrites(c)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := c.Kill(ctx, "t7"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want DeadlineExceeded", err)
+	}
+	core.readRequest()
+	core.readRequest()
+	// The withdrawn kill never goes out.
+	go c.Get(context.Background(), "t8")
+	if req := core.readRequest(); req.Method != "terminal.get" {
+		t.Fatalf("request = %s, want the withdrawn kill skipped", req.Method)
+	}
+}
+
+func TestCanceledCallIsForgotten(t *testing.T) {
+	c, core := newFake(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Get(ctx, "t7")
+		done <- err
+	}()
+	req := core.readRequest()
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want Canceled", err)
+	}
+	if n := pendingCalls(c); n != 0 {
+		t.Fatalf("%d calls still pending", n)
+	}
+	// A late reply is dropped.
+	core.reply(req.ID, terminalFacts("t7"))
+	go c.Get(context.Background(), "t8")
+	core.readRequest()
+}
+
+func TestStalledWritesDoNotBlockReadsOrDispatch(t *testing.T) {
+	c, core := newUnbufferedFake(t)
+
+	sub := make(chan *Subscription, 1)
+	go func() {
+		s, _ := c.Subscribe(context.Background(), nil)
+		sub <- s
+	}()
+	req := core.readRequest()
+	core.reply(req.ID, map[string]any{"channel": 5, "seq": 0, "terminals": []any{}})
+	s := <-sub
+	if s == nil {
+		t.Fatal("no subscription")
+	}
+
+	// An attach whose caller gives up once its request is out.
+	ctx, cancel := context.WithCancel(context.Background())
+	attachErr := make(chan error, 1)
+	go func() {
+		_, err := c.Attach(ctx, AttachParams{Terminal: "t7", Cols: 80, Rows: 24})
+		attachErr <- err
+	}()
+	attachReq := core.readRequest()
+	cancel()
+	if err := <-attachErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want Canceled", err)
+	}
+
+	stallWrites(c)
+
+	// The late reply opens channel 3, whose CLOSE cannot be written yet. The
+	// read loop still delivers the event that follows it.
+	core.reply(attachReq.ID, map[string]any{"channel": 3, "terminal": terminalFacts("t7")})
+	core.write(5, frameData, []byte(`{"jsonrpc":"2.0","method":"event","params":{"seq":1,"terminal":"t7","type":"created"}}`+"\n"))
+
+	// Reading grants credit that cannot be written yet; Next still returns.
+	nctx, ncancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer ncancel()
+	if e, err := s.Next(nctx); err != nil || e.Type != "created" {
+		t.Fatalf("Next = %+v, %v", e, err)
+	}
+
+	// Close still unblocks a pending Next.
+	nextErr := make(chan error, 1)
+	go func() {
+		_, err := s.Next(nctx)
+		nextErr <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	s.Close()
+	if err := <-nextErr; !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("Next err = %v, want ErrStreamClosed", err)
+	}
+
+	core.readRequest()
+	core.readRequest()
+	var got []string
+	for range 3 {
+		f := core.read()
+		got = append(got, fmt.Sprintf("%d/%d", f.ch, f.kind))
+	}
+	// The orphan CLOSE, the credit, then the subscription's CLOSE.
+	if strings.Join(got, " ") != "3/2 5/1 5/2" {
+		t.Fatalf("frames = %v", got)
 	}
 }
