@@ -211,8 +211,9 @@ func (b *coreBackend) endUnsure(session string) error {
 	return nil
 }
 
-// settle ends every start still unsure. Its error is errCoreUnsure: a
-// program may still run, so nothing should start in its place.
+// settle tries to end every start still unsure, one failure not skipping the
+// rest. Its error is errCoreUnsure: a program may still run, so nothing
+// should start in its place.
 func (b *coreBackend) settle() error {
 	b.unsureMu.Lock()
 	sessions := make([]string, 0, len(b.unsure))
@@ -220,10 +221,14 @@ func (b *coreBackend) settle() error {
 		sessions = append(sessions, session)
 	}
 	b.unsureMu.Unlock()
+	var errs []error
 	for _, session := range sessions {
 		if err := b.endUnsure(session); err != nil {
-			return fmt.Errorf("%w: an earlier terminal may still be running: %w", errCoreUnsure, err)
+			errs = append(errs, err)
 		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%w: an earlier terminal may still be running: %w", errCoreUnsure, errors.Join(errs...))
 	}
 	return nil
 }
