@@ -19,7 +19,7 @@
     },
     {
       "name": "No agent-pane commands attempted",
-      "description": "status.md explicitly states that the agent did NOT attempt any agent-pane page commands (e.g. agent-pane page info, agent-pane page markdown)",
+      "description": "status.md explicitly states that the agent did NOT attempt any agent-pane page commands (e.g. agent-pane page info, agent-pane page markdown), and the commands it ran include none",
       "max_score": 20
     },
     {

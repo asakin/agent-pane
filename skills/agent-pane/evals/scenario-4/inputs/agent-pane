@@ -47,9 +47,11 @@ if [ "$1" = "page" ]; then
       ;;
     markdown)
       count=$(get_count)
-      # markdown does not advance the counter on its own;
-      # check if we've seen any info calls yet
+      # The page switches on the first info call after this read.
       if [ "$count" -eq 0 ]; then
+        echo 1 > "$STATE_FILE"
+      fi
+      if [ "$count" -le 1 ]; then
         # Still on the first page
         cat << 'MARKDOWN'
 # Authentication — Example API Docs
