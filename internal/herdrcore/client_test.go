@@ -965,3 +965,67 @@ func TestStreamSendIsBounded(t *testing.T) {
 		t.Fatal("Resize to a core that reads nothing never returned")
 	}
 }
+
+func TestTeamworkCalls(t *testing.T) {
+	c, core := newFake(t)
+	ctx := context.Background()
+	errs := make(chan error, 1)
+
+	var sent SendResult
+	go func() {
+		var err error
+		sent, err = c.Send(ctx, SendParams{Terminal: "t3", Text: "go", Caller: "t1"})
+		errs <- err
+	}()
+	req := core.readRequest()
+	if req.Method != "terminal.send" || string(req.Params) != `{"terminal":"t3","text":"go","caller":"t1"}` {
+		t.Fatalf("send request = %s %s", req.Method, req.Params)
+	}
+	core.reply(req.ID, map[string]any{"turn": 4, "status": "idle", "started": true})
+	if err := <-errs; err != nil || sent.Turn != 4 || *sent.Status != "idle" {
+		t.Fatalf("Send = %+v, %v", sent, err)
+	}
+
+	var waited WaitResult
+	go func() {
+		var err error
+		waited, err = c.Wait(ctx, WaitParams{Terminal: "t3", Caller: "t1", Timeout: 90})
+		errs <- err
+	}()
+	req = core.readRequest()
+	if req.Method != "terminal.wait" || string(req.Params) != `{"terminal":"t3","caller":"t1","timeout":90}` {
+		t.Fatalf("wait request = %s %s", req.Method, req.Params)
+	}
+	core.reply(req.ID, map[string]any{"terminal": "t3", "ended": true, "reason": "status", "status": "done", "turn": 5, "children": []any{}})
+	if err := <-errs; err != nil || !waited.Ended || waited.Reason != "status" || *waited.Status != "done" {
+		t.Fatalf("Wait = %+v, %v", waited, err)
+	}
+
+	var read ReadResult
+	go func() {
+		var err error
+		read, err = c.Read(ctx, ReadParams{Terminal: "t3", Lines: 60})
+		errs <- err
+	}()
+	req = core.readRequest()
+	if req.Method != "terminal.read" || string(req.Params) != `{"terminal":"t3","lines":60}` {
+		t.Fatalf("read request = %s %s", req.Method, req.Params)
+	}
+	core.reply(req.ID, map[string]any{"text": "hello", "complete": true, "how": "history"})
+	if err := <-errs; err != nil || read.Text != "hello" {
+		t.Fatalf("Read = %+v, %v", read, err)
+	}
+
+	go func() {
+		_, err := c.Run(ctx, RunParams{Argv: []string{"sh"}, Parent: "t1", NoNotify: true})
+		errs <- err
+	}()
+	req = core.readRequest()
+	if req.Method != "terminal.run" || string(req.Params) != `{"argv":["sh"],"parent":"t1","no_notify":true}` {
+		t.Fatalf("run request = %s %s", req.Method, req.Params)
+	}
+	core.reply(req.ID, terminalFacts("t4"))
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+}
