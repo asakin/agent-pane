@@ -1,0 +1,34 @@
+name: skill-evals
+
+# Advisory only: runs when a maintainer starts it, never on push or pull request.
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: Label for the Tessl eval run
+        required: false
+        default: agent-pane skill eval
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skill-evals-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Runs the scenarios in skills/agent-pane/evals/ with skills/agent-pane as context.
+  agent-pane:
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: tesslio/setup-tessl@25ec223fc0da33b41b8044ff5ab2b85235f4f91e # v2
+        with:
+          token: ${{ secrets.TESSL_TOKEN }}
+      - name: tessl eval run
+        env:
+          EVAL_LABEL: ${{ inputs.label }}
+        run: tessl eval run skills/agent-pane --label "$EVAL_LABEL" --wait --yes
