@@ -333,6 +333,19 @@ func TestTerminalCalls(t *testing.T) {
 		t.Fatalf("Kill = %+v, %v", r.got, r.err)
 	}
 
+	go func() {
+		term, err := c.Label(ctx, "t7", map[string]string{"agent-pane.window": ""})
+		results <- result{"label", err, term}
+	}()
+	req = core.readRequest()
+	if req.Method != "terminal.label" || string(req.Params) != `{"labels":{"agent-pane.window":""},"terminal":"t7"}` {
+		t.Fatalf("label request = %s %s", req.Method, req.Params)
+	}
+	core.reply(req.ID, terminalFacts("t7"))
+	if r := <-results; r.err != nil || r.got.(Terminal).Address != "t7" {
+		t.Fatalf("Label = %+v, %v", r.got, r.err)
+	}
+
 	go func() { results <- result{"rm", c.Remove(ctx, "t7"), nil} }()
 	req = core.readRequest()
 	if req.Method != "terminal.rm" {

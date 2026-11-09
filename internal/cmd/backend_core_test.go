@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -26,6 +27,11 @@ import (
 	"agent-pane/internal/jsonrpc"
 	"github.com/gorilla/websocket"
 )
+
+type fakeLabel struct {
+	terminal string
+	labels   map[string]string
+}
 
 // fakeCore stands in for the bundled core at the coreAPI boundary.
 type fakeCore struct {
@@ -45,8 +51,11 @@ type fakeCore struct {
 	listErr error
 	killErr map[string]error
 	subs    []*fakeEvents
-	pid     int
-	done    chan struct{}
+	labels  []fakeLabel
+	// finished lists terminals whose program ended.
+	finished []string
+	pid      int
+	done     chan struct{}
 }
 
 func newFakeCore() *fakeCore {
@@ -72,19 +81,51 @@ func (f *fakeCore) Run(_ context.Context, p herdrcore.RunParams) (herdrcore.Term
 	return herdrcore.Terminal{Address: address, State: "live", Labels: p.Labels, Pid: &pid}, nil
 }
 
-func (f *fakeCore) List(_ context.Context, labels map[string]string, _ bool) ([]herdrcore.Terminal, error) {
+func (f *fakeCore) List(_ context.Context, labels map[string]string, all bool) ([]herdrcore.Terminal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
 	var out []herdrcore.Terminal
-	for i, run := range f.runs {
-		if run.Labels[coreSessionLabel] == labels[coreSessionLabel] {
-			out = append(out, herdrcore.Terminal{Address: fmt.Sprintf("t%d", i+1), State: "live"})
+	for i := range f.runs {
+		term := f.terminalLocked(i)
+		if slices.Contains(f.removed, term.Address) || !all && term.State != "live" {
+			continue
+		}
+		match := true
+		for k, v := range labels {
+			match = match && term.Labels[k] == v
+		}
+		if match {
+			out = append(out, term)
 		}
 	}
 	return out, nil
+}
+
+// terminalLocked is the facts of the i'th terminal run, with the labels set
+// on it since. The caller holds f.mu.
+func (f *fakeCore) terminalLocked(i int) herdrcore.Terminal {
+	address := fmt.Sprintf("t%d", i+1)
+	labels := maps.Clone(f.runs[i].Labels)
+	for _, l := range f.labels {
+		if l.terminal == address {
+			for k, v := range l.labels {
+				if v == "" {
+					delete(labels, k)
+				} else {
+					labels[k] = v
+				}
+			}
+		}
+	}
+	state := "live"
+	if slices.Contains(f.killed, address) || slices.Contains(f.finished, address) {
+		state = "finished"
+	}
+	pid := f.pid
+	return herdrcore.Terminal{Address: address, State: state, Labels: labels, Pid: &pid, Cols: 80, Rows: 24}
 }
 
 func (f *fakeCore) Attach(_ context.Context, p herdrcore.AttachParams) (coreStream, error) {
@@ -102,6 +143,11 @@ func (f *fakeCore) Subscribe(_ context.Context, labels map[string]string) (coreE
 	defer f.mu.Unlock()
 	ch := f.events[labels[coreSessionLabel]]
 	address := fmt.Sprintf("t%d", len(f.runs))
+	for i, run := range f.runs {
+		if run.Labels[coreSessionLabel] == labels[coreSessionLabel] {
+			address = fmt.Sprintf("t%d", i+1)
+		}
+	}
 	e := &fakeEvents{ch: ch, snapshot: []herdrcore.Terminal{{Address: address, State: "live"}}}
 	f.subs = append(f.subs, e)
 	return e, nil
@@ -115,6 +161,13 @@ func (f *fakeCore) Kill(_ context.Context, terminal string) (herdrcore.Terminal,
 	}
 	f.killed = append(f.killed, terminal)
 	return herdrcore.Terminal{Address: terminal, State: "finished"}, nil
+}
+
+func (f *fakeCore) Label(_ context.Context, terminal string, labels map[string]string) (herdrcore.Terminal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.labels = append(f.labels, fakeLabel{terminal, labels})
+	return herdrcore.Terminal{Address: terminal, State: "live"}, nil
 }
 
 func (f *fakeCore) Remove(_ context.Context, terminal string) error {
@@ -280,6 +333,7 @@ func newNativeHarness(t *testing.T, durable terminalBackend) *nativeHarness {
 	}
 	m := NewSessionManager(ln.Addr().(*net.TCPAddr).Port, logger)
 	m.durable = durable
+	m.registry = newPaneRegistry(filepath.Join(t.TempDir(), "panes.json"))
 	server := &http.Server{Handler: NewWebSocketHandler(m)}
 	go server.Serve(ln)
 
@@ -915,7 +969,8 @@ func TestCloseWaitsForADurableStart(t *testing.T) {
 	core.mu.Lock()
 	removed := append([]string(nil), core.removed...)
 	core.mu.Unlock()
-	if len(h.sessions.List()) != 0 || len(removed) != 1 || removed[0] != "t1" {
+	// The session it waited for is let go of, still running, like the rest.
+	if len(h.sessions.List()) != 0 || len(removed) != 0 {
 		t.Fatalf("sessions %v removed %v", h.sessions.List(), removed)
 	}
 	command := newTerminalCommand("sh")
@@ -924,14 +979,286 @@ func TestCloseWaitsForADurableStart(t *testing.T) {
 	}
 }
 
-func TestCloseEndsDurableSessions(t *testing.T) {
+func TestCloseLeavesDurableSessionsRunning(t *testing.T) {
 	useBackend(t, terminalBackendDurable)
 	core := newFakeCore()
 	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
-	h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	conn := dialAttach(t, ep.URL)
+	readFrame(t, conn)
 	h.sessions.Close()
-	if len(h.sessions.List()) != 0 || len(core.removed) != 1 {
-		t.Fatalf("sessions %v removed %v", h.sessions.List(), core.removed)
+	if len(h.sessions.List()) != 0 || len(core.killed) != 0 || len(core.removed) != 0 {
+		t.Fatalf("sessions %v killed %v removed %v", h.sessions.List(), core.killed, core.removed)
+	}
+	// The viewer and the watch end; the program does not.
+	eventually(t, "the attach stream to close", core.stream(0).isClosed)
+	records, err := h.sessions.registry.load()
+	if err != nil || len(records) != 1 || records[ep.ID].Pane != ep.Pane || records[ep.ID].Session != publicID("session", ep.ID) {
+		t.Fatalf("registry %+v %v", records, err)
+	}
+}
+
+// initialize sends the extension's handshake with browser's id.
+func (h *nativeHarness) initialize(t *testing.T, browser string) {
+	t.Helper()
+	if _, msg := h.call(t, "initialize", map[string]any{"browserId": browser}); msg != "" {
+		t.Fatal(msg)
+	}
+}
+
+// restartHost makes a new host on the same core and registry, as Chrome
+// does after the host process was killed, and initializes it as browser.
+func restartHost(t *testing.T, old *nativeHarness, core *fakeCore, browser string) *nativeHarness {
+	t.Helper()
+	registry := old.sessions.registry
+	old.sessions.Close()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	h.sessions.registry = registry
+	h.initialize(t, browser)
+	return h
+}
+
+func TestDurablePaneTabIsRediscoveredAfterTheHostRestarts(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	first := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	first.initialize(t, "b1")
+	ep := first.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24, "window": "7@r1"})
+	if got := core.runs[0].Labels[coreWindowLabel]; got != "b1:7@r1" {
+		t.Fatalf("window label %q", got)
+	}
+	if !core.runs[0].Keep {
+		t.Fatal("a pane tab's terminal is not kept across a reboot")
+	}
+	ext := &fakeExtension{tab: pageTab{TabID: 3}, choice: "all", content: "page"}
+	first.sessions.SetExtensionCaller(ext.call)
+	s, _ := first.sessions.Get(ep.ID)
+	s.paneTab().grant(3, "all")
+
+	h := restartHost(t, first, core, "b1")
+	h.sessions.SetExtensionCaller(ext.call)
+	// tty.list takes it back under the ids the extension already holds,
+	// with the window it was shown in.
+	items := h.listFacts(t)
+	if len(items) != 1 || items[0].ID != ep.ID || items[0].Pane != ep.Pane || !items[0].Durable || items[0].Window != "7@r1" {
+		t.Fatalf("tty.list %+v", items)
+	}
+	if len(core.runs) != 1 || len(core.killed) != 0 {
+		t.Fatalf("runs %d killed %v", len(core.runs), core.killed)
+	}
+	// Grants do not survive the host.
+	again, _ := h.sessions.Get(ep.ID)
+	if again.paneTab().isAllowed(3) {
+		t.Fatal("a grant outlived the host that gave it")
+	}
+
+	// tty.attach reattaches to the same core terminal.
+	raw, msg := h.call(t, "tty.attach", map[string]any{"id": ep.ID, "window": "7@r1"})
+	if msg != "" {
+		t.Fatal(msg)
+	}
+	var att endpointResult
+	json.Unmarshal(raw, &att)
+	conn := dialAttach(t, att.URL)
+	if got := readFrame(t, conn); got != "paint of t1" {
+		t.Fatalf("replay %q", got)
+	}
+
+	// The page socket the program was given is served again.
+	path := core.runs[0].Env[envSocket]
+	eventually(t, "the page socket to be served", func() bool {
+		c, err := net.Dial("unix", path)
+		if err == nil {
+			c.Close()
+		}
+		return err == nil
+	})
+
+	// Closing the pane tab ends it and forgets it.
+	if _, msg := h.call(t, "tty.destroy", map[string]any{"id": ep.ID, "pane": ep.Pane}); msg != "" {
+		t.Fatal(msg)
+	}
+	if len(core.killed) != 1 || core.killed[0] != "t1" {
+		t.Fatalf("killed %v", core.killed)
+	}
+	if records, _ := h.sessions.registry.load(); len(records) != 0 {
+		t.Fatalf("registry after destroy %+v", records)
+	}
+}
+
+func TestAttachRediscoversBeforeLookingTheSessionUp(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	first := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	first.initialize(t, "b1")
+	ep := first.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	h := restartHost(t, first, core, "b1")
+	if _, msg := h.call(t, "tty.attach", map[string]any{"id": ep.ID}); msg != "" {
+		t.Fatalf("tty.attach after a host restart: %s", msg)
+	}
+}
+
+func TestRediscoveryWaitsForTheBrowser(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	first := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	first.initialize(t, "b1")
+	ep := first.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	registry := first.sessions.registry
+	first.sessions.Close()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	h.sessions.registry = registry
+	// A tty.list that overtakes initialize does not decide for the browser.
+	if items := h.listFacts(t); len(items) != 0 {
+		t.Fatalf("tty.list before initialize %+v", items)
+	}
+	h.initialize(t, "b1")
+	if items := h.listFacts(t); len(items) != 1 || items[0].ID != ep.ID {
+		t.Fatalf("tty.list %+v", items)
+	}
+}
+
+func TestAFinishedDurablePaneTabIsForgottenAfterARestart(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	first := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	first.initialize(t, "b1")
+	first.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	h := restartHost(t, first, core, "b1")
+	core.mu.Lock()
+	core.finished = append(core.finished, "t1")
+	core.mu.Unlock()
+	if items := h.listFacts(t); len(items) != 0 {
+		t.Fatalf("tty.list %+v", items)
+	}
+	if len(core.removed) != 1 || core.removed[0] != "t1" {
+		t.Fatalf("removed %v", core.removed)
+	}
+	if records, _ := h.sessions.registry.load(); len(records) != 0 {
+		t.Fatalf("registry %+v", records)
+	}
+}
+
+func TestAnUnrecordedCoreTerminalIsAdoptedWithNoGrants(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	first := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	ep := first.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	first.sessions.Close()
+	// The registry is lost: a new host still finds the terminal by label.
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	h.initialize(t, "b1")
+	items := h.listFacts(t)
+	if len(items) != 1 || items[0].ID == ep.ID || items[0].Pane == ep.Pane || items[0].Pane == "" || items[0].Window != "" {
+		t.Fatalf("tty.list %+v", items)
+	}
+	s, _ := h.sessions.Get(items[0].ID)
+	if s.paneTab().isAllowed(1) {
+		t.Fatal("an orphan came with a grant")
+	}
+	if _, msg := h.call(t, "tty.destroy", map[string]any{"id": items[0].ID, "pane": items[0].Pane}); msg != "" {
+		t.Fatal(msg)
+	}
+	if len(core.killed) != 1 {
+		t.Fatalf("killed %v", core.killed)
+	}
+}
+
+func TestAnotherBrowsersPaneTabsAreLeftAlone(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	first := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	first.initialize(t, "chrome")
+	first.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	h := restartHost(t, first, core, "brave")
+	if items := h.listFacts(t); len(items) != 0 {
+		t.Fatalf("tty.list %+v", items)
+	}
+	if records, _ := h.sessions.registry.load(); len(records) != 1 {
+		t.Fatalf("registry %+v", records)
+	}
+}
+
+func TestClosingTheWindowDetachesADurablePaneTab(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	h.initialize(t, "b1")
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24, "window": "4@r1"})
+	s, _ := h.sessions.Get(ep.ID)
+	s.paneTab().grant(9, "tab")
+
+	raw, msg := h.call(t, "tty.detach", map[string]any{"id": ep.ID, "pane": ep.Pane})
+	if msg != "" {
+		t.Fatal(msg)
+	}
+	var r struct {
+		Running bool `json:"running"`
+	}
+	json.Unmarshal(raw, &r)
+	if !r.Running || len(core.killed) != 0 {
+		t.Fatalf("detach %s killed %v", raw, core.killed)
+	}
+	// Its grants end with the window; the pane tab is still there to
+	// approve again.
+	if s.paneTab().isAllowed(9) {
+		t.Fatal("a grant outlived its window")
+	}
+	if !s.paneTab().grant(9, "tab") {
+		t.Fatal("the detached pane tab cannot be approved again")
+	}
+	// The core no longer names the closed window, and tty.list offers it
+	// with no window.
+	core.mu.Lock()
+	window, labelled := core.terminalLocked(0).Labels[coreWindowLabel]
+	core.mu.Unlock()
+	if labelled {
+		t.Fatalf("window label %q after the window closed", window)
+	}
+	items := h.listFacts(t)
+	if len(items) != 1 || items[0].Window != "" {
+		t.Fatalf("tty.list %+v", items)
+	}
+
+	// Reopening it in another window labels it with that one.
+	if _, msg := h.call(t, "tty.attach", map[string]any{"id": ep.ID, "window": "5@r1"}); msg != "" {
+		t.Fatal(msg)
+	}
+	core.mu.Lock()
+	window = core.terminalLocked(0).Labels[coreWindowLabel]
+	core.mu.Unlock()
+	if window != "b1:5@r1" {
+		t.Fatalf("window label %q", window)
+	}
+}
+
+func TestAWindowNameMustBeOpaque(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	if _, msg := h.call(t, "tty.create", map[string]any{"mode": "shell", "cols": 80, "rows": 24, "window": "a,b=c"}); msg == "" {
+		t.Fatal("tty.create took a window name unsafe in a label")
+	}
+	if len(core.runs) != 0 {
+		t.Fatalf("runs %d", len(core.runs))
+	}
+}
+
+func TestClosingTheWindowEndsABuiltinPaneTab(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS terminals start through the spawn agent")
+	}
+	h := newNativeHarness(t, nil)
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	raw, msg := h.call(t, "tty.detach", map[string]any{"id": ep.ID, "pane": ep.Pane})
+	if msg != "" {
+		t.Fatal(msg)
+	}
+	if string(raw) != `{"running":false}` {
+		t.Fatalf("detach %s", raw)
+	}
+	if ids := h.list(t); len(ids) != 0 {
+		t.Fatalf("tty.list %v", ids)
 	}
 }
 
@@ -972,8 +1299,8 @@ func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Disca
 
 // TestDurableBackendRealCore runs a pane tab through the pinned core when
 // AGENT_PANE_TEST_HC names it, the way the side panel does: tty.create,
-// WebSocket attach, typing, resize, a page read over the page socket, and
-// tty.destroy.
+// WebSocket attach, typing, resize, a page read over the page socket, a host
+// restart and reattach, and tty.destroy.
 func TestDurableBackendRealCore(t *testing.T) {
 	binary := os.Getenv("AGENT_PANE_TEST_HC")
 	if binary == "" {
@@ -1055,6 +1382,33 @@ func TestDurableBackendRealCore(t *testing.T) {
 	if items := h.listFacts(t); len(items) != 1 || items[0].Status == nil || items[0].Status.State != "blocked" {
 		t.Fatalf("tty.list %+v", items)
 	}
+
+	// Killing the host leaves the program running: a new host takes it
+	// back from the core, and its screen is still there.
+	type_(`echo "BEFORE-RESTART"`)
+	waitWS("BEFORE-RESTART")
+	registry := h.sessions.registry
+	h.sessions.Close()
+	h = newNativeHarness(t, newCoreBackend(discardLogger(), core))
+	h.sessions.registry = registry
+	h.initialize(t, "b1")
+	if items := h.listFacts(t); len(items) != 1 || items[0].ID != ep.ID || items[0].Pane != ep.Pane {
+		t.Fatalf("tty.list after a host restart %+v", items)
+	}
+	raw, msg := h.call(t, "tty.attach", map[string]any{"id": ep.ID})
+	if msg != "" {
+		t.Fatal(msg)
+	}
+	var att endpointResult
+	json.Unmarshal(raw, &att)
+	conn = dialAttach(t, att.URL)
+	out.Reset()
+	out.WriteString(readFrame(t, conn))
+	if !strings.Contains(out.String(), "BEFORE-RESTART") {
+		t.Fatalf("replay after a host restart %q", out.String())
+	}
+	type_(`echo "AFTER-$((40+2))"`)
+	waitWS("AFTER-42")
 
 	if _, msg := h.call(t, "tty.destroy", map[string]any{"id": ep.ID, "pane": ep.Pane}); msg != "" {
 		t.Fatal(msg)

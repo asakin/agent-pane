@@ -73,6 +73,15 @@ func (p *paneTab) grant(tabID int, choice string) bool {
 	return true
 }
 
+// revoke drops the pane tab's grants and leaves it open for new ones, as
+// when the Chrome window it was shown in closes and the pane tab lives on.
+func (p *paneTab) revoke() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.allowAll = false
+	p.allowedTabs = nil
+}
+
 func (p *paneTab) close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

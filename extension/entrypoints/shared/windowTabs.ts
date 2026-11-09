@@ -6,6 +6,7 @@ import type {
     ResponseAttachTTY,
     ResponseCreateTTY,
 } from "./rpc";
+import { newRunId as makeRunId } from "./runningTabs";
 import { type TabLock, closeMissingLocks, isTabLock } from "./tabLock";
 
 export type WindowTab = TabLock & {
@@ -36,6 +37,28 @@ function isWindowTab(value: unknown): value is WindowTab {
 
 export function windowStateKey(windowId: number): string {
     return `agent-pane.window.${windowId}`;
+}
+
+/**
+ * storage.local key of this browser run's id. The background makes a new one
+ * each time Chrome starts, so a window id Chrome hands out again after a
+ * restart does not name the window a pane tab was last shown in. It survives
+ * an extension reload, which keeps Chrome's windows.
+ */
+export const RUN_ID_KEY = "agent-pane.runId";
+
+export { newRunId, windowName } from "./runningTabs";
+
+/** This browser run's id, made if the background has not made one yet. */
+export async function currentRunId(): Promise<string> {
+    const stored = await browser.storage.local.get<{ [RUN_ID_KEY]?: string }>(RUN_ID_KEY);
+    const id = stored[RUN_ID_KEY];
+    if (typeof id === "string" && /^[0-9a-f]{12}$/.test(id)) {
+        return id;
+    }
+    const made = makeRunId();
+    await browser.storage.local.set({ [RUN_ID_KEY]: made });
+    return made;
 }
 
 export function legacySessionKey(windowId: number): string {
@@ -125,11 +148,11 @@ export type CreateTTYOpts =
  * Starts a PTY session. With pane, the session replaces a dead one in that
  * pane tab and keeps its grants; without, the host makes a new pane tab.
  */
-export async function createTTY(opts: CreateTTYOpts, pane?: string): Promise<{ id: string; url: string; pane?: string }> {
+export async function createTTY(opts: CreateTTYOpts, pane?: string, window?: string): Promise<{ id: string; url: string; pane?: string }> {
     const cwd = opts.cwd || undefined;
     const params = opts.mode === "app"
-        ? { mode: "app" as const, app: opts.app, cwd, pane, cols: opts.cols, rows: opts.rows }
-        : { mode: "shell" as const, cwd, pane, cols: opts.cols, rows: opts.rows };
+        ? { mode: "app" as const, app: opts.app, cwd, pane, window, cols: opts.cols, rows: opts.rows }
+        : { mode: "shell" as const, cwd, pane, window, cols: opts.cols, rows: opts.rows };
     const resp = await browser.runtime.sendMessage<RequestCreateTTY, ResponseCreateTTY>({
         jsonrpc: "2.0",
         id: crypto.randomUUID(),
@@ -142,12 +165,12 @@ export async function createTTY(opts: CreateTTYOpts, pane?: string): Promise<{ i
     return resp.result;
 }
 
-export async function attachTTY(id: string): Promise<{ id: string; url: string } | null> {
+export async function attachTTY(id: string, window?: string): Promise<{ id: string; url: string } | null> {
     const resp = await browser.runtime.sendMessage<RequestAttachTTY, ResponseAttachTTY>({
         jsonrpc: "2.0",
         id: crypto.randomUUID(),
         method: "tty.attach",
-        params: { id },
+        params: window ? { id, window } : { id },
     });
     if ("error" in resp) {
         const failure = errorFromResponse(resp);

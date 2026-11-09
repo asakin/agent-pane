@@ -49,6 +49,7 @@ type coreAPI interface {
 	Attach(ctx context.Context, p herdrcore.AttachParams) (coreStream, error)
 	Subscribe(ctx context.Context, labels map[string]string) (coreEvents, error)
 	Kill(ctx context.Context, terminal string) (herdrcore.Terminal, error)
+	Label(ctx context.Context, terminal string, labels map[string]string) (herdrcore.Terminal, error)
 	Remove(ctx context.Context, terminal string) error
 	Done() <-chan struct{}
 }
@@ -282,6 +283,9 @@ func (t *coreTerminal) start(command *terminalCommand, extra *os.File) (int, err
 	}
 	env := coreEnv(command.Env)
 	labels := coreLabels(env)
+	if command.Window != "" {
+		labels[coreWindowLabel] = command.Window
+	}
 	cols, rows := t.size()
 	t.mu.Lock()
 	t.session = labels[coreSessionLabel]
@@ -293,6 +297,8 @@ func (t *coreTerminal) start(command *terminalCommand, extra *os.File) (int, err
 		Labels:   labels,
 		Size:     &herdrcore.Size{Cols: cols, Rows: rows},
 		NoParent: true,
+		// A pane tab the core loses (a reboot) comes back as a shell.
+		Keep: true,
 	})
 	if err != nil {
 		var refused *herdrcore.Error
@@ -626,8 +632,9 @@ func (t *coreTerminal) resize(cols, rows int) error {
 	return stream.Resize(cols, rows)
 }
 
-// close ends the program and removes its core terminal.
-func (t *coreTerminal) close() error {
+// detach stops watching and showing the terminal and leaves its program
+// running in the core, for a later host to adopt.
+func (t *coreTerminal) detach() {
 	t.mu.Lock()
 	if !t.closed {
 		close(t.done)
@@ -645,6 +652,11 @@ func (t *coreTerminal) close() error {
 	if events != nil {
 		_ = events.Close()
 	}
+}
+
+// close ends the program and removes its core terminal.
+func (t *coreTerminal) close() error {
+	t.detach()
 	t.mu.Lock()
 	started := t.address != ""
 	t.mu.Unlock()
@@ -658,6 +670,52 @@ func (t *coreTerminal) close() error {
 		return err
 	}
 	return t.endWith(ctx, conn)
+}
+
+// label sets labels on the terminal's core record; an empty value removes
+// one.
+func (t *coreTerminal) label(labels map[string]string) error {
+	t.mu.Lock()
+	address := t.address
+	t.mu.Unlock()
+	if address == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), coreCallTimeout)
+	defer cancel()
+	conn, err := t.backend.connect(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = conn.Label(ctx, address, labels)
+	return err
+}
+
+// adopt takes back a live core terminal an earlier host started, as session
+// id's terminal, watched from a fresh subscription.
+func (b *coreBackend) adopt(id string, term herdrcore.Terminal) (*coreTerminal, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), coreCallTimeout)
+	defer cancel()
+	conn, err := b.connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	t := &coreTerminal{
+		id:      id,
+		backend: b,
+		logger:  b.logger,
+		done:    make(chan struct{}),
+		address: term.Address,
+		session: term.Labels[coreSessionLabel],
+		cols:    term.Cols,
+		rows:    term.Rows,
+	}
+	events, err := conn.Subscribe(ctx, map[string]string{coreSessionLabel: t.session})
+	if err != nil {
+		return nil, err
+	}
+	t.events = events
+	return t, nil
 }
 
 var errCoreTerminalClosed = errors.New("terminal is closed")
@@ -697,6 +755,9 @@ const (
 	corePaneLabel    = "agent-pane.pane"
 	coreSessionLabel = "agent-pane.session"
 	coreAgentLabel   = "agent-pane.agent"
+	// coreWindowLabel is <browserId>:<windowId>, the Chrome window the
+	// pane tab was last shown in; it is removed when that window closes.
+	coreWindowLabel = "agent-pane.window"
 )
 
 func coreLabels(env map[string]string) map[string]string {

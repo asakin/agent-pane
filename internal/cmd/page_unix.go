@@ -341,15 +341,62 @@ func newPageSocket() (*net.UnixListener, string, error) {
 		return nil, "", err
 	}
 	path := filepath.Join(dir, strings.ToLower(rand.Text())+".sock")
-	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	ln, err := listenPageSocket(path)
 	if err != nil {
 		return nil, "", err
 	}
+	return ln, path, nil
+}
+
+// listenPageSocket listens on path for a session's processes, replacing a
+// socket file nothing answers on any more. A Durable session a new host
+// takes back is served at the path its programs already have.
+func listenPageSocket(path string) (*net.UnixListener, error) {
+	if info, err := os.Lstat(path); err == nil && info.Mode().Type() == os.ModeSocket {
+		if conn, err := net.DialTimeout("unix", path, time.Second); err == nil {
+			conn.Close()
+			return nil, errPageSocketInUse
+		}
+		_ = os.Remove(path)
+	}
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		return nil, err
+	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		ln.Close()
-		return nil, "", err
+		return nil, err
 	}
-	return ln, path, nil
+	return ln, nil
+}
+
+var errPageSocketInUse = errors.New("another host still serves the page socket")
+
+// servePageSocketAt serves the session's page socket at path, the one its
+// programs were given, once no earlier host serves it, giving up after a few
+// seconds or when the session closes.
+func (s *Session) servePageSocketAt(path string, root int, call func() extensionCaller) {
+	for range 40 {
+		ln, err := listenPageSocket(path)
+		if err == nil {
+			s.mu.Lock()
+			closed := s.closed
+			if !closed {
+				s.pageSocket = ln
+			}
+			s.mu.Unlock()
+			if closed {
+				ln.Close()
+				return
+			}
+			s.servePageSocket(ln, root, call)
+			return
+		}
+		if !errors.Is(err, errPageSocketInUse) || s.isClosed() {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // servePageSocket answers requests on the session's socket until the

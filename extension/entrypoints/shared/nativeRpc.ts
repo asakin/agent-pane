@@ -108,3 +108,20 @@ export function requestNative<T extends { id?: string }>(
         }
     });
 }
+
+/** JSON-RPC "method not found", which a host older than a method answers. */
+export const METHOD_NOT_FOUND = -32601;
+
+/**
+ * Tells the host that the Chrome window showing a pane tab closed. A Durable
+ * session keeps running with its grants revoked; a Built-in one ends. A host
+ * without tty.detach ends the session and its pane tab instead, as closing a
+ * window did before.
+ */
+export async function detachOnWindowClose(port: NativeMessagePort, id: string, pane?: string, timeoutMs = 2000): Promise<void> {
+    const params = pane ? { id, pane } : { id };
+    const resp = await requestNative(port, { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tty.detach", params }, timeoutMs);
+    if (resp.error?.code === METHOD_NOT_FOUND) {
+        await requestNative(port, { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tty.destroy", params }, timeoutMs);
+    }
+}

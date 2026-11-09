@@ -189,7 +189,7 @@ func TestResolveCommandRelativeToFolder(t *testing.T) {
 
 func TestInitializeReportsVersionAndProtocol(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := initializeHandler(logger, "v1.2.3")
+	handler := initializeHandler(logger, "v1.2.3", nil)
 
 	result, err := handler([]byte(`{"version":"1.2.3","browserId":"abc"}`))
 	if err != nil {
@@ -211,9 +211,33 @@ func TestInitializeReportsVersionAndProtocol(t *testing.T) {
 	}
 }
 
+func TestInitializeRecordsTheBrowser(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewSessionManager(0, logger)
+	if _, err := initializeHandler(logger, "dev", m)([]byte(`{"browserId":"abc"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.windowLabel("3@r1"); got != "abc:3@r1" {
+		t.Fatalf("window label %q", got)
+	}
+}
+
+func TestTTYDetachOfAnUnknownSessionReportsItGone(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewSessionManager(0, logger)
+	p := m.paneLocked("")
+	p.grant(4, "all")
+	if m.DetachWindow("missing", p.id) {
+		t.Fatal("an unknown session lives on")
+	}
+	if p.isAllowed(4) {
+		t.Fatal("the closed window's pane tab kept its grant")
+	}
+}
+
 func TestInitializeRejectsBadParams(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := initializeHandler(logger, "dev")([]byte(`{`)); err == nil {
+	if _, err := initializeHandler(logger, "dev", nil)([]byte(`{`)); err == nil {
 		t.Fatal("expected error for malformed params")
 	}
 }

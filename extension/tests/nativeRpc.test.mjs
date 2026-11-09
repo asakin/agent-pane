@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isHostNotification, isHostRequest } from "../entrypoints/shared/hostConnection.ts";
 import { checkHost, MIN_HOST_PROTOCOL, MIN_HOST_VERSION } from "../entrypoints/shared/hostVersion.ts";
-import { CHOOSE_FOLDER_TIMEOUT_MS, errorFromResponse, NATIVE_RPC_TIMEOUT_MS, nativeTimeoutMs, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
+import { CHOOSE_FOLDER_TIMEOUT_MS, detachOnWindowClose, errorFromResponse, METHOD_NOT_FOUND, NATIVE_RPC_TIMEOUT_MS, nativeTimeoutMs, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
 
 function fakePort() {
     const listeners = new Set();
@@ -140,4 +140,26 @@ test("a host notification is told apart from a request and a response", () => {
     assert.equal(isHostNotification({ jsonrpc: "2.0", method: "tty.event", result: {} }), false);
     assert.equal(isHostNotification({ method: "tty.event" }), false);
     assert.equal(isHostRequest({ jsonrpc: "2.0", method: "tty.event", params: {} }), false);
+});
+
+test("closing a window detaches its pane tabs, and an older host ends them", async () => {
+    const reply = (port, answer) => {
+        const real = port.postMessage.bind(port);
+        port.postMessage = (message) => {
+            real(message);
+            queueMicrotask(() => port.emit({ jsonrpc: "2.0", id: message.id, ...answer(message) }));
+        };
+    };
+
+    const port = fakePort();
+    reply(port, () => ({ result: { running: true } }));
+    await detachOnWindowClose(port, "s1", "pane-1");
+    assert.deepEqual(port.sent.map((m) => [m.method, m.params]), [["tty.detach", { id: "s1", pane: "pane-1" }]]);
+
+    const old = fakePort();
+    reply(old, (m) => m.method === "tty.detach"
+        ? { error: { code: METHOD_NOT_FOUND, message: "Method not found: tty.detach" } }
+        : { result: {} });
+    await detachOnWindowClose(old, "s1");
+    assert.deepEqual(old.sent.map((m) => [m.method, m.params]), [["tty.detach", { id: "s1" }], ["tty.destroy", { id: "s1" }]]);
 });

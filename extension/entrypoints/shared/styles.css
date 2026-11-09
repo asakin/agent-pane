@@ -230,6 +230,131 @@ body.at-options {
     }
 }
 
+/* Running pane tabs: Durable pane tabs no side panel shows. */
+.at-running {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: stretch;
+    border-left: 1px solid rgba(0, 0, 0, 0.12);
+
+    @media (prefers-color-scheme: dark) {
+        border-left-color: rgba(255, 255, 255, 0.12);
+    }
+}
+
+.at-running[hidden] {
+    display: none;
+}
+
+.at-running__button {
+    margin: 0;
+    padding: 0 6px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 11px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.at-running__button:hover {
+    background: rgba(0, 0, 0, 0.06);
+
+    @media (prefers-color-scheme: dark) {
+        background: rgba(255, 255, 255, 0.08);
+    }
+}
+
+.at-running__menu {
+    position: fixed;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: max-content;
+    max-width: min(320px, calc(100vw - 16px));
+    padding: 6px;
+    border: 1px solid #d0d0d0;
+    border-radius: 8px;
+    background: #ffffff;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    color: #1a1a1a;
+
+    @media (prefers-color-scheme: dark) {
+        border-color: #3a3a3a;
+        background: #2a2a2a;
+        color: #e8eaed;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    }
+}
+
+.at-running__heading {
+    margin: 2px 8px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0.7;
+}
+
+.at-running__item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.at-running__open,
+.at-running__end {
+    margin: 0;
+    padding: 7px 8px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.at-running__open {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.at-running__end {
+    flex: 0 0 auto;
+    font-size: 12px;
+    opacity: 0.75;
+}
+
+.at-running__open:hover,
+.at-running__end:hover,
+.at-running__open:focus-visible,
+.at-running__end:focus-visible {
+    background: rgba(0, 0, 0, 0.06);
+    outline: none;
+
+    @media (prefers-color-scheme: dark) {
+        background: rgba(255, 255, 255, 0.08);
+    }
+}
+
+.at-running__hint {
+    margin: 4px 8px 2px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+    font-style: italic;
+    font-size: 11px;
+    opacity: 0.6;
+
+    @media (prefers-color-scheme: dark) {
+        border-top-color: rgba(255, 255, 255, 0.08);
+    }
+}
+
 /* Font-size −/+ group, pinned to the right edge of the strip. */
 .at-fontsize {
     flex: 0 0 auto;

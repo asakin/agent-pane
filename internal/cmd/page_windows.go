@@ -22,6 +22,12 @@ func newPageSocket() (*net.UnixListener, string, error) {
 	return nil, "", errors.New("page reading is not available on Windows")
 }
 
+func listenPageSocket(string) (*net.UnixListener, error) {
+	return nil, errors.New("page reading is not available on Windows")
+}
+
+func (s *Session) servePageSocketAt(string, int, func() extensionCaller) {}
+
 func (s *Session) servePageSocket(*net.UnixListener, int, func() extensionCaller) {}
 
 func readPage(string, string, pageRequest) (string, error) {
