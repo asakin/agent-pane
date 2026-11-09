@@ -40,6 +40,11 @@ const maxAbandoned = 64
 // maxDataFrame splits writes to a stream into frames no larger than this.
 const maxDataFrame = 64 << 10
 
+// writeTimeout bounds writing one frame to the socket, and a stream send
+// waiting for its frame to go out. A core that reads nothing for this long
+// is not answering, so the connection ends instead of holding its writers.
+var writeTimeout = 30 * time.Second
+
 // ErrUnsupportedGeneration reports a core that does not speak Generation.
 var ErrUnsupportedGeneration = errors.New("unsupported herdr-core protocol generation")
 
@@ -366,6 +371,7 @@ func (c *Client) writeLoop() {
 		f := c.out[0]
 		c.out = c.out[1:]
 		c.wmu.Unlock()
+		c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 		_, err := c.conn.Write(f.buf)
 		if err != nil {
 			err = fmt.Errorf("%w: %w", ErrClosed, err)
@@ -552,6 +558,9 @@ func (c *Client) abandon(id uint64, call *pendingCall) {
 type channel struct {
 	c  *Client
 	id uint32
+	// ctx ends when this side closes the stream, releasing waiting sends.
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	mu     sync.Mutex
 	ready  chan struct{} // signalled when data arrives or the stream ends
@@ -562,7 +571,8 @@ type channel struct {
 }
 
 func newChannel(c *Client, id uint32) *channel {
-	return &channel{c: c, id: id, ready: make(chan struct{}, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &channel{c: c, id: id, ctx: ctx, cancel: cancel, ready: make(chan struct{}, 1)}
 }
 
 func (s *channel) signal() {
@@ -594,6 +604,23 @@ func (s *channel) end(facts json.RawMessage, err error) {
 // read copies queued data into p, blocking until there is some or the stream
 // ends.
 func (s *channel) read(ctx context.Context, p []byte) (int, error) {
+	return s.take(ctx, func(q []byte) int { return copy(p, q) })
+}
+
+// readFrame returns the rest of the next DATA frame, whole, blocking until
+// there is one or the stream ends.
+func (s *channel) readFrame(ctx context.Context) ([]byte, error) {
+	var frame []byte
+	_, err := s.take(ctx, func(q []byte) int {
+		frame = q
+		return len(q)
+	})
+	return frame, err
+}
+
+// take hands the oldest queued data to use, which returns how much of it it
+// consumed, blocking until there is some or the stream ends.
+func (s *channel) take(ctx context.Context, use func([]byte) int) (int, error) {
 	for {
 		s.mu.Lock()
 		if s.closed {
@@ -601,7 +628,7 @@ func (s *channel) read(ctx context.Context, p []byte) (int, error) {
 			return 0, ErrStreamClosed
 		}
 		if len(s.queue) > 0 {
-			n := copy(p, s.queue[0])
+			n := use(s.queue[0])
 			if n == len(s.queue[0]) {
 				s.queue = s.queue[1:]
 			} else {
@@ -643,7 +670,14 @@ func (s *channel) send(kind byte, p []byte) error {
 		}
 		return err
 	}
-	_, err = s.c.writeFrame(context.Background(), s.id, kind, p)
+	// Bounded, and released by Close, so a core that stopped reading does
+	// not hold input or a resize forever.
+	ctx, cancel := context.WithTimeout(s.ctx, writeTimeout)
+	defer cancel()
+	_, err = s.c.writeFrame(ctx, s.id, kind, p)
+	if err != nil && s.ctx.Err() != nil {
+		return ErrStreamClosed
+	}
 	return err
 }
 
@@ -658,6 +692,7 @@ func (s *channel) Close() error {
 	ended := s.err != nil
 	s.queue = nil
 	s.mu.Unlock()
+	s.cancel()
 	s.signal()
 
 	s.c.mu.Lock()

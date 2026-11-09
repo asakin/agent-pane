@@ -907,3 +907,61 @@ func abandonAttach(t *testing.T, c *Client, core *fakeCore) {
 		t.Fatalf("err = %v, want Canceled", err)
 	}
 }
+
+func TestAttachReadFrameReturnsAWholeFrame(t *testing.T) {
+	c, core := newFake(t)
+	a := attach(t, c, core, 3)
+	if got := readN(t, a, 5); got != "first" {
+		t.Fatalf("Read = %q", got)
+	}
+	core.read() // credit
+	frame, err := a.ReadFrame()
+	if err != nil || string(frame) != " paint" {
+		t.Fatalf("ReadFrame = %q, %v, want the rest of the first frame", frame, err)
+	}
+	core.read() // credit
+	core.write(3, frameData, []byte("next"))
+	if frame, err := a.ReadFrame(); err != nil || string(frame) != "next" {
+		t.Fatalf("ReadFrame = %q, %v", frame, err)
+	}
+}
+
+func TestAttachCloseReleasesABlockedWrite(t *testing.T) {
+	c, core := newUnbufferedFake(t)
+	a := attach(t, c, core, 3)
+	stallWrites(c)
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.Write([]byte("x"))
+		done <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	a.Close()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrStreamClosed) {
+			t.Fatalf("Write err = %v, want ErrStreamClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close left a blocked Write waiting")
+	}
+}
+
+func TestStreamSendIsBounded(t *testing.T) {
+	old := writeTimeout
+	writeTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { writeTimeout = old })
+	c, core := newUnbufferedFake(t)
+	a := attach(t, c, core, 3)
+	stallWrites(c)
+	done := make(chan error, 1)
+	go func() { done <- a.Resize(100, 30) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Resize to a core that reads nothing succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Resize to a core that reads nothing never returned")
+	}
+}

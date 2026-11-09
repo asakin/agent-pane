@@ -36,13 +36,15 @@ const coreStartTimeout = 30 * time.Second
 // xterm's default scrollback, which the side panel uses.
 const coreHistoryLines = 1000
 
-// coreFirstPaintBytes bounds the first paint read as the replay frame.
-const coreFirstPaintBytes = 4 << 20
+// coreWatchRetryMax bounds the wait between attempts to watch a terminal
+// again after its event subscription broke.
+const coreWatchRetryMax = 30 * time.Second
 
 // coreAPI is the part of a core connection the backend uses. coreClient is
 // the real one; tests use a fake.
 type coreAPI interface {
 	Run(ctx context.Context, p herdrcore.RunParams) (herdrcore.Terminal, error)
+	List(ctx context.Context, labels map[string]string, all bool) ([]herdrcore.Terminal, error)
 	Attach(ctx context.Context, p herdrcore.AttachParams) (coreStream, error)
 	Subscribe(ctx context.Context, labels map[string]string) (coreEvents, error)
 	Kill(ctx context.Context, terminal string) (herdrcore.Terminal, error)
@@ -54,6 +56,8 @@ type coreAPI interface {
 // output. Writes are input.
 type coreStream interface {
 	io.ReadWriteCloser
+	// ReadFrame returns the next output frame whole.
+	ReadFrame() ([]byte, error)
 	Resize(cols, rows int) error
 }
 
@@ -85,6 +89,11 @@ func (s coreSubscription) Snapshot() []herdrcore.Terminal { return s.Terminals }
 
 // errCoreMissing reports a Durable session with no bundled core installed.
 var errCoreMissing = errors.New("the bundled terminal runtime is not installed; run `agent-pane doctor`")
+
+// errCoreUnsure reports a start whose outcome the host could not learn: the
+// program may be running in the core, so the session must not start it
+// again in Built-in.
+var errCoreUnsure = errors.New("the bundled terminal runtime did not say whether the terminal started")
 
 // coreBackend runs each session in a terminal of the private core, reached
 // over one shared connection that is redialled once it drops. The host still
@@ -146,6 +155,7 @@ func (b *coreBackend) open(id string, command *terminalCommand) (terminal, error
 		id:      id,
 		backend: b,
 		logger:  b.logger,
+		done:    make(chan struct{}),
 		cols:    command.Cols,
 		rows:    command.Rows,
 	}, nil
@@ -160,9 +170,13 @@ type coreTerminal struct {
 	id      string
 	backend *coreBackend
 	logger  *slog.Logger
+	// done is closed by close.
+	done chan struct{}
 
 	mu      sync.Mutex
 	address string
+	// session is the terminal's agent-pane.session label.
+	session string
 	events  coreEvents
 	cols    int
 	rows    int
@@ -182,6 +196,9 @@ func (t *coreTerminal) start(command *terminalCommand, extra *os.File) (int, err
 	env := coreEnv(command.Env)
 	labels := coreLabels(env)
 	cols, rows := t.size()
+	t.mu.Lock()
+	t.session = labels[coreSessionLabel]
+	t.mu.Unlock()
 	term, err := conn.Run(ctx, herdrcore.RunParams{
 		Argv:     command.Args,
 		Cwd:      command.Dir,
@@ -191,20 +208,34 @@ func (t *coreTerminal) start(command *terminalCommand, extra *os.File) (int, err
 		NoParent: true,
 	})
 	if err != nil {
-		return 0, err
+		var refused *herdrcore.Error
+		if errors.As(err, &refused) {
+			// The core answered: nothing started.
+			return 0, err
+		}
+		// No answer: the program may be running. End whatever runs under
+		// the session's label, and do not start it anywhere else.
+		if cleanupErr := t.endUnsure(); cleanupErr != nil {
+			t.logger.Warn("failed to end core terminal", "error", cleanupErr, "session", t.id)
+		}
+		return 0, fmt.Errorf("%w: %w", errCoreUnsure, err)
 	}
 	t.mu.Lock()
 	t.address = term.Address
+	closed := t.closed
 	t.mu.Unlock()
-	// Watched from here, so an exit before run is not missed.
-	events, err := conn.Subscribe(ctx, map[string]string{coreSessionLabel: labels[coreSessionLabel]})
-	if err != nil {
-		t.end(conn)
-		return 0, err
+	if closed {
+		// close ran while the core started it, before it knew the address.
+		return 0, t.end(conn, errCoreTerminalClosed)
 	}
-	t.mu.Lock()
-	t.events = events
-	t.mu.Unlock()
+	// Watched from here, so an exit before run is not missed.
+	events, err := conn.Subscribe(ctx, map[string]string{coreSessionLabel: t.session})
+	if err != nil {
+		return 0, t.end(conn, err)
+	}
+	if !t.setEvents(events) {
+		return 0, t.end(conn, errCoreTerminalClosed)
+	}
 	pid := 0
 	if term.Pid != nil {
 		pid = *term.Pid
@@ -222,32 +253,121 @@ func (t *coreTerminal) size() (int, int) {
 	return t.cols, t.rows
 }
 
+// endUnsure kills and removes every terminal carrying the session's label,
+// after a terminal.run the core did not answer.
+func (t *coreTerminal) endUnsure() error {
+	ctx, cancel := context.WithTimeout(context.Background(), coreCallTimeout)
+	defer cancel()
+	conn, err := t.backend.connect(ctx)
+	if err != nil {
+		return err
+	}
+	terms, err := conn.List(ctx, map[string]string{coreSessionLabel: t.session}, true)
+	if err != nil {
+		return err
+	}
+	for _, term := range terms {
+		if _, err := conn.Kill(ctx, term.Address); err != nil && !herdrcore.IsKind(err, "not_found") {
+			return err
+		}
+		if err := conn.Remove(ctx, term.Address); err != nil && !herdrcore.IsKind(err, "not_found") {
+			return err
+		}
+	}
+	return nil
+}
+
+// setEvents makes events the terminal's subscription, unless it is closed.
+func (t *coreTerminal) setEvents(events coreEvents) bool {
+	t.mu.Lock()
+	closed := t.closed
+	if !closed {
+		t.events = events
+	}
+	t.mu.Unlock()
+	if closed {
+		_ = events.Close()
+	}
+	return !closed
+}
+
+// run calls ended once the core reports the program ended. Losing the
+// subscription is not that: the terminal is watched again from a fresh
+// snapshot, and only a closed terminal stops the watch.
 func (t *coreTerminal) run(ended func()) {
 	t.mu.Lock()
 	events, address := t.events, t.address
 	t.mu.Unlock()
 	go func() {
 		defer ended()
-		if !coreTerminalLive(events.Snapshot(), address) {
+		if events == nil {
 			return
 		}
 		for {
-			e, err := events.Next(context.Background())
-			if err != nil {
+			if !coreTerminalLive(events.Snapshot(), address) {
 				return
 			}
-			switch e.Type {
-			case "finished", "removed", "lost":
-				if e.Terminal == address {
-					return
-				}
-			case "missed":
-				if !coreTerminalLive(e.Terminals, address) {
-					return
-				}
+			err := waitForEnd(events, address)
+			if err == nil {
+				return
+			}
+			_ = events.Close()
+			t.logger.Debug("core events ended; watching the terminal again", "error", err, "session", t.id)
+			if events = t.resubscribe(); events == nil {
+				return
 			}
 		}
 	}()
+}
+
+// waitForEnd returns nil once events report address ended, or the error
+// that ended the subscription.
+func waitForEnd(events coreEvents, address string) error {
+	for {
+		e, err := events.Next(context.Background())
+		if err != nil {
+			return err
+		}
+		switch e.Type {
+		case "finished", "removed", "lost":
+			if e.Terminal == address {
+				return nil
+			}
+		case "missed":
+			if !coreTerminalLive(e.Terminals, address) {
+				return nil
+			}
+		}
+	}
+}
+
+// resubscribe subscribes to the terminal's events again, retrying with a
+// growing wait until it can or the terminal is closed (nil).
+func (t *coreTerminal) resubscribe() coreEvents {
+	delay := 100 * time.Millisecond
+	for {
+		select {
+		case <-t.done:
+			return nil
+		case <-time.After(delay):
+		}
+		delay = min(2*delay, coreWatchRetryMax)
+		ctx, cancel := context.WithTimeout(context.Background(), coreCallTimeout)
+		conn, err := t.backend.connect(ctx)
+		var events coreEvents
+		if err == nil {
+			events, err = conn.Subscribe(ctx, map[string]string{coreSessionLabel: t.session})
+		}
+		cancel()
+		if err != nil {
+			t.logger.Debug("failed to watch core terminal", "error", err, "session", t.id)
+			continue
+		}
+		if !t.setEvents(events) {
+			return nil
+		}
+		return events
+	}
 }
 
 func coreTerminalLive(terminals []herdrcore.Terminal, address string) bool {
@@ -278,14 +398,13 @@ func (t *coreTerminal) attach(viewer terminalViewer) (func(), error) {
 		return nil, err
 	}
 	// The core sends the first paint as one frame straight after the
-	// reply, so one read is all of it.
-	paint := make([]byte, coreFirstPaintBytes)
-	n, err := readWithin(stream, paint, coreCallTimeout)
+	// reply, so that frame, whole, is the replay.
+	paint, err := readFrameWithin(stream, coreCallTimeout)
 	if err != nil {
 		stream.Close()
 		return nil, fmt.Errorf("no first paint: %w", err)
 	}
-	if err := viewer.send(paint[:n]); err != nil {
+	if err := viewer.send(paint); err != nil {
 		stream.Close()
 		return nil, err
 	}
@@ -294,7 +413,7 @@ func (t *coreTerminal) attach(viewer terminalViewer) (func(), error) {
 	if t.closed {
 		t.mu.Unlock()
 		stream.Close()
-		return nil, errors.New("terminal is closed")
+		return nil, errCoreTerminalClosed
 	}
 	oldViewer, oldStream := t.viewer, t.stream
 	t.viewer, t.stream = viewer, stream
@@ -320,11 +439,11 @@ func (t *coreTerminal) attach(viewer terminalViewer) (func(), error) {
 	}, nil
 }
 
-// readWithin is one Read that gives up after timeout by closing r.
-func readWithin(r io.ReadCloser, p []byte, timeout time.Duration) (int, error) {
-	timer := time.AfterFunc(timeout, func() { r.Close() })
+// readFrameWithin is one ReadFrame that gives up after timeout by closing s.
+func readFrameWithin(s coreStream, timeout time.Duration) ([]byte, error) {
+	timer := time.AfterFunc(timeout, func() { s.Close() })
 	defer timer.Stop()
-	return r.Read(p)
+	return s.ReadFrame()
 }
 
 // forward copies a stream's live output to its viewer until the stream ends.
@@ -372,6 +491,9 @@ func (t *coreTerminal) resize(cols, rows int) error {
 // close ends the program and removes its core terminal.
 func (t *coreTerminal) close() error {
 	t.mu.Lock()
+	if !t.closed {
+		close(t.done)
+	}
 	t.closed = true
 	viewer, stream, events := t.viewer, t.stream, t.events
 	t.viewer, t.stream, t.events = nil, nil, nil
@@ -400,13 +522,18 @@ func (t *coreTerminal) close() error {
 	return t.endWith(ctx, conn)
 }
 
-// end kills and removes the terminal after a failed start.
-func (t *coreTerminal) end(conn coreAPI) {
+var errCoreTerminalClosed = errors.New("terminal is closed")
+
+// end kills and removes the terminal after a start that failed with cause.
+// When it cannot, the program may still run, so the error says so.
+func (t *coreTerminal) end(conn coreAPI, cause error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), coreCallTimeout)
 	defer cancel()
 	if err := t.endWith(ctx, conn); err != nil {
 		t.logger.Warn("failed to end core terminal", "error", err, "session", t.id)
+		return fmt.Errorf("%w: %w", errCoreUnsure, cause)
 	}
+	return cause
 }
 
 func (t *coreTerminal) endWith(ctx context.Context, conn coreAPI) error {

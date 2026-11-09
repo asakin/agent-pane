@@ -4,7 +4,7 @@ Agent Pane may use Herdr core behind its own Chrome side-panel UI. Read this whe
 
 ## Status
 
-The Durable (preview) terminal backend (`internal/cmd/backend_core.go`, Options **Terminal backend**, config key `terminalBackend: "durable"`) is RFC 0001's smallest safe slice: `tty.create` runs a core terminal labelled with the session's public ids, the WebSocket replay frame is the core's first paint, input and `tty.resize` go over the attach stream, `tty.destroy` kills and removes the terminal, and the page socket admits the core-reported pid's descendants. There is no fd-3 page channel. Sessions end with the host as Built-in ones do. When the core cannot start a pane tab, it runs in Built-in with a notice. Built-in stays the default.
+The Durable (preview) terminal backend (`internal/cmd/backend_core.go`, Options **Terminal backend**, config key `terminalBackend: "durable"`) is RFC 0001's smallest safe slice: `tty.create` runs a core terminal labelled with the session's public ids, the WebSocket replay frame is the core's first paint, input and `tty.resize` go over the attach stream, `tty.destroy` kills and removes the terminal, and the page socket admits the core-reported pid's descendants. There is no fd-3 page channel. Sessions end with the host as Built-in ones do. When the core cannot start a pane tab, it runs in Built-in with a notice; when the host cannot tell whether `terminal.run` started it, the host ends whatever carries the session's label and fails `tty.create` instead, so the program never runs twice. A broken event subscription is resubscribed rather than treated as the program ending. Built-in stays the default.
 
 ## Goal
 
