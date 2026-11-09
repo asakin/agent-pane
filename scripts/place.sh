@@ -411,10 +411,9 @@ sync_extension
 "$dest" doctor || fail "the installation has problems; see above"
 installed=$("$dest" --version)
 echo "agent-pane: installed $installed"
-# A source build loads the extension from its checkout's extension/dist/chrome-mv3.
-# scripts/dev-install.sh passes that path; doctor --fix and a direct run do not.
+# A source build (scripts/dev-install.sh) loads extension/dist/chrome-mv3
+# instead and prints its own note.
 case "$installed" in
-*" dev") extension_dir=${AGENT_PANE_DEV_EXTENSION:-"the checkout's extension/dist/chrome-mv3"} ;;
-*) extension_dir="~/.local/share/agent-pane/extensions/chrome" ;;
+*" dev") ;;
+*) echo "agent-pane: in Chrome, load the extension once with Load unpacked from ~/.local/share/agent-pane/extensions/chrome (chrome://extensions, Developer mode); after an update, click its reload button" ;;
 esac
-echo "agent-pane: in Chrome, load the extension once with Load unpacked from $extension_dir (chrome://extensions, Developer mode); after an update, click its reload button"
