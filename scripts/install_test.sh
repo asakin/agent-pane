@@ -23,6 +23,15 @@ printf '{"manifest_version":3,"name":"Agent Pane","version":"0.0.0"}\n' >"$rel/e
 platform="$(cd "$root" && go env GOOS)_$(cd "$root" && go env GOARCH)"
 sh "$root/scripts/fetch-herdr-core.sh" "$platform" "$root/bin/herdr-core/$platform"
 cp -R "$root/bin/herdr-core/$platform/." "$rel/"
+# A fetch cut short leaves no lock, so the next run fetches again rather than
+# keeping a partial file such as empty notices.
+cache="$tmp/core-cache"
+cp -R "$root/bin/herdr-core/$platform" "$cache"
+rm "$cache/herdr-core.lock"
+: >"$cache/licenses/herdr-core/THIRD-PARTY-NOTICES"
+sh "$root/scripts/fetch-herdr-core.sh" "$platform" "$cache"
+cmp "$rel/licenses/herdr-core/THIRD-PARTY-NOTICES" "$cache/licenses/herdr-core/THIRD-PARTY-NOTICES"
+cmp "$rel/libexec/hc" "$cache/libexec/hc"
 
 home="$tmp/home"
 if [ "$(uname -s)" = Darwin ]; then
@@ -156,6 +165,13 @@ doctor >/dev/null
 ln -s "$data/libexec/hc" "$home/.local/bin/hc"
 if doctor >"$tmp/doctor.out" 2>&1; then
 	echo "doctor passed with the bundled core on PATH" >&2
+	exit 1
+fi
+grep -q '^FAIL  core isolation' "$tmp/doctor.out"
+rm "$home/.local/bin/hc"
+ln -s "$data/release/libexec/hc" "$home/.local/bin/hc"
+if doctor >"$tmp/doctor.out" 2>&1; then
+	echo "doctor passed with the release's core on PATH" >&2
 	exit 1
 fi
 grep -q '^FAIL  core isolation' "$tmp/doctor.out"
