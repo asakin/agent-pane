@@ -866,3 +866,44 @@ func TestStalledWritesDoNotBlockReadsOrDispatch(t *testing.T) {
 		t.Fatalf("frames = %v", got)
 	}
 }
+
+func TestAbandonedStreamCallsAreBounded(t *testing.T) {
+	c, core := newFake(t)
+	for i := 0; i < maxAbandoned; i++ {
+		abandonAttach(t, c, core)
+	}
+	if n := pendingCalls(c); n != maxAbandoned {
+		t.Fatalf("%d calls pending, want %d", n, maxAbandoned)
+	}
+	select {
+	case <-c.Done():
+		t.Fatal("connection ended at the bound")
+	default:
+	}
+	abandonAttach(t, c, core)
+	select {
+	case <-c.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("connection still open past the bound")
+	}
+	if n := pendingCalls(c); n != 0 {
+		t.Fatalf("%d calls still pending", n)
+	}
+}
+
+// abandonAttach starts an attach the core never answers and cancels it once
+// its request is out.
+func abandonAttach(t *testing.T, c *Client, core *fakeCore) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Attach(ctx, AttachParams{Terminal: "t7", Cols: 80, Rows: 24})
+		done <- err
+	}()
+	core.readRequest()
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want Canceled", err)
+	}
+}
