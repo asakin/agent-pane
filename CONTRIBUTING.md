@@ -6,7 +6,7 @@ Substantial product or architecture proposals may also start as an RFC following
 
 Use [GitHub Issues](https://github.com/asakin/agent-pane/issues) for bugs and feature proposals. Include your OS, Chrome version, Agent Pane version or commit, steps to reproduce, and what you expected. Remove credentials, private page content, and terminal secrets from logs. Report security problems privately as described in [SECURITY.md](SECURITY.md).
 
-To develop locally, follow [Build from source](README.md#build-from-source). The required Go version is in `go.mod`; CI uses Node 26. Run the [checks in the README](README.md#checks) before submitting a pull request.
+To develop locally, follow [Build from source](README.md#build-from-source). The required Go version is in `go.mod`; CI uses Node 26. Run the [checks in AGENTS.md](AGENTS.md#commands) before submitting a pull request.
 
 Keep each pull request focused, explain the behavior it changes, and describe what you tested. Add regression coverage for behavioral changes. See [AGENTS.md](AGENTS.md) for development instructions and checks.
 
