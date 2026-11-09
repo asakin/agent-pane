@@ -516,8 +516,15 @@ func TestAttachCoreCloseEndsStreamWithFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	go c.Get(context.Background(), "t7")
-	if f := core.read(); f.ch != 0 {
-		t.Fatalf("got frame %+v after Close, want the next request", f)
+	for {
+		f := core.read()
+		if f.ch == 0 {
+			break
+		}
+		// Reading "bye" before the CLOSE is dispatched grants credit for it.
+		if f.ch != 3 || f.kind != frameCredit {
+			t.Fatalf("got frame %+v after Close, want the next request", f)
+		}
 	}
 }
 
@@ -641,6 +648,18 @@ func TestOversizedFrameEndsConnection(t *testing.T) {
 	}
 	if err := c.Err(); !errors.Is(err, ErrClosed) || !strings.Contains(err.Error(), "frame") {
 		t.Fatalf("Err = %v", err)
+	}
+}
+
+func TestOversizedRequestIsRefused(t *testing.T) {
+	c, core := newFake(t)
+	err := c.Call(context.Background(), "terminal.get", map[string]string{"terminal": strings.Repeat("x", maxFrame)}, nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err = %v, want frame size error", err)
+	}
+	go c.Get(context.Background(), "t8")
+	if req := core.readRequest(); req.Method != "terminal.get" || string(req.Params) != `{"terminal":"t8"}` {
+		t.Fatalf("next request = %s %s", req.Method, req.Params)
 	}
 }
 

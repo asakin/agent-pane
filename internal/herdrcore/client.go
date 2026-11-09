@@ -26,8 +26,9 @@ const (
 
 const frameHeader = 9
 
-// maxFrame bounds a frame from the core, so a corrupt length cannot make the
-// client allocate gigabytes.
+// maxFrame bounds a frame in either direction, so a corrupt length cannot
+// make the client allocate gigabytes and a payload's length always fits the
+// header's u32.
 const maxFrame = 16 << 20
 
 // maxDataFrame splits writes to a stream into frames no larger than this.
@@ -383,6 +384,9 @@ func (c *Client) stopWrites(err error) {
 }
 
 func (c *Client) queueFrame(ch uint32, kind byte, payload []byte, wait bool) (*outFrame, error) {
+	if len(payload) > maxFrame {
+		return nil, fmt.Errorf("herdr-core frame of %d bytes exceeds %d", len(payload), maxFrame)
+	}
 	f := &outFrame{buf: make([]byte, frameHeader+len(payload))}
 	binary.LittleEndian.PutUint32(f.buf[0:4], ch)
 	f.buf[4] = kind
