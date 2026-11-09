@@ -43,7 +43,6 @@ var (
 var configDir = filepath.Join(os.Getenv("HOME"), ".config", "agent-pane")
 var cacheDir = filepath.Join(os.Getenv("HOME"), ".cache", "agent-pane")
 var dataDir = filepath.Join(os.Getenv("HOME"), ".local", "share", "agent-pane")
-var commandDir = filepath.Join(configDir, "commands")
 var shippedAgentsDir = filepath.Join(dataDir, "agents")
 var userAgentsDir = filepath.Join(configDir, "agents")
 
@@ -67,10 +66,14 @@ func NewCmdRoot(version string) *cobra.Command {
 
 	cmd.AddCommand(
 		NewCmdServe(version),
-		NewCmdRun(),
 		NewCmdSpawn(),
 		NewCmdPage(),
 		NewCmdStatus(),
+		NewCmdLs(),
+		NewCmdRun(),
+		NewCmdSend(),
+		NewCmdWait(),
+		NewCmdRead(),
 		NewCmdDoctor(version),
 	)
 
