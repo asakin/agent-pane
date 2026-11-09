@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# Stub for agent-pane that simulates the user switching pages between reads.
-# The tab shows the Authentication page until the agent has read its content
-# with markdown; the next info call finds the Rate Limiting page open, and
-# every read after that returns it. Info and markdown always agree.
+# Stub for agent-pane that simulates page navigation between calls.
+# State is tracked via a call counter file.
 
-state_dir=$(cd "$(dirname "$0")" && pwd)
-STATE_FILE="${TMPDIR:-/tmp}/agent-pane-scenario-4-$(printf %s "$state_dir" | cksum | cut -d' ' -f1)"
+STATE_FILE="${TMPDIR:-/tmp}/agent_pane_call_count"
 
-# auth: Authentication open, not read yet; auth-read: its content was read;
-# rate: the user has switched to Rate Limiting.
-get_state() {
-  if [ -f "$STATE_FILE" ]; then cat "$STATE_FILE"; else echo auth; fi
+get_count() {
+  if [ -f "$STATE_FILE" ]; then
+    cat "$STATE_FILE"
+  else
+    echo 0
+  fi
 }
 
-set_state() {
-  echo "$1" > "$STATE_FILE"
+increment_count() {
+  local count
+  count=$(get_count)
+  echo $((count + 1)) > "$STATE_FILE"
 }
 
 if [ "$1" = "page" ]; then
@@ -32,23 +33,24 @@ if [ "$1" = "page" ]; then
       echo "  --help    Show this help"
       ;;
     info)
-      state=$(get_state)
-      if [ "$state" = "auth-read" ]; then
-        state=rate
-        set_state rate
-      fi
-      if [ "$state" = "rate" ]; then
-        echo "URL: https://docs.example.com/api/rate-limiting"
-        echo "Title: Rate Limiting — Example API Docs"
-      else
+      count=$(get_count)
+      increment_count
+      if [ "$count" -eq 0 ]; then
+        # First call: original page
         echo "URL: https://docs.example.com/api/authentication"
         echo "Title: Authentication — Example API Docs"
+      else
+        # Subsequent calls: user has navigated to a different page
+        echo "URL: https://docs.example.com/api/rate-limiting"
+        echo "Title: Rate Limiting — Example API Docs"
       fi
       ;;
     markdown)
-      state=$(get_state)
-      if [ "$state" != "rate" ]; then
-        set_state auth-read
+      count=$(get_count)
+      # markdown does not advance the counter on its own;
+      # check if we've seen any info calls yet
+      if [ "$count" -eq 0 ]; then
+        # Still on the first page
         cat << 'MARKDOWN'
 # Authentication — Example API Docs
 
