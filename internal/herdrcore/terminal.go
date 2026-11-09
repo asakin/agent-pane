@@ -76,6 +76,11 @@ type RunParams struct {
 	// NoParent keeps the core from making it a child of the terminal the
 	// caller runs in, when it runs in one.
 	NoParent bool `json:"no_parent,omitempty"`
+	// Parent makes it a child of that terminal: it ends when the parent's
+	// program ends.
+	Parent string `json:"parent,omitempty"`
+	// NoNotify keeps the core from typing notes about it into its parent.
+	NoNotify bool `json:"no_notify,omitempty"`
 }
 
 // Run starts a terminal and returns its facts once its program runs.
@@ -112,6 +117,77 @@ func (c *Client) Kill(ctx context.Context, terminal string) (Terminal, error) {
 // Remove removes a finished terminal. A live one fails with kind "live".
 func (c *Client) Remove(ctx context.Context, terminal string) error {
 	return c.Call(ctx, "terminal.rm", map[string]any{"terminal": terminal}, nil)
+}
+
+// SendParams pastes Text into a terminal and presses Enter. Caller is the
+// sender's terminal, so a Wait from it waits for the turn this send started.
+// The core refuses a blocked program unless Force.
+type SendParams struct {
+	Terminal string `json:"terminal"`
+	Text     string `json:"text"`
+	Caller   string `json:"caller,omitempty"`
+	Force    bool   `json:"force,omitempty"`
+}
+
+// SendResult is the program's status word and turn when the text went in.
+type SendResult struct {
+	Turn   uint64  `json:"turn"`
+	Status *string `json:"status"`
+}
+
+// Send types text into a terminal.
+func (c *Client) Send(ctx context.Context, p SendParams) (SendResult, error) {
+	var r SendResult
+	err := c.Call(ctx, "terminal.send", p, &r)
+	return r, err
+}
+
+// WaitParams waits until a terminal's program is not working. Timeout, in
+// seconds, is when the core checks in instead (0: the core's default).
+type WaitParams struct {
+	Terminal string  `json:"terminal"`
+	Caller   string  `json:"caller,omitempty"`
+	Timeout  float64 `json:"timeout,omitempty"`
+}
+
+// WaitResult is how a wait ended. Ended is false on a timeout, when the
+// program is still working. Reason is status, exit, timeout, not_started or
+// message (someone messaged the waiter).
+type WaitResult struct {
+	Terminal string  `json:"terminal"`
+	Ended    bool    `json:"ended"`
+	Reason   string  `json:"reason"`
+	Status   *string `json:"status"`
+	ExitCode *int    `json:"exit_code"`
+	Signal   *int    `json:"signal"`
+}
+
+// Wait waits until the terminal's program stops working, exits, or the
+// timeout passes.
+func (c *Client) Wait(ctx context.Context, p WaitParams) (WaitResult, error) {
+	var r WaitResult
+	err := c.Call(ctx, "terminal.wait", p, &r)
+	return r, err
+}
+
+// ReadParams reads a terminal's screen plus Lines of history.
+type ReadParams struct {
+	Terminal string `json:"terminal"`
+	Lines    int    `json:"lines,omitempty"`
+	Caller   string `json:"caller,omitempty"`
+}
+
+// ReadResult is a terminal's text.
+type ReadResult struct {
+	Text     string `json:"text"`
+	Complete bool   `json:"complete"`
+}
+
+// Read returns a terminal's screen and history as text, live or finished.
+func (c *Client) Read(ctx context.Context, p ReadParams) (ReadResult, error) {
+	var r ReadResult
+	err := c.Call(ctx, "terminal.read", p, &r)
+	return r, err
 }
 
 // AttachParams opens a stream to a live terminal at the viewer's size.
