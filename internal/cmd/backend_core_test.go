@@ -35,8 +35,13 @@ type fakeCore struct {
 	streams  []*fakeStream
 	events   map[string]chan herdrcore.Event
 	runErr   error
-	pid      int
-	done     chan struct{}
+	// runLost makes Run start the terminal and then fail as a lost reply
+	// does. runGate, when set, holds Run until it is closed.
+	runLost bool
+	runGate chan struct{}
+	subs    []*fakeEvents
+	pid     int
+	done    chan struct{}
 }
 
 func newFakeCore() *fakeCore {
@@ -44,6 +49,9 @@ func newFakeCore() *fakeCore {
 }
 
 func (f *fakeCore) Run(_ context.Context, p herdrcore.RunParams) (herdrcore.Terminal, error) {
+	if f.runGate != nil {
+		<-f.runGate
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.runErr != nil {
@@ -53,7 +61,22 @@ func (f *fakeCore) Run(_ context.Context, p herdrcore.RunParams) (herdrcore.Term
 	address := fmt.Sprintf("t%d", len(f.runs))
 	f.events[p.Labels[coreSessionLabel]] = make(chan herdrcore.Event, 4)
 	pid := f.pid
+	if f.runLost {
+		return herdrcore.Terminal{}, context.DeadlineExceeded
+	}
 	return herdrcore.Terminal{Address: address, State: "live", Labels: p.Labels, Pid: &pid}, nil
+}
+
+func (f *fakeCore) List(_ context.Context, labels map[string]string, _ bool) ([]herdrcore.Terminal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []herdrcore.Terminal
+	for i, run := range f.runs {
+		if run.Labels[coreSessionLabel] == labels[coreSessionLabel] {
+			out = append(out, herdrcore.Terminal{Address: fmt.Sprintf("t%d", i+1), State: "live"})
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeCore) Attach(_ context.Context, p herdrcore.AttachParams) (coreStream, error) {
@@ -71,7 +94,9 @@ func (f *fakeCore) Subscribe(_ context.Context, labels map[string]string) (coreE
 	defer f.mu.Unlock()
 	ch := f.events[labels[coreSessionLabel]]
 	address := fmt.Sprintf("t%d", len(f.runs))
-	return &fakeEvents{ch: ch, snapshot: []herdrcore.Terminal{{Address: address, State: "live"}}}, nil
+	e := &fakeEvents{ch: ch, snapshot: []herdrcore.Terminal{{Address: address, State: "live"}}}
+	f.subs = append(f.subs, e)
+	return e, nil
 }
 
 func (f *fakeCore) Kill(_ context.Context, terminal string) (herdrcore.Terminal, error) {
@@ -99,6 +124,22 @@ func (f *fakeCore) finish(session, address string) {
 	ch <- herdrcore.Event{Seq: 1, Type: "finished", Terminal: address}
 }
 
+// dropEvents ends the open subscriptions as a dropped connection does.
+func (f *fakeCore) dropEvents() {
+	f.mu.Lock()
+	subs := f.subs
+	f.mu.Unlock()
+	for _, e := range subs {
+		e.Close()
+	}
+}
+
+func (f *fakeCore) subscriptions() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.subs)
+}
+
 func (f *fakeCore) stream(i int) *fakeStream {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -121,6 +162,15 @@ func (s *fakeStream) Read(p []byte) (int, error) {
 		return copy(p, b), nil
 	case <-s.closed:
 		return 0, herdrcore.ErrStreamClosed
+	}
+}
+
+func (s *fakeStream) ReadFrame() ([]byte, error) {
+	select {
+	case b := <-s.out:
+		return b, nil
+	case <-s.closed:
+		return nil, herdrcore.ErrStreamClosed
 	}
 }
 
@@ -347,6 +397,9 @@ func eventually(t *testing.T, what string, ok func() bool) {
 }
 
 func TestBuiltinBackendIsTheDefault(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS terminals start through the spawn agent")
+	}
 	core := newFakeCore()
 	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
 	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
@@ -529,6 +582,89 @@ func TestDurableStartFailureLeavesNothingBehind(t *testing.T) {
 	after, _ := os.ReadDir(pageSocketDir)
 	if len(after) != len(before)+1 {
 		t.Fatalf("page sockets %d, then %d", len(before), len(after))
+	}
+}
+
+func TestDurableSessionOutlivesALostSubscription(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	core.dropEvents()
+	eventually(t, "the terminal to be watched again", func() bool { return core.subscriptions() == 2 })
+	if ids := h.list(t); len(ids) != 1 || ids[0] != ep.ID {
+		t.Fatalf("tty.list after a lost subscription %v", ids)
+	}
+	core.mu.Lock()
+	killed := len(core.killed)
+	core.mu.Unlock()
+	if killed != 0 {
+		t.Fatal("a lost subscription killed a live terminal")
+	}
+	// The new subscription still sees the program end.
+	core.finish(core.runs[0].Labels[coreSessionLabel], "t1")
+	eventually(t, "the session to be reaped", func() bool { return len(h.sessions.List()) == 0 })
+}
+
+func TestDurableUnansweredRunDoesNotStartTwice(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	core.runLost = true
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	if _, msg := h.call(t, "tty.create", map[string]any{"mode": "shell", "cols": 80, "rows": 24}); !strings.Contains(msg, errCoreUnsure.Error()) {
+		t.Fatalf("tty.create error %q", msg)
+	}
+	if ids := h.list(t); len(ids) != 0 {
+		t.Fatalf("started in Built-in too: %v", ids)
+	}
+	core.mu.Lock()
+	defer core.mu.Unlock()
+	if len(core.killed) != 1 || core.killed[0] != "t1" || len(core.removed) != 1 {
+		t.Fatalf("killed %v removed %v", core.killed, core.removed)
+	}
+}
+
+func TestCloseWaitsForADurableStart(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	core.runGate = make(chan struct{})
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	created := make(chan error, 1)
+	go func() {
+		command := newTerminalCommand("sh")
+		command.Cols, command.Rows = 80, 24
+		_, err := h.sessions.Create("", "", "", command)
+		created <- err
+	}()
+	eventually(t, "the session to register", func() bool {
+		h.sessions.mu.RLock()
+		defer h.sessions.mu.RUnlock()
+		return len(h.sessions.sessions) == 1
+	})
+	closed := make(chan struct{})
+	go func() {
+		h.sessions.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a session was starting")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(core.runGate)
+	if err := <-created; err != nil {
+		t.Fatal(err)
+	}
+	<-closed
+	core.mu.Lock()
+	removed := append([]string(nil), core.removed...)
+	core.mu.Unlock()
+	if len(h.sessions.List()) != 0 || len(removed) != 1 || removed[0] != "t1" {
+		t.Fatalf("sessions %v removed %v", h.sessions.List(), removed)
+	}
+	command := newTerminalCommand("sh")
+	if _, err := h.sessions.Create("", "", "", command); err == nil {
+		t.Fatal("Create after Close started a session")
 	}
 }
 

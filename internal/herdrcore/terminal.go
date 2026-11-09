@@ -155,6 +155,13 @@ func (a *Attachment) Read(p []byte) (int, error) {
 	return a.ch.read(context.Background(), p)
 }
 
+// ReadFrame returns the next DATA frame of output whole, such as the first
+// paint, which the core sends as one frame straight after the attach reply.
+// What a Read left of a frame comes back as that frame.
+func (a *Attachment) ReadFrame() ([]byte, error) {
+	return a.ch.readFrame(context.Background())
+}
+
 // Write sends p to the terminal as input.
 func (a *Attachment) Write(p []byte) (int, error) {
 	written := 0
@@ -208,8 +215,8 @@ func (a *Attachment) End() (StreamEnd, bool) {
 	return end, true
 }
 
-// Close detaches. The terminal keeps running. A blocked Read returns
-// ErrStreamClosed.
+// Close detaches. The terminal keeps running. A blocked Read, Write or
+// Resize returns ErrStreamClosed.
 func (a *Attachment) Close() error {
 	return a.ch.Close()
 }

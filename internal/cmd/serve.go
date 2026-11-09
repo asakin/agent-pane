@@ -102,6 +102,10 @@ type SessionManager struct {
 	// durable is the Durable (preview) backend, used when the
 	// terminalBackend setting picks it; nil where there is none.
 	durable terminalBackend
+	// closing is set by Close, after which Create refuses new sessions;
+	// guarded by mu. creating counts the Creates still running.
+	closing  bool
+	creating sync.WaitGroup
 	// pageReads counts page reads in flight across all sessions.
 	pageReads atomic.Int32
 }
@@ -259,6 +263,8 @@ var startHook = func() {}
 // the launch chose, or "" for a shell. The session runs in the backend the
 // terminalBackend setting picks; when Durable (preview) cannot start it, it
 // runs in the Built-in backend with a notice in the terminal saying why.
+// When Durable cannot tell whether it started, Create fails instead, so the
+// program does not run twice.
 func (m *SessionManager) Create(label, paneID, agent string, command *terminalCommand) (*Session, error) {
 	id := strings.ToLower(rand.Text())
 	session := &Session{
@@ -269,6 +275,12 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 	// Register the session before it starts, so its pane tab is held and
 	// its environment can name it. It is not live until it has started.
 	m.mu.Lock()
+	if m.closing {
+		m.mu.Unlock()
+		return nil, errors.New("the host is shutting down")
+	}
+	m.creating.Add(1)
+	defer m.creating.Done()
 	session.pane = m.paneLocked(paneID)
 	m.sessions[id] = session
 	m.mu.Unlock()
@@ -279,14 +291,19 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 	var notice []byte
 	if m.durable != nil && cfg().String(terminalBackendKey) == terminalBackendDurable {
 		pid, err = m.startIn(m.durable, session, agent, command, nil)
-		if err != nil {
+		switch {
+		case err == nil:
+			started = true
+		case errors.Is(err, errCoreUnsure):
+			// The program may be running in the core: starting it again
+			// in Built-in could run it twice.
+			m.logger.Warn("durable terminal backend may have started the terminal; not starting it again", "error", err)
+		default:
 			m.logger.Warn("durable terminal backend could not start the terminal; using built-in", "error", err)
 			notice = fallbackNotice(err)
-		} else {
-			started = true
 		}
 	}
-	if !started {
+	if !started && !errors.Is(err, errCoreUnsure) {
 		pid, err = m.startIn(m.backend, session, agent, command, notice)
 	}
 	if err != nil {
@@ -398,8 +415,13 @@ func (m *SessionManager) Destroy(id string) error {
 
 // Close ends every session whose terminal would outlive the host: the
 // Durable (preview) ones, which run in the core. Built-in terminals end with
-// the host's process.
+// the host's process. Sessions still starting finish starting first, and no
+// new ones start after.
 func (m *SessionManager) Close() {
+	m.mu.Lock()
+	m.closing = true
+	m.mu.Unlock()
+	m.creating.Wait()
 	m.mu.RLock()
 	var ids []string
 	for id, s := range m.sessions {
