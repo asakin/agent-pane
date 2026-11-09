@@ -10,10 +10,10 @@
 </p>
 
 <p align="center">
-Coding agents in Chrome's side panel, next to the page they are working on.
+Your coding agents, in Chrome's side panel.
 </p>
 
-Agent Pane is a real terminal in Chrome's side panel. Open it, pick Claude Code, Codex, Pi, OpenCode or Goose, and the agent starts in a terminal beside the page you are looking at. When you ask it about "this page", it reads that page itself with `agent-pane page`, once you have allowed it. You never switch windows, and you never paste a page into a chat.
+Agent Pane puts a real terminal in Chrome's side panel and starts the coding agents you already use in it: Claude Code, Codex, Pi, OpenCode, Goose, or anything else on your `PATH`. Unlike a vendor's chat app, it is your agents, your tools and your files, running on your machine, in the same window as the page you are working on. When you ask an agent about the page beside it, it can read that page, with your permission.
 
 Runs on macOS and Linux with Chrome and other Chromium browsers (Brave, Edge, Vivaldi, Chromium).
 
@@ -45,17 +45,7 @@ Run the install command again, then click reload on the Agent Pane card in `chro
 
 **Pane tabs.** The side panel opens with a shell. `+` starts the agent you used last; its menu lists the enabled agents found on your `PATH`, then Terminal. Each pane tab is a separate terminal, and a Chrome window can have several. Hiding the side panel keeps them running; quitting Chrome ends them.
 
-**Reading the page.** An agent reads the Chrome tab beside it by running `agent-pane page`:
-
-| Command | Prints |
-| --- | --- |
-| `agent-pane page info` | URL and title |
-| `agent-pane page selection` | The text you selected on the page |
-| `agent-pane page markdown` | The main article as Markdown, or the whole page with `--full` |
-| `agent-pane page text` | The visible text |
-| `agent-pane page dom` | The page's HTML |
-
-The first time a pane tab reads a Chrome tab, the side panel asks: **Allow this Chrome tab**, **Allow all Chrome tabs for this pane tab**, or **Deny**. The answer holds until you close the pane tab, whatever runs in it. By default a pane tab reads whichever Chrome tab is active in its window; the lock in the status bar pins it to one Chrome tab. These commands only read. Chrome does not let extensions read its own pages, the Web Store or the PDF viewer.
+**The page beside the agent.** An agent can read the Chrome tab next to it by running `agent-pane page` with `info`, `selection`, `markdown`, `text` or `dom`. The first time a pane tab does this, the side panel asks you: **Allow this Chrome tab**, **Allow all Chrome tabs for this pane tab**, or **Deny**. An Allow holds until you close the pane tab; Deny refuses that one read. By default a pane tab reads whichever Chrome tab is active in its window; the lock in the status bar pins it to one. These commands only read, and Chrome keeps its own pages, the Web Store and the PDF viewer off limits.
 
 **Send tab.** The **Send tab** button pastes the current page into the selected pane tab as Markdown, or another format from its menu, so you can edit it before pressing Enter.
 
@@ -65,7 +55,7 @@ The first time a pane tab reads a Chrome tab, the side panel asks: **Allow this 
 
 ### Agent skill
 
-The installer also installs a skill that tells coding agents they are inside Agent Pane and how to read the page. It goes into `~/.local/share/agent-pane/skills/agent-pane/`, with copies in `~/.claude/skills/agent-pane/` (Claude Code) and `~/.agents/skills/agent-pane/` (Codex, Pi, OpenCode, Goose, Cursor). Running the installer again refreshes those copies; a folder you created there yourself is left alone. To remove the skill, delete the folders.
+The installer also installs a skill that tells coding agents they are inside Agent Pane and what `agent-pane page` offers. It goes into `~/.local/share/agent-pane/skills/agent-pane/`, with copies in `~/.claude/skills/agent-pane/` (Claude Code) and `~/.agents/skills/agent-pane/` (Codex, Pi, OpenCode, Goose, Cursor). Running the installer again refreshes those copies; a folder you created there yourself is left alone. To remove the skill, delete the folders.
 
 Every terminal Agent Pane starts has `AGENT_PANE=1` set, so scripts and agents can tell where they are. The skill lists the other variables.
 
@@ -104,7 +94,7 @@ flowchart LR
 
 Chrome starts the `agent-pane` program through native messaging. The program starts your shell in a pseudo-terminal and streams it to the side panel over a loopback WebSocket that only the extension can open. On macOS a small LaunchAgent starts the shells so they are not tied to Chrome's process group.
 
-When a program in a pane tab runs `agent-pane page`, it talks back to the host over a connection the host handed to that terminal. The host knows which pane tab the request came from, asks the side panel to prompt you if that pane tab has no approval yet, and reads the page through the extension. Nothing in the terminal can name another pane tab or read without going through this path, and approvals live in the host's memory, so restarting Chrome or the host starts every pane tab without one.
+A page read goes the other way: the program in the pane tab asks the host over a connection the host gave that terminal, the host knows which pane tab is asking and has the side panel prompt you if needed, and the extension reads the page. Approvals live in the host's memory, so restarting Chrome or the host starts every pane tab without one.
 
 ## Security
 
