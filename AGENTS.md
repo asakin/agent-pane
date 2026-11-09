@@ -31,7 +31,7 @@ go test -race ./...
 go build ./...
 ```
 
-When changing `install.sh`, `scripts/place.sh` or `agent-pane doctor`, also run:
+When changing `install.sh`, `scripts/place.sh`, `scripts/fetch-herdr-core.sh`, `scripts/herdr-core.lock` or `agent-pane doctor`, also run (it downloads the pinned herdr-core once):
 
 ```sh
 sh scripts/install_test.sh
@@ -58,3 +58,4 @@ npm --prefix extension run build
 - `install.sh`: the release installer template; `release.yml` publishes it with `VERSION` set to the tag, and the repository copy refuses to run.
 - `scripts/place.sh`, `scripts/instructions.md` (the `~/.config/agent-pane/AGENTS.md` block): place.sh puts a release-shaped folder in place (binary, manifests, LaunchAgent, skill, extension); shipped in every archive. `internal/cmd/doctor.go` checks the same paths, so change both.
 - `scripts/dev-install.sh`: builds a checkout and installs it with `place.sh`. `scripts/install_test.sh`: tests for all three.
+- `scripts/herdr-core.lock`, `scripts/fetch-herdr-core.sh`: the pinned private herdr-core (`libexec/hc`) each release and dev install carries, with its license files; `place.sh` installs it under `~/.local/share/agent-pane/` and `doctor` checks it against the lock.

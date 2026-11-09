@@ -27,13 +27,31 @@ Agent Pane is two parts: the Chrome extension and the `agent-pane` program it ta
 curl -fsSL https://github.com/asakin/agent-pane/releases/latest/download/install.sh | sh
 ```
 
-Then load the extension in Chrome (there is no Web Store listing yet):
+Then add the extension to Chrome. Until the Chrome Web Store listing exists, load it from the folder the installer wrote:
+
+1. Open `chrome://extensions` and turn on **Developer mode**
+2. Click **Load unpacked** and choose `~/.local/share/agent-pane/extensions/chrome` (in the file dialog, **Cmd+Shift+.** on macOS shows hidden folders)
+3. Open the side panel from the Agent Pane extension icon
+
+The installer is published with each release and installs that release only: it downloads the release's archive for this machine, checks it against the release's `checksums.txt`, and runs the archive's `place.sh`. That script puts the program in `~/.local/bin`, adds `~/.local/bin` to `PATH`, writes the native-messaging manifest for each Chromium browser it finds, installs the [agent skill](#agent-skill), and on macOS starts the LaunchAgent that launches shells independently of Chrome. It also places a private, pinned copy of [herdr-core](https://github.com/herdrdev/herdr-core) at `~/.local/share/agent-pane/libexec/hc`, with its license and notices in `~/.local/share/agent-pane/licenses/herdr-core/`. It is never put on `PATH` or at `~/.local/bin/hc`, so a Herdr install of your own is not touched. Agent Pane does not run its terminals in it yet. It keeps a copy of the release in `~/.local/share/agent-pane/release` and ends by running `agent-pane doctor`. Nothing comes from the repository's `main` branch.
+
+## Updating
+
+Run the install command again, then click the reload button on the Agent Pane card in `chrome://extensions`. A run with nothing to change changes nothing. On macOS the LaunchAgent restarts, ending the shells open in pane tabs, when the program or its LaunchAgent plist changed, or when it is not running.
+
+When the extension and the program are out of step, the side panel shows an update screen with the install command instead of opening a terminal. Run it, then click **Retry**.
 
 1. Open `chrome://extensions` and turn on **Developer mode**.
 2. Click **Load unpacked** and choose `~/.local/share/agent-pane/extensions/chrome`. In the file dialog, **Cmd+Shift+.** shows hidden folders on macOS.
 3. Click the Agent Pane icon in the toolbar to open the side panel.
 
-The installer puts `agent-pane` in `~/.local/bin`, registers it with each Chromium browser it finds, installs the [agent skill](#agent-skill), starts a LaunchAgent on macOS, and finishes with `agent-pane doctor`. It installs released code only, checked against the release's `checksums.txt`.
+```sh
+curl -fsSL https://github.com/asakin/agent-pane/releases/download/v0.3.0/install.sh | sh
+```
+
+## Checking and repairing an install
+
+`agent-pane doctor` checks the files the installer owns against the installed release and reports each one, including that the bundled herdr-core has the pinned version and checksum and is not reachable as `hc` on `PATH`; `~/AGENTS.md` and `~/CLAUDE.md` are yours and are not checked. `agent-pane doctor --fix` puts the installed release back in place when a check fails. It uses only the copy in `~/.local/share/agent-pane/release`, downloads nothing, and does not change the version.
 
 ### Updating
 
@@ -114,7 +132,18 @@ cd agent-pane
 scripts/dev-install.sh
 ```
 
-This builds the program and the extension and installs them the way a release does, reporting version `dev`. Load `extension/dist/chrome-mv3` from the checkout with **Load unpacked** so the extension picks up rebuilds: after a change, run `npm --prefix extension run build` and reload the extension. Changes to the Go program, `agents/` or `skills/` need `scripts/dev-install.sh` again. The install command above returns you to a release.
+`scripts/dev-install.sh` builds the program and the extension, lays them out like a release archive, and installs them with the same `place.sh` a release uses. It downloads nothing of Agent Pane; npm fetches the extension's dependencies, and the pinned herdr-core build from `scripts/herdr-core.lock` is downloaded once into `bin/herdr-core/`. The program reports version `dev`, which passes the side panel's version check, and `agent-pane doctor --fix` repairs from this build. Running the install command from [Install](#install) goes back to a release.
+
+For the extension, load the build output instead of the installed copy, so a rebuild needs no install:
+
+1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose `extension/dist/chrome-mv3` from the checkout
+2. After a change, run `npm --prefix extension run build` and click the reload button on the Agent Pane card; close and reopen the side panel
+
+Changes to the Go program, `agents/` or `skills/` need `scripts/dev-install.sh` again. On macOS that restarts the LaunchAgent, which ends the shells open in pane tabs.
+
+### Checks
+
+Every pull request and every push to `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml): extension and Go checks on Ubuntu, Go vet and race tests on macOS, the installer tests on both, and `goreleaser check`. To run the suite manually, open **Actions** → **ci** → **Run workflow**. To run the same checks locally:
 
 ## Contributing
 
@@ -135,3 +164,5 @@ Bug reports and focused pull requests are welcome. See [CONTRIBUTING.md](CONTRIB
 Agent Pane started as a fork of [Agent Terminal](https://github.com/rishiskhare/agent-terminal) by Rishi Khare, itself based on [Tweety](https://github.com/pomdtr/tweety) by Achille Lacoin, and is now developed independently with a different focus. Thank you to both projects and their contributors. The Git history and copyright notices are preserved; earlier discussions remain in the [archived fork](https://github.com/asakin/agent-terminal).
 
 Distributed under the [MIT License](LICENSE).
+
+Release archives also carry a pinned build of [herdr-core](https://github.com/herdrdev/herdr-core) (`libexec/hc`), which is distributed under the Apache License 2.0. Its `LICENSE` and the third-party notices `hc --licenses` prints are in the archive's `licenses/herdr-core/` folder and are installed in `~/.local/share/agent-pane/licenses/herdr-core/`. The pinned version and its checksums are in [`scripts/herdr-core.lock`](scripts/herdr-core.lock).

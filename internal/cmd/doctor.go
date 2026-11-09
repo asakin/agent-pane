@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +29,7 @@ type installLayout struct {
 	release   string // dataDir/release, the release place.sh last installed
 	host      string // dataDir/native_messaging_host
 	configDir string // ~/.config/agent-pane
+	core      string // dataDir/libexec/hc, the bundled herdr-core binary
 }
 
 const (
@@ -45,6 +49,7 @@ func layoutFor(home string) installLayout {
 		release:   filepath.Join(data, "release"),
 		host:      filepath.Join(data, "native_messaging_host"),
 		configDir: filepath.Join(home, ".config", "agent-pane"),
+		core:      filepath.Join(data, "libexec", "hc"),
 	}
 }
 
@@ -98,11 +103,14 @@ type checkResult struct {
 // doctorEnv is what the checks read from outside the file system.
 type doctorEnv struct {
 	goos    string
+	goarch  string
 	version string // this binary's version
 	path    string // $PATH
 	// spawnAgent reports whether the macOS spawn agent is loaded; nil skips
 	// the check.
 	spawnAgent func() bool
+	// coreVersion runs the bundled core's `--version`; nil skips the check.
+	coreVersion func(path string) (string, error)
 }
 
 func NewCmdDoctor(version string) *cobra.Command {
@@ -123,10 +131,12 @@ to update, run the install command again.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			layout := layoutFor(os.Getenv("HOME"))
 			env := doctorEnv{
-				goos:       runtime.GOOS,
-				version:    version,
-				path:       os.Getenv("PATH"),
-				spawnAgent: spawnAgentLoaded,
+				goos:        runtime.GOOS,
+				goarch:      runtime.GOARCH,
+				version:     version,
+				path:        os.Getenv("PATH"),
+				spawnAgent:  spawnAgentLoaded,
+				coreVersion: coreVersion,
 			}
 			out := cmd.OutOrStdout()
 			problems := printChecks(out, runChecks(layout, env))
@@ -173,6 +183,11 @@ func spawnAgentLoaded() bool {
 	}
 	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), spawnAgentLabel)
 	return exec.Command("launchctl", "print", target).Run() == nil
+}
+
+func coreVersion(path string) (string, error) {
+	out, err := exec.Command(path, "--version").Output()
+	return strings.TrimSpace(string(out)), err
 }
 
 func runChecks(l installLayout, env doctorEnv) []checkResult {
@@ -244,6 +259,10 @@ func runChecks(l installLayout, env doctorEnv) []checkResult {
 		}
 	}
 
+	for _, r := range checkCore(l, env) {
+		add(r.status, r.item, "%s", r.detail)
+	}
+
 	path := checkPath(l, env.path)
 	add(path.status, path.item, "%s", path.detail)
 
@@ -298,6 +317,152 @@ func runChecks(l installLayout, env doctorEnv) []checkResult {
 		}
 	}
 	return out
+}
+
+// coreLock is scripts/herdr-core.lock, as the release carries it.
+type coreLock struct {
+	version string
+	// binaries maps <goos>_<goarch> to the SHA-256 of its herdr-core binary.
+	binaries map[string]string
+}
+
+func readCoreLock(path string) (coreLock, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return coreLock{}, err
+	}
+	defer f.Close()
+	lock := coreLock{binaries: map[string]string{}}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		switch {
+		case len(fields) == 0 || strings.HasPrefix(fields[0], "#"):
+		case fields[0] == "version" && len(fields) == 2:
+			lock.version = fields[1]
+		case fields[0] == "generation" && len(fields) == 2:
+		case len(fields) == 4:
+			lock.binaries[fields[0]] = fields[3]
+		default:
+			return coreLock{}, fmt.Errorf("unexpected line %q", scanner.Text())
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return coreLock{}, err
+	}
+	if lock.version == "" {
+		return coreLock{}, fmt.Errorf("no version line")
+	}
+	return lock, nil
+}
+
+// checkCore checks the bundled herdr-core binary against the lock the
+// release carries, its license files, and that a person's own `hc` neither is
+// it nor reaches it through PATH.
+func checkCore(l installLayout, env doctorEnv) []checkResult {
+	var out []checkResult
+	add := func(status checkStatus, item, detail string) {
+		out = append(out, checkResult{status, item, detail})
+	}
+
+	lockPath := filepath.Join(l.release, "herdr-core.lock")
+	lock, err := readCoreLock(lockPath)
+	platform := env.goos + "_" + env.goarch
+	want, ok := lock.binaries[platform]
+	switch {
+	case err != nil:
+		add(checkFail, "core", fmt.Sprintf("%s: %v", lockPath, err))
+	case !ok:
+		add(checkFail, "core", fmt.Sprintf("%s has no herdr-core build for %s", lockPath, platform))
+	default:
+		data, err := os.ReadFile(l.core)
+		info, statErr := os.Stat(l.core)
+		sum := sha256.Sum256(data)
+		switch {
+		case err != nil || statErr != nil:
+			add(checkFail, "core", l.core+" is missing")
+		case hex.EncodeToString(sum[:]) != want:
+			add(checkFail, "core", fmt.Sprintf("%s is not the pinned herdr-core %s for %s", l.core, lock.version, platform))
+		case info.Mode()&0o111 == 0:
+			add(checkFail, "core", l.core+" is not executable")
+		default:
+			version := ""
+			if env.coreVersion != nil {
+				version, err = env.coreVersion(l.core)
+			}
+			switch {
+			case err != nil:
+				add(checkFail, "core", fmt.Sprintf("%s --version: %v", l.core, err))
+			case env.coreVersion != nil && version != "hc "+lock.version:
+				add(checkFail, "core", fmt.Sprintf("%s reports %q, want hc %s", l.core, version, lock.version))
+			default:
+				add(checkOK, "core", fmt.Sprintf("%s (herdr-core %s)", l.core, lock.version))
+			}
+		}
+	}
+
+	licenses := filepath.Join(l.dataDir, "licenses", "herdr-core")
+	if same, err := sameTree(filepath.Join(l.release, "licenses", "herdr-core"), licenses); err != nil {
+		add(checkFail, "core licenses", fmt.Sprintf("%s: %v", licenses, err))
+	} else if !same {
+		add(checkFail, "core licenses", licenses+" differs from the installed release")
+	} else if missing := missingCoreLicense(licenses); missing != "" {
+		add(checkFail, "core licenses", licenses+" has no "+missing)
+	} else {
+		add(checkOK, "core licenses", licenses)
+	}
+
+	// A person's own hc, wherever it is, is theirs and fine. Agent Pane's core,
+	// installed or the copy the kept release holds, must not be reachable as
+	// `hc` on PATH, ~/.local/bin/hc included.
+	bundled := []string{l.core, filepath.Join(l.release, "libexec", "hc")}
+	other := ""
+	for _, dir := range append(filepath.SplitList(env.path), filepath.Dir(l.binary)) {
+		if dir == "" {
+			continue
+		}
+		candidate := filepath.Join(dir, "hc")
+		isBundled := false
+		for _, b := range bundled {
+			if filepath.Clean(dir) == filepath.Dir(b) || sameInode(candidate, b) {
+				isBundled = true
+			}
+		}
+		if isBundled {
+			add(checkFail, "core isolation", candidate+" is Agent Pane's bundled core; only Agent Pane runs it, so take it off PATH")
+			return out
+		}
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && other == "" {
+			other = candidate
+		}
+	}
+	if other != "" {
+		add(checkOK, "core isolation", "the bundled core is not on PATH; "+other+" is a separate hc, left alone")
+	} else {
+		add(checkOK, "core isolation", "the bundled core is not on PATH")
+	}
+	return out
+}
+
+// missingCoreLicense names the first file herdr-core's license requires that
+// dir lacks, or returns "".
+func missingCoreLicense(dir string) string {
+	for _, name := range []string{"LICENSE", "THIRD-PARTY-NOTICES"} {
+		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || info.Size() == 0 {
+			return name
+		}
+	}
+	return ""
+}
+
+// sameInode reports whether a and b, after symlinks, are the same file.
+func sameInode(a, b string) bool {
+	x, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	y, err := os.Stat(b)
+	return err == nil && os.SameFile(x, y)
 }
 
 // spawnAgentPlist is the LaunchAgent plist scripts/place.sh write_launchd
