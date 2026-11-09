@@ -68,6 +68,9 @@ type Session struct {
 	// replies are the reply sockets of reads in flight; closing the
 	// session closes them, so nothing is delivered after it.
 	replies map[*os.File]struct{}
+	// facts is what the program last reported about itself (Durable
+	// sessions only).
+	facts terminalFacts
 }
 
 // extensionOrigins are the only origins that may open a PTY WebSocket. Add the
@@ -96,6 +99,7 @@ type SessionManager struct {
 
 	callMu sync.Mutex
 	call   extensionCaller
+	notify extensionNotifier
 
 	// panes are the pane tabs the extension has open, by id; guarded by mu.
 	panes map[string]*paneTab
@@ -133,6 +137,65 @@ func (m *SessionManager) extensionCaller() extensionCaller {
 	m.callMu.Lock()
 	defer m.callMu.Unlock()
 	return m.call
+}
+
+// extensionNotifier sends one notification to the extension without waiting
+// for it to be written.
+type extensionNotifier func(method string, params any)
+
+// notifyTimeout bounds how long a notification waits for room behind a
+// stalled native pipe before it is dropped; tty.list still has the facts.
+const notifyTimeout = time.Second
+
+// SetExtensionNotifier sets how tty.event notifications reach the extension.
+func (m *SessionManager) SetExtensionNotifier(notify extensionNotifier) {
+	m.callMu.Lock()
+	m.notify = notify
+	m.callMu.Unlock()
+}
+
+// ttyEvent is the tty.event notification: what a session's program now
+// reports about itself.
+type ttyEvent struct {
+	TTY    string      `json:"tty"`
+	Status *paneStatus `json:"status"`
+	Title  string      `json:"title"`
+}
+
+// reportFacts records what a session's program reports and tells the
+// extension, unless the session has ended.
+func (m *SessionManager) reportFacts(session *Session, facts terminalFacts) {
+	session.mu.Lock()
+	closed := session.closed
+	if !closed {
+		session.facts = facts
+	}
+	session.mu.Unlock()
+	if closed {
+		return
+	}
+	m.callMu.Lock()
+	notify := m.notify
+	m.callMu.Unlock()
+	if notify != nil {
+		notify("tty.event", ttyEvent{TTY: session.ID, Status: facts.Status, Title: facts.Title})
+	}
+}
+
+// ttyListItem is one session in tty.list's answer, with what its program
+// last reported.
+type ttyListItem struct {
+	ID     string      `json:"id"`
+	Status *paneStatus `json:"status"`
+	Title  string      `json:"title,omitempty"`
+}
+
+func nativeNotifier(host *jsonrpc.Host) extensionNotifier {
+	return func(method string, params any) {
+		ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+		defer cancel()
+		_ = host.Notify(ctx, method, params)
+	}
 }
 
 func NewSessionManager(port int, logger *slog.Logger) *SessionManager {
@@ -315,7 +378,7 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 	session.mu.Unlock()
 
 	// The session is reaped when its program exits or its terminal ends.
-	session.term.run(func() { m.reap(id) })
+	session.term.run(func() { m.reap(id) }, func(f terminalFacts) { m.reportFacts(session, f) })
 	if session.page != nil {
 		go session.servePage(session.page, m.extensionCaller)
 	}
@@ -549,6 +612,7 @@ func NewCmdServe(version string) *cobra.Command {
 			messagingHost := NewMessagingHost(logger, sessions, version)
 			messagingHost.UseInterruptibleStdout()
 			sessions.SetExtensionCaller(nativeCaller(messagingHost))
+			sessions.SetExtensionNotifier(nativeNotifier(messagingHost))
 
 			handler := NewWebSocketHandler(sessions)
 
@@ -706,9 +770,15 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 
 	messagingHost.HandleRequest("tty.list", func(input []byte) (any, error) {
 		ids := sessions.List()
-		items := make([]map[string]string, 0, len(ids))
+		items := make([]ttyListItem, 0, len(ids))
 		for _, id := range ids {
-			items = append(items, map[string]string{"id": id})
+			item := ttyListItem{ID: id}
+			if s, ok := sessions.Get(id); ok {
+				s.mu.Lock()
+				item.Status, item.Title = s.facts.Status, s.facts.Title
+				s.mu.Unlock()
+			}
+			items = append(items, item)
 		}
 		return map[string]any{"sessions": items}, nil
 	})

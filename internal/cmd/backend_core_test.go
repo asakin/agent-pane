@@ -135,6 +135,14 @@ func (f *fakeCore) finish(session, address string) {
 	ch <- herdrcore.Event{Seq: 1, Type: "finished", Terminal: address}
 }
 
+// send delivers e on the session's subscription.
+func (f *fakeCore) send(session string, e herdrcore.Event) {
+	f.mu.Lock()
+	ch := f.events[session]
+	f.mu.Unlock()
+	ch <- e
+}
+
 // dropEvents ends the open subscriptions as a dropped connection does.
 func (f *fakeCore) dropEvents() {
 	f.mu.Lock()
@@ -259,6 +267,8 @@ type nativeHarness struct {
 	out      *io.PipeReader
 	mu       sync.Mutex
 	next     int
+	// notes holds the notifications read while waiting for answers.
+	notes []jsonrpc.JSONRPCRequest
 }
 
 func newNativeHarness(t *testing.T, durable terminalBackend) *nativeHarness {
@@ -278,6 +288,7 @@ func newNativeHarness(t *testing.T, durable terminalBackend) *nativeHarness {
 	host := NewMessagingHost(logger, m, "test")
 	host.SetInput(inR)
 	host.SetOutput(outW)
+	m.SetExtensionNotifier(nativeNotifier(host))
 	go host.Listen()
 	t.Cleanup(func() {
 		inW.Close()
@@ -314,6 +325,11 @@ func (h *nativeHarness) call(t *testing.T, method string, params any) (json.RawM
 		buf := make([]byte, n)
 		if _, err := io.ReadFull(h.out, buf); err != nil {
 			t.Fatal(err)
+		}
+		var note jsonrpc.JSONRPCRequest
+		if json.Unmarshal(buf, &note) == nil && note.Method != "" && note.ID == "" {
+			h.notes = append(h.notes, note)
+			continue
 		}
 		var resp jsonrpc.JSONRPCResponse
 		if err := json.Unmarshal(buf, &resp); err != nil {
@@ -369,6 +385,47 @@ func (h *nativeHarness) list(t *testing.T) []string {
 		ids = append(ids, s.ID)
 	}
 	return ids
+}
+
+// listFacts is tty.list's answer.
+func (h *nativeHarness) listFacts(t *testing.T) []ttyListItem {
+	t.Helper()
+	raw, msg := h.call(t, "tty.list", nil)
+	if msg != "" {
+		t.Fatalf("tty.list: %s", msg)
+	}
+	var r struct {
+		Sessions []ttyListItem `json:"sessions"`
+	}
+	if err := json.Unmarshal(raw, &r); err != nil {
+		t.Fatal(err)
+	}
+	return r.Sessions
+}
+
+// events returns the tty.event notifications read so far, reading on (with a
+// tty.list round trip) until there are at least n.
+func (h *nativeHarness) events(t *testing.T, n int) []ttyEvent {
+	t.Helper()
+	var out []ttyEvent
+	eventually(t, fmt.Sprintf("%d tty.event notifications", n), func() bool {
+		h.listFacts(t)
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		out = out[:0]
+		for _, note := range h.notes {
+			if note.Method != "tty.event" {
+				continue
+			}
+			var e ttyEvent
+			if err := json.Unmarshal(note.Params, &e); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, e)
+		}
+		return len(out) >= n
+	})
+	return out
 }
 
 func dialAttach(t *testing.T, url string) *websocket.Conn {
@@ -615,6 +672,74 @@ func TestDurableSessionOutlivesALostSubscription(t *testing.T) {
 	// The new subscription still sees the program end.
 	core.finish(core.runs[0].Labels[coreSessionLabel], "t1")
 	eventually(t, "the session to be reaped", func() bool { return len(h.sessions.List()) == 0 })
+}
+
+func TestDurableStatusAndTitleReachTheExtension(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	session := core.runs[0].Labels[coreSessionLabel]
+
+	if items := h.listFacts(t); len(items) != 1 || items[0].ID != ep.ID || items[0].Status != nil {
+		t.Fatalf("tty.list before any report %+v", items)
+	}
+	core.send(session, herdrcore.Event{Seq: 1, Type: "status", Terminal: "t1", Data: json.RawMessage(`{"reported":true,"status":{"state":"working","msg":"running tests"}}`)})
+	// Another terminal's report is not this session's.
+	core.send(session, herdrcore.Event{Seq: 2, Type: "status", Terminal: "t9", Data: json.RawMessage(`{"status":{"state":"error"}}`)})
+	core.send(session, herdrcore.Event{Seq: 3, Type: "title", Terminal: "t1", Data: json.RawMessage(`{"title":"pi"}`)})
+	core.send(session, herdrcore.Event{Seq: 4, Type: "status", Terminal: "t1", Data: json.RawMessage(`{"status":{"state":"blocked","kind":"permission"}}`)})
+	core.send(session, herdrcore.Event{Seq: 5, Type: "status", Terminal: "t1", Data: json.RawMessage(`{"status":null}`)})
+
+	events := h.events(t, 4)
+	want := []ttyEvent{
+		{TTY: ep.ID, Status: &paneStatus{State: "working", Msg: "running tests"}},
+		{TTY: ep.ID, Status: &paneStatus{State: "working", Msg: "running tests"}, Title: "pi"},
+		{TTY: ep.ID, Status: &paneStatus{State: "blocked", Kind: "permission"}, Title: "pi"},
+		{TTY: ep.ID, Title: "pi"},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("events %+v", events)
+	}
+	for i := range want {
+		if events[i].TTY != want[i].TTY || events[i].Title != want[i].Title || !sameStatus(events[i].Status, want[i].Status) {
+			t.Fatalf("event %d = %+v %+v; want %+v %+v", i, events[i], events[i].Status, want[i], want[i].Status)
+		}
+	}
+
+	// A panel that opens later learns the current facts from tty.list.
+	core.send(session, herdrcore.Event{Seq: 6, Type: "status", Terminal: "t1", Data: json.RawMessage(`{"status":{"state":"done"}}`)})
+	h.events(t, 5)
+	items := h.listFacts(t)
+	if len(items) != 1 || items[0].Title != "pi" || !sameStatus(items[0].Status, &paneStatus{State: "done"}) {
+		t.Fatalf("tty.list %+v", items)
+	}
+}
+
+func TestDurableStatusComesFromTheSnapshotAfterMissedEvents(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	core.send(core.runs[0].Labels[coreSessionLabel], herdrcore.Event{Seq: 9, Type: "missed", Terminals: []herdrcore.Terminal{
+		{Address: "t1", State: "live", Title: "codex", Status: &herdrcore.Status{State: "blocked", Msg: "allow?", Kind: "question"}},
+	}})
+	events := h.events(t, 1)
+	if e := events[0]; e.TTY != ep.ID || e.Title != "codex" || !sameStatus(e.Status, &paneStatus{State: "blocked", Msg: "allow?", Kind: "question"}) {
+		t.Fatalf("event %+v %+v", e, e.Status)
+	}
+}
+
+func TestBuiltinSessionsReportNoStatus(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS terminals start through the spawn agent")
+	}
+	h := newNativeHarness(t, nil)
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	items := h.listFacts(t)
+	if len(items) != 1 || items[0].ID != ep.ID || items[0].Status != nil || items[0].Title != "" {
+		t.Fatalf("tty.list %+v", items)
+	}
 }
 
 func TestDurableUnansweredRunDoesNotStartTwice(t *testing.T) {
@@ -886,6 +1011,16 @@ func TestDurableBackendRealCore(t *testing.T) {
 		t.Fatalf("prompts %d", ext.promptCount())
 	}
 
+	// agent-pane status in the terminal reaches the extension as tty.event.
+	type_(fmt.Sprintf(`STATUS_HELPER=1 %q -test.run='^TestStatusHelperProcess$'`, os.Args[0]))
+	eventually(t, "the blocked status", func() bool {
+		events := h.events(t, 0)
+		return len(events) > 0 && sameStatus(events[len(events)-1].Status, &paneStatus{State: "blocked", Msg: "allow writing?", Kind: "permission"})
+	})
+	if items := h.listFacts(t); len(items) != 1 || items[0].Status == nil || items[0].Status.State != "blocked" {
+		t.Fatalf("tty.list %+v", items)
+	}
+
 	if _, msg := h.call(t, "tty.destroy", map[string]any{"id": ep.ID, "pane": ep.Pane}); msg != "" {
 		t.Fatal(msg)
 	}
@@ -898,4 +1033,19 @@ func TestDurableBackendRealCore(t *testing.T) {
 	if err != nil || len(left) != 0 {
 		t.Fatalf("core terminals after destroy: %+v %v", left, err)
 	}
+}
+
+// TestStatusHelperProcess reports a status the way an agent's command tool
+// runs agent-pane status: with stdout captured, not the terminal.
+func TestStatusHelperProcess(t *testing.T) {
+	if os.Getenv("STATUS_HELPER") == "" {
+		t.Skip()
+	}
+	cmd := NewCmdStatus()
+	cmd.SetArgs([]string{"blocked", "--kind", "permission", "allow", "writing?"})
+	cmd.SetOut(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		fmt.Printf("ERR[%s]\n", err)
+	}
+	os.Exit(0)
 }

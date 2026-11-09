@@ -92,3 +92,46 @@ func TestWithdrawnRequestsAreNotWritten(t *testing.T) {
 		t.Fatalf("written %v", ids)
 	}
 }
+
+func TestNotifyIsWrittenAsARequestWithNoID(t *testing.T) {
+	r, w := io.Pipe()
+	h := NewHost(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h.out = w
+	t.Cleanup(func() { r.Close() })
+	// The sender is gone by the time the writer gets to it.
+	ctx, cancel := context.WithCancel(context.Background())
+	err := h.Notify(ctx, "tty.event", map[string]string{"tty": "a"})
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n uint32
+	if err := binary.Read(r, binary.LittleEndian, &n); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		t.Fatal(err)
+	}
+	var msg map[string]any
+	if err := json.Unmarshal(buf, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := msg["id"]; ok || msg["method"] != "tty.event" || msg["params"].(map[string]any)["tty"] != "a" {
+		t.Fatalf("notification %s", buf)
+	}
+}
+
+func TestNotifyDoesNotWaitOnAStalledPipe(t *testing.T) {
+	h, _ := stalledHost(t)
+	// Enough to fill the queue behind the write the stalled pipe holds.
+	start := time.Now()
+	for range 100 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		_ = h.Notify(ctx, "tty.event", nil)
+		cancel()
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("took %v", took)
+	}
+}

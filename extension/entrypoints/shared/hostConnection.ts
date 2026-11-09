@@ -26,6 +26,8 @@ export type HostConnectionDeps = {
      * the JSON-RPC error message the host sees.
      */
     onHostRequest?(method: string, params: unknown): Promise<Record<string, unknown>>;
+    /** Receives a notification the host sends (`tty.event`); nothing answers it. */
+    onHostNotification?(method: string, params: unknown): void;
     timers?: Timers;
     /** Wall-clock milliseconds, as the host's `expiresAt` counts them. */
     now?(): number;
@@ -48,6 +50,16 @@ export function isHostRequest(message: unknown): message is { jsonrpc: "2.0"; id
     }
     const m = message as Record<string, unknown>;
     return m.jsonrpc === "2.0" && typeof m.id === "string" && m.id !== "" && typeof m.method === "string"
+        && !("result" in m) && !("error" in m);
+}
+
+/** A notification from the host: a method and no id, so no answer. */
+export function isHostNotification(message: unknown): message is { jsonrpc: "2.0"; method: string; params?: unknown } {
+    if (typeof message !== "object" || message === null) {
+        return false;
+    }
+    const m = message as Record<string, unknown>;
+    return m.jsonrpc === "2.0" && !("id" in m) && typeof m.method === "string"
         && !("result" in m) && !("error" in m);
 }
 
@@ -149,6 +161,14 @@ export function createHostConnection(deps: HostConnectionDeps) {
                         // The host is gone; its read fails on its side.
                     }
                 });
+            });
+        }
+        if (deps.onHostNotification) {
+            const notified = deps.onHostNotification;
+            port.onMessage.addListener((message) => {
+                if (isHostNotification(message)) {
+                    notified(message.method, message.params);
+                }
             });
         }
         port.onDisconnect.addListener(() => {

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -354,10 +355,11 @@ func (t *coreTerminal) setEvents(events coreEvents) bool {
 	return !closed
 }
 
-// run calls ended once the core reports the program ended. Losing the
+// run calls ended once the core reports the program ended, and facts with
+// the status and title the program reports as they change. Losing the
 // subscription is not that: the terminal is watched again from a fresh
 // snapshot, and only a closed terminal stops the watch.
-func (t *coreTerminal) run(ended func()) {
+func (t *coreTerminal) run(ended func(), facts func(terminalFacts)) {
 	t.mu.Lock()
 	events, address := t.events, t.address
 	t.mu.Unlock()
@@ -366,11 +368,13 @@ func (t *coreTerminal) run(ended func()) {
 		if events == nil {
 			return
 		}
+		w := &factsWatch{address: address, report: facts}
 		for {
+			w.snapshot(events.Snapshot())
 			if !coreTerminalLive(events.Snapshot(), address) {
 				return
 			}
-			err := waitForEnd(events, address)
+			err := waitForEnd(events, w)
 			if err == nil {
 				return
 			}
@@ -383,9 +387,9 @@ func (t *coreTerminal) run(ended func()) {
 	}()
 }
 
-// waitForEnd returns nil once events report address ended, or the error
-// that ended the subscription.
-func waitForEnd(events coreEvents, address string) error {
+// waitForEnd returns nil once events report the watched terminal ended, or
+// the error that ended the subscription. Status and title changes go to w.
+func waitForEnd(events coreEvents, w *factsWatch) error {
 	for {
 		e, err := events.Next(context.Background())
 		if err != nil {
@@ -393,15 +397,86 @@ func waitForEnd(events coreEvents, address string) error {
 		}
 		switch e.Type {
 		case "finished", "removed", "lost":
-			if e.Terminal == address {
+			if e.Terminal == w.address {
 				return nil
 			}
 		case "missed":
-			if !coreTerminalLive(e.Terminals, address) {
+			w.snapshot(e.Terminals)
+			if !coreTerminalLive(e.Terminals, w.address) {
 				return nil
+			}
+		case "status", "title":
+			if e.Terminal == w.address {
+				w.event(e)
 			}
 		}
 	}
+}
+
+// factsWatch follows one core terminal's status and title, reporting each
+// change once.
+type factsWatch struct {
+	address string
+	report  func(terminalFacts)
+	last    terminalFacts
+}
+
+func (w *factsWatch) set(f terminalFacts) {
+	if f.Title == w.last.Title && sameStatus(f.Status, w.last.Status) {
+		return
+	}
+	w.last = f
+	if w.report != nil {
+		w.report(f)
+	}
+}
+
+// snapshot takes the terminal's facts from a list of terminals.
+func (w *factsWatch) snapshot(terminals []herdrcore.Terminal) {
+	for _, t := range terminals {
+		if t.Address == w.address {
+			w.set(terminalFacts{Status: fromCoreStatus(t.Status), Title: t.Title})
+			return
+		}
+	}
+}
+
+// event applies a status or title event.
+func (w *factsWatch) event(e herdrcore.Event) {
+	f := w.last
+	switch e.Type {
+	case "status":
+		var data struct {
+			Status *herdrcore.Status `json:"status"`
+		}
+		if err := json.Unmarshal(e.Data, &data); err != nil {
+			return
+		}
+		f.Status = fromCoreStatus(data.Status)
+	case "title":
+		var data struct {
+			Title string `json:"title"`
+		}
+		if err := json.Unmarshal(e.Data, &data); err != nil {
+			return
+		}
+		f.Title = data.Title
+	}
+	w.set(f)
+}
+
+func fromCoreStatus(s *herdrcore.Status) *paneStatus {
+	if s == nil || s.State == "" {
+		return nil
+	}
+	return &paneStatus{State: s.State, Msg: s.Msg, Kind: s.Kind}
+}
+
+func sameStatus(a, b *paneStatus) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // resubscribe subscribes to the terminal's events again, retrying with a

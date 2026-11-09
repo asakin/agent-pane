@@ -80,6 +80,7 @@ function setup(installed, opts) {
         browserId: () => env.browserId(),
         extensionVersion: "1.0.0",
         onHostRequest: opts?.onHostRequest,
+        onHostNotification: opts?.onHostNotification,
         now: opts?.now,
         timers,
     });
@@ -260,4 +261,27 @@ test("a host request that expired before it arrived is refused, not acted on", a
     assert.equal(replies[0].id, "host-1");
     assert.match(replies[0].error.message, /^expired/);
     assert.deepEqual(replies[1], { jsonrpc: "2.0", id: "host-2", result: { choice: "all" } });
+});
+
+test("notifications from the host are passed on and never answered", async () => {
+    const notified = [];
+    const asked = [];
+    const t = setup(CURRENT, {
+        onHostRequest: async (method) => {
+            asked.push(method);
+            return {};
+        },
+        onHostNotification: (method, params) => notified.push([method, params]),
+    });
+    await run(t, t.host.handle(init("a")));
+    const port = t.env.ports[0];
+    const before = port.sent.length;
+    port.onMessage.emit({ jsonrpc: "2.0", method: "tty.event", params: { tty: "x", status: { state: "working" } } });
+    // A request has an id; a response has a result.
+    port.onMessage.emit({ jsonrpc: "2.0", id: "host-1", method: "page.resolve", params: { tty: "x" } });
+    port.onMessage.emit({ jsonrpc: "2.0", method: "tty.event", result: {} });
+    await flush();
+    assert.deepEqual(notified, [["tty.event", { tty: "x", status: { state: "working" } }]]);
+    assert.deepEqual(asked, ["page.resolve"]);
+    assert.deepEqual(port.sent.slice(before).map((m) => m.id), ["host-1"]);
 });

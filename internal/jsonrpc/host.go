@@ -272,9 +272,29 @@ func (h *Host) SendRequestContext(ctx context.Context, request JSONRPCRequest) (
 	}
 }
 
+// Notify queues a notification (a request with no id, so no answer) for the
+// extension, in order with everything else the host sends. It gives up,
+// dropping the notification, if the queue has no room before ctx ends; it
+// does not wait for the write.
+func (h *Host) Notify(ctx context.Context, method string, params any) error {
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	// Once queued it is written: ctx ending later does not withdraw it.
+	_, err = h.enqueueUntil(ctx, context.Background(), JSONRPCRequest{JSONRPCVersion: "2.0", Method: method, Params: raw})
+	return err
+}
+
 // enqueue hands one message to the writer, waiting for room in the queue
 // until ctx ends.
 func (h *Host) enqueue(ctx context.Context, data any) (*outbound, error) {
+	return h.enqueueUntil(ctx, ctx, data)
+}
+
+// enqueueUntil waits for room in the queue until wait ends; the message is
+// withdrawn if send ends before its first byte is written.
+func (h *Host) enqueueUntil(wait, send context.Context, data any) (*outbound, error) {
 	msg, err := json.Marshal(data)
 	if err != nil {
 		return nil, err
@@ -284,13 +304,13 @@ func (h *Host) enqueue(ctx context.Context, data any) (*outbound, error) {
 	}
 	frame := make([]byte, 4, 4+len(msg))
 	binary.LittleEndian.PutUint32(frame, uint32(len(msg)))
-	o := &outbound{frame: append(frame, msg...), ctx: ctx, written: make(chan error, 1)}
+	o := &outbound{frame: append(frame, msg...), ctx: send, written: make(chan error, 1)}
 	h.startWriter.Do(func() { go h.writeLoop() })
 	select {
 	case h.queue <- o:
 		return o, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case <-wait.Done():
+		return nil, wait.Err()
 	}
 }
 
