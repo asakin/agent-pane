@@ -34,9 +34,12 @@ if [ "$1" = "page" ]; then
       ;;
     info)
       count=$(get_count)
-      increment_count
+      # Only a markdown read starts the counter, so info alone never switches pages.
+      if [ "$count" -gt 0 ]; then
+        increment_count
+      fi
       if [ "$count" -eq 0 ]; then
-        # First call: original page
+        # Not read yet: original page
         echo "URL: https://docs.example.com/api/authentication"
         echo "Title: Authentication — Example API Docs"
       else
