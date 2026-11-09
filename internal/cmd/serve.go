@@ -68,6 +68,9 @@ type Session struct {
 	// replies are the reply sockets of reads in flight; closing the
 	// session closes them, so nothing is delivered after it.
 	replies map[*os.File]struct{}
+	// facts is what the program last reported about itself (Durable
+	// sessions only).
+	facts terminalFacts
 }
 
 // extensionOrigins are the only origins that may open a PTY WebSocket. Add the
@@ -96,6 +99,14 @@ type SessionManager struct {
 
 	callMu sync.Mutex
 	call   extensionCaller
+	notify extensionNotifier
+
+	// notifyMu orders tty.event notifications, so a session's latest facts
+	// are always the last sent. unsent holds the sessions whose latest facts
+	// were dropped, and resend is set while a retry is scheduled.
+	notifyMu sync.Mutex
+	unsent   map[string]struct{}
+	resend   bool
 
 	// panes are the pane tabs the extension has open, by id; guarded by mu.
 	panes map[string]*paneTab
@@ -133,6 +144,115 @@ func (m *SessionManager) extensionCaller() extensionCaller {
 	m.callMu.Lock()
 	defer m.callMu.Unlock()
 	return m.call
+}
+
+// extensionNotifier sends one notification to the extension without waiting
+// for it to be written. It returns an error if the notification was dropped.
+type extensionNotifier func(method string, params any) error
+
+// notifyTimeout bounds how long a notification waits for room behind a
+// stalled native pipe before it is dropped. A dropped tty.event is sent
+// again, with the session's latest facts, notifyRetry later.
+const notifyTimeout = time.Second
+
+var notifyRetry = time.Second
+
+// SetExtensionNotifier sets how tty.event notifications reach the extension.
+func (m *SessionManager) SetExtensionNotifier(notify extensionNotifier) {
+	m.callMu.Lock()
+	m.notify = notify
+	m.callMu.Unlock()
+}
+
+// ttyEvent is the tty.event notification: what a session's program now
+// reports about itself.
+type ttyEvent struct {
+	TTY    string      `json:"tty"`
+	Status *paneStatus `json:"status"`
+	Title  string      `json:"title"`
+}
+
+// reportFacts records what a session's program reports and tells the
+// extension, unless the session has ended.
+func (m *SessionManager) reportFacts(session *Session, facts terminalFacts) {
+	session.mu.Lock()
+	closed := session.closed
+	if !closed {
+		session.facts = facts
+	}
+	session.mu.Unlock()
+	if closed {
+		return
+	}
+	m.notifyMu.Lock()
+	defer m.notifyMu.Unlock()
+	m.sendFactsLocked(session)
+}
+
+// sendFactsLocked sends the session's latest facts. If the notification is
+// dropped, the session is remembered and a retry scheduled, so an open panel
+// still learns them once the pipe drains. Call with notifyMu held.
+func (m *SessionManager) sendFactsLocked(session *Session) bool {
+	m.callMu.Lock()
+	notify := m.notify
+	m.callMu.Unlock()
+	if notify == nil {
+		return true
+	}
+	session.mu.Lock()
+	closed, facts := session.closed, session.facts
+	session.mu.Unlock()
+	if closed {
+		delete(m.unsent, session.ID)
+		return true
+	}
+	if err := notify("tty.event", ttyEvent{TTY: session.ID, Status: facts.Status, Title: facts.Title}); err != nil {
+		if m.unsent == nil {
+			m.unsent = make(map[string]struct{})
+		}
+		m.unsent[session.ID] = struct{}{}
+		if !m.resend {
+			m.resend = true
+			time.AfterFunc(notifyRetry, m.resendFacts)
+		}
+		return false
+	}
+	delete(m.unsent, session.ID)
+	return true
+}
+
+// resendFacts sends the latest facts of each session whose notification was
+// dropped. sendFactsLocked schedules it again if the pipe is still stalled.
+func (m *SessionManager) resendFacts() {
+	m.notifyMu.Lock()
+	defer m.notifyMu.Unlock()
+	m.resend = false
+	for id := range m.unsent {
+		session, ok := m.Get(id)
+		if !ok {
+			delete(m.unsent, id)
+			continue
+		}
+		if !m.sendFactsLocked(session) {
+			return
+		}
+	}
+}
+
+// ttyListItem is one session in tty.list's answer, with what its program
+// last reported.
+type ttyListItem struct {
+	ID     string      `json:"id"`
+	Status *paneStatus `json:"status"`
+	Title  string      `json:"title,omitempty"`
+}
+
+func nativeNotifier(host *jsonrpc.Host) extensionNotifier {
+	return func(method string, params any) error {
+		ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+		defer cancel()
+		return host.Notify(ctx, method, params)
+	}
 }
 
 func NewSessionManager(port int, logger *slog.Logger) *SessionManager {
@@ -315,7 +435,7 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 	session.mu.Unlock()
 
 	// The session is reaped when its program exits or its terminal ends.
-	session.term.run(func() { m.reap(id) })
+	session.term.run(func() { m.reap(id) }, func(f terminalFacts) { m.reportFacts(session, f) })
 	if session.page != nil {
 		go session.servePage(session.page, m.extensionCaller)
 	}
@@ -549,6 +669,7 @@ func NewCmdServe(version string) *cobra.Command {
 			messagingHost := NewMessagingHost(logger, sessions, version)
 			messagingHost.UseInterruptibleStdout()
 			sessions.SetExtensionCaller(nativeCaller(messagingHost))
+			sessions.SetExtensionNotifier(nativeNotifier(messagingHost))
 
 			handler := NewWebSocketHandler(sessions)
 
@@ -706,9 +827,15 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 
 	messagingHost.HandleRequest("tty.list", func(input []byte) (any, error) {
 		ids := sessions.List()
-		items := make([]map[string]string, 0, len(ids))
+		items := make([]ttyListItem, 0, len(ids))
 		for _, id := range ids {
-			items = append(items, map[string]string{"id": id})
+			item := ttyListItem{ID: id}
+			if s, ok := sessions.Get(id); ok {
+				s.mu.Lock()
+				item.Status, item.Title = s.facts.Status, s.facts.Title
+				s.mu.Unlock()
+			}
+			items = append(items, item)
 		}
 		return map[string]any{"sessions": items}, nil
 	})

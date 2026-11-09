@@ -62,3 +62,48 @@ test("a label falls back to a short id and shortens long titles", () => {
     assert.deepEqual(labels(list), ["01234567", "a very long ter…"]);
     assert.equal(list.children[0].title, "0123456789ab");
 });
+
+const mark = (tab) => tab.querySelector(".at-tabs__status");
+
+test("a pane tab shows its program's status, and loses it when the status clears", () => {
+    const { list, handlers } = setup();
+    const titles = new Map([["a", "pi"], ["b", "codex"]]);
+    const statuses = new Map([["a", { state: "working", msg: "running tests" }]]);
+    renderTabList(list, state("a", "a", "b"), titles, handlers, statuses);
+    const [a, b] = list.children;
+    assert.equal(mark(a).hidden, false);
+    assert.equal(mark(a).className, "at-tabs__status at-tabs__status--working");
+    assert.equal(mark(a).title, "Working (running tests)");
+    assert.equal(a.title, "pi: Working (running tests)");
+    assert.equal(mark(b).hidden, true, "no report, no mark");
+    assert.equal(b.title, "codex");
+
+    statuses.set("a", { state: "done" });
+    renderTabList(list, state("a", "a", "b"), titles, handlers, statuses);
+    assert.equal(list.children[0], a, "a status change keeps the button");
+    assert.equal(mark(a).className, "at-tabs__status at-tabs__status--done");
+
+    statuses.delete("a");
+    renderTabList(list, state("a", "a", "b"), titles, handlers, statuses);
+    assert.equal(mark(a).hidden, true);
+    assert.equal(a.title, "pi");
+});
+
+test("a blocked pane tab in the background draws attention until it is shown", () => {
+    const { list, handlers } = setup();
+    const statuses = new Map([["b", { state: "blocked", kind: "permission" }]]);
+    renderTabList(list, state("a", "a", "b"), new Map(), handlers, statuses);
+    const [, b] = list.children;
+    assert.equal(b.className, "at-tabs__tab at-tabs__tab--attention");
+    assert.equal(mark(b).className, "at-tabs__status at-tabs__status--blocked");
+    assert.equal(mark(b).title, "Waiting for you: needs permission");
+
+    renderTabList(list, state("b", "a", "b"), new Map(), handlers, statuses);
+    assert.equal(b.className, "at-tabs__tab at-tabs__tab--active");
+});
+
+test("a status mark is not taken for the label", () => {
+    const { list, handlers } = setup();
+    renderTabList(list, state("a", "a"), new Map([["a", "pi"]]), handlers, new Map([["a", { state: "idle" }]]));
+    assert.deepEqual(labels(list), ["pi"]);
+});

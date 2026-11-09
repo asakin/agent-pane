@@ -107,7 +107,8 @@ export type ResponseCreateTTY = JSONRPCResponseBase<{
 export type ResponseAttachTTY = ResponseCreateTTY
 
 export type ResponseListTTY = JSONRPCResponseBase<{
-    sessions: { id: string }[];
+    /** status and title: what the session's program last reported (Durable only). */
+    sessions: { id: string; status?: unknown; title?: string }[];
 }>
 
 export type AgentInfo = {

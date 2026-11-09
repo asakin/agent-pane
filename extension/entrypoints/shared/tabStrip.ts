@@ -1,4 +1,5 @@
 import type { WindowTabState } from "./windowTabs.ts";
+import { type PaneStatus, statusMark } from "./paneStatus.ts";
 
 export type TabStripHandlers = {
     onSelect: (id: string) => void;
@@ -16,6 +17,7 @@ export function renderTabList(
     state: WindowTabState,
     titles: Map<string, string>,
     handlers: TabStripHandlers,
+    statuses: Map<string, PaneStatus> = new Map(),
 ) {
     const existing = new Map<string, HTMLElement>();
     for (const child of Array.from(list.children)) {
@@ -31,11 +33,34 @@ export function renderTabList(
         const tab = existing.get(id) ?? createTabButton(list.ownerDocument, id, handlers);
         existing.delete(id);
 
-        const className = "at-tabs__tab" + (id === state.activeId ? " at-tabs__tab--active" : "");
+        const status = statuses.get(id);
+        const mark = statusMark(status);
+        // A pane tab out of sight that waits on the person draws attention.
+        const className = "at-tabs__tab"
+            + (id === state.activeId ? " at-tabs__tab--active" : "")
+            + (status?.state === "blocked" && id !== state.activeId ? " at-tabs__tab--attention" : "");
         if (tab.className !== className) {
             tab.className = className;
         }
-        const title = titles.get(id) || id;
+        const dot = tab.querySelector(".at-tabs__status") as HTMLElement | null;
+        if (dot) {
+            const dotClass = mark?.className ?? "at-tabs__status";
+            if (dot.className !== dotClass) {
+                dot.className = dotClass;
+            }
+            dot.hidden = !mark;
+            const dotText = mark?.text ?? "";
+            if (dot.title !== dotText) {
+                dot.title = dotText;
+                if (dotText) {
+                    dot.setAttribute("aria-label", dotText);
+                } else {
+                    dot.removeAttribute("aria-label");
+                }
+            }
+        }
+        const named = titles.get(id) || id;
+        const title = mark ? `${named}: ${mark.text}` : named;
         if (tab.title !== title) {
             tab.title = title;
         }
@@ -68,6 +93,12 @@ function createTabButton(doc: Document, id: string, handlers: TabStripHandlers):
     const tab = doc.createElement("button");
     tab.type = "button";
     tab.dataset.tabId = id;
+
+    const status = doc.createElement("span");
+    status.className = "at-tabs__status";
+    status.setAttribute("role", "img");
+    status.hidden = true;
+    tab.appendChild(status);
 
     const label = doc.createElement("span");
     label.className = "at-tabs__label";

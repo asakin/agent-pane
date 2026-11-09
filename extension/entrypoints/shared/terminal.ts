@@ -9,12 +9,14 @@ import type {
     RequestCreateTTY,
     RequestGetXtermConfig,
     RequestInitialize,
+    RequestListTTY,
     RequestResizeTTY,
     ResponseConfigGet,
     ResponseConfigSet,
     ResponseCreateTTY,
     ResponseGetXtermConfig,
     ResponseInitialize,
+    ResponseListTTY,
 } from "./rpc";
 import { renderSetupScreen, renderUpdateScreen } from "./setup";
 import { checkHost } from "./hostVersion";
@@ -43,6 +45,7 @@ import { blockedDomainsFromConfig } from "./blockedDomains";
 import { createApprovalPrompts, createReadNotice, mountSendTab } from "./pagePanel";
 import { isOwnExtensionPage } from "./sender";
 import { describeUrl } from "./tabLock";
+import { type PaneStatus, isStatusMessage, parseStatus } from "./paneStatus";
 
 const terminalFontFamily = "JetBrainsMono Nerd Font Mono";
 
@@ -404,6 +407,14 @@ async function main() {
     }
 
     const titles = new Map<string, string>();
+    // Pane tabs whose title in titles came from the host, not the terminal.
+    const hostTitled = new Set<string>();
+    // What each pane tab's program reports it is doing (Durable only).
+    const statuses = new Map<string, PaneStatus>();
+    // When each pane tab last had a live tty.event, counted by liveSeq, so a
+    // tty.list answer does not replace facts newer than it.
+    let liveSeq = 0;
+    const liveAt = new Map<string, number>();
     let switchGen = 0;
     let activeTtyId = "";
     const scheduleResize = createResizeSender();
@@ -594,8 +605,56 @@ async function main() {
         if (isReadNotice(msg) && hasTab(msg.tty)) {
             notice(`${terminalName(msg.tty)} read ${msg.title || describeUrl(msg.url)}`);
         }
+        if (isStatusMessage(msg) && hasTab(msg.event.tty)) {
+            liveAt.set(msg.event.tty, ++liveSeq);
+            applyFacts(msg.event.tty, msg.event.status, msg.event.title);
+        }
         return false;
     });
+
+    // Records what a pane tab's program reports. A title the host knows
+    // stands in until the attached terminal sets one itself; an empty one
+    // clears a title the host gave.
+    function applyFacts(tty: string, status: PaneStatus | null, title?: string) {
+        if (status) {
+            statuses.set(tty, status);
+        } else {
+            statuses.delete(tty);
+        }
+        if (title !== undefined && tty !== activeTtyId) {
+            if (title) {
+                titles.set(tty, title);
+                hostTitled.add(tty);
+            } else if (hostTitled.delete(tty)) {
+                titles.delete(tty);
+            }
+        }
+        if (state) {
+            refreshStrip();
+        }
+    }
+
+    // What pane tabs reported before this panel opened, or, given one id,
+    // before that new session joined it. A pane tab with a live event since
+    // the query began keeps that newer one.
+    async function loadFacts(only?: string) {
+        const since = liveSeq;
+        const resp = await browser.runtime.sendMessage<RequestListTTY, ResponseListTTY>({
+            jsonrpc: "2.0",
+            id: crypto.randomUUID(),
+            method: "tty.list",
+            params: undefined,
+        }).catch(() => undefined);
+        if (!resp || "error" in resp || !Array.isArray(resp.result?.sessions)) {
+            return;
+        }
+        for (const session of resp.result.sessions) {
+            if (typeof session?.id === "string" && hasTab(session.id)
+                && (only === undefined || session.id === only) && (liveAt.get(session.id) ?? 0) <= since) {
+                applyFacts(session.id, parseStatus(session.status), typeof session.title === "string" ? session.title : undefined);
+            }
+        }
+    }
 
     try {
         const [activeChromeTab] = await browser.tabs.query({ active: true, windowId });
@@ -609,7 +668,7 @@ async function main() {
         renderTabList(list, state!, titles, {
             onSelect: (id) => void switchTo(id),
             onClose: (id) => void closeTab(id),
-        });
+        }, statuses);
         launcher.setLaunchEnabled(true);
         void refreshStatus();
     };
@@ -680,8 +739,11 @@ async function main() {
             }
             await ensureWindowAlive(windowId, created.id);
             state = replaceTabId(state, deadId, created.id, created.pane);
+            statuses.delete(deadId);
+            liveAt.delete(deadId);
             await saveWindowState(windowId, state);
             refreshStrip();
+            void loadFacts(created.id);
             endpoint = await attachTTY(state.activeId);
             if (!endpoint) {
                 throw new Error("Could not attach to terminal session");
@@ -796,6 +858,7 @@ async function main() {
         };
         await saveWindowState(windowId, state);
         refreshStrip();
+        void loadFacts(created.id);
         try {
             await attachActive(gen);
         } catch (err) {
@@ -815,6 +878,9 @@ async function main() {
         if (id !== state.activeId) {
             await destroyTTY(id, pane);
             titles.delete(id);
+            hostTitled.delete(id);
+            statuses.delete(id);
+            liveAt.delete(id);
             const next = pruneTab(state, id);
             if (!next) {
                 return;
@@ -838,6 +904,9 @@ async function main() {
             const gen = ++switchGen;
             await destroyTTY(id, pane);
             titles.delete(id);
+            hostTitled.delete(id);
+            statuses.delete(id);
+            liveAt.delete(id);
             let created: { id: string; url: string; pane?: string };
             try {
                 created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
@@ -854,6 +923,7 @@ async function main() {
             state = { tabs: [{ id: created.id, app: "", pane: created.pane }], activeId: created.id };
             await saveWindowState(windowId, state);
             refreshStrip();
+            void loadFacts(created.id);
             try {
                 await attachActive(gen);
             } catch (err) {
@@ -879,12 +949,16 @@ async function main() {
             // neighbour, so its session and grant go too.
             await destroyTTY(id, pane);
             titles.delete(id);
+            hostTitled.delete(id);
+            statuses.delete(id);
+            liveAt.delete(id);
         }
     }
 
     terminal.onTitleChange((title) => {
         if (activeTtyId) {
             titles.set(activeTtyId, title);
+            hostTitled.delete(activeTtyId);
             document.title = `${title}  |  Agent Pane`;
             refreshStrip();
         }
@@ -933,6 +1007,7 @@ async function main() {
             state = { tabs: [{ id: created.id, app: "", pane: created.pane }], activeId: created.id };
             await saveWindowState(windowId, state);
             refreshStrip();
+            void loadFacts(created.id);
             await attachActive(gen);
         } catch (err) {
             if (gen === switchGen && !(err instanceof NativeUnavailable)) {
@@ -954,6 +1029,7 @@ async function main() {
 
     if (state) {
         refreshStrip();
+        void loadFacts();
         const gen = ++switchGen;
         try {
             await attachActive(gen);
