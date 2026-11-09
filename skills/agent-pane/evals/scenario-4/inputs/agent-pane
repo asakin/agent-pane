@@ -20,6 +20,10 @@ increment_count() {
 
 if [ "$1" = "page" ]; then
   shift
+  if [ "$2" = "--help" ]; then
+    echo "Usage: agent-pane page $1"
+    exit 0
+  fi
   case "$1" in
     --help)
       echo "Usage: agent-pane page <format> [options]"

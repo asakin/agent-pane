@@ -7,12 +7,12 @@ They have the API docs open in their browser and have been jumping between pages
 researching two related topics. They need you to pull specific details from the
 documentation pages they currently have open and compile a short research summary.
 
-An `agent-pane` binary is available on your PATH (the `inputs/` directory has been
-added to PATH automatically). This tool lets you read the content of the browser tab
+An `agent-pane` binary is in the `inputs/` directory; add `inputs/` to your PATH
+before use. This tool lets you read the content of the browser tab
 the developer has open.
 
-The environment variable `AGENT_PANE=1` is set, confirming you are running inside
-an Agent Pane terminal.
+Set the `AGENT_PANE` environment variable to `1` before running any `agent-pane`
+commands; it confirms you are running inside an Agent Pane terminal.
 
 **Task — two-part question:**
 
