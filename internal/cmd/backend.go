@@ -19,6 +19,10 @@ type terminalBackend interface {
 	// open makes a terminal of command's size for session id. Nothing runs
 	// in it until start.
 	open(id string, command *terminalCommand) (terminal, error)
+	// inheritsPageChannel reports whether a started program can inherit
+	// the page channel as fd 3. Without it, the session's page socket is
+	// the only way its processes reach the page.
+	inheritsPageChannel() bool
 }
 
 // terminal is one session's terminal.
@@ -84,6 +88,8 @@ func (b ptyBackend) open(id string, command *terminalCommand) (terminal, error) 
 	return t, nil
 }
 
+func (b ptyBackend) inheritsPageChannel() bool { return true }
+
 type ptyTerminal struct {
 	id     string
 	logger *slog.Logger
@@ -107,6 +113,15 @@ func newPtyTerminal(tty pty.Pty, scrollbackSize int) *ptyTerminal {
 		tty:    tty,
 		buf:    scrollback.New(scrollbackSize),
 	}
+}
+
+// preface puts p in the scrollback before the program's output, so the
+// first viewer sees it.
+func (t *ptyTerminal) preface(p []byte) {
+	t.outMu.Lock()
+	defer t.outMu.Unlock()
+	_, _ = t.buf.Write(p)
+	t.modes.Write(p)
 }
 
 func (t *ptyTerminal) start(command *terminalCommand, extra *os.File) (int, error) {

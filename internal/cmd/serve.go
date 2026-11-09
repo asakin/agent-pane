@@ -15,14 +15,17 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
+	"agent-pane/internal/herdrcore"
 	"agent-pane/internal/jsonrpc"
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
@@ -96,6 +99,13 @@ type SessionManager struct {
 
 	// panes are the pane tabs the extension has open, by id; guarded by mu.
 	panes map[string]*paneTab
+	// durable is the Durable (preview) backend, used when the
+	// terminalBackend setting picks it; nil where there is none.
+	durable terminalBackend
+	// closing is set by Close, after which Create refuses new sessions;
+	// guarded by mu. creating counts the Creates still running.
+	closing  bool
+	creating sync.WaitGroup
 	// pageReads counts page reads in flight across all sessions.
 	pageReads atomic.Int32
 }
@@ -130,6 +140,7 @@ func NewSessionManager(port int, logger *slog.Logger) *SessionManager {
 		sessions: make(map[string]*Session),
 		panes:    make(map[string]*paneTab),
 		backend:  ptyBackend{logger: logger},
+		durable:  newCoreBackend(logger, herdrcore.Private(dataDir)),
 		port:     port,
 		logger:   logger,
 	}
@@ -249,66 +260,66 @@ var startHook = func() {}
 
 // Create starts a session running command in the pane tab paneID (a new pane
 // tab when it is empty or cannot be joined). agent is the agent-definition id
-// the launch chose, or "" for a shell.
+// the launch chose, or "" for a shell. The session runs in the backend the
+// terminalBackend setting picks; when Durable (preview) cannot start it, it
+// runs in the Built-in backend with a notice in the terminal saying why.
+// When Durable cannot tell whether it started, Create fails instead, so the
+// program does not run twice.
 func (m *SessionManager) Create(label, paneID, agent string, command *terminalCommand) (*Session, error) {
 	id := strings.ToLower(rand.Text())
-	term, err := m.backend.open(id, command)
-	if err != nil {
-		return nil, err
-	}
-
-	// A terminal without a page channel still works; page commands in it
-	// say they are not in an Agent Pane terminal.
-	page, child, err := newPageChannel()
-	if err != nil {
-		m.logger.Warn("no page channel for terminal", "error", err)
-	}
-
-	// Commands that do not inherit the page channel (a coding agent's
-	// command tool) reach the session through this socket instead.
-	var sock *net.UnixListener
-	sockPath := ""
-	if page != nil {
-		if sock, sockPath, err = newPageSocket(); err != nil {
-			m.logger.Warn("no page socket for terminal", "error", err)
-		}
-	}
-
 	session := &Session{
-		ID:         id,
-		term:       term,
-		manager:    m,
-		Label:      label,
-		page:       page,
-		pageSocket: sock,
+		ID:      id,
+		manager: m,
+		Label:   label,
 	}
 	// Register the session before it starts, so its pane tab is held and
 	// its environment can name it. It is not live until it has started.
 	m.mu.Lock()
+	if m.closing {
+		m.mu.Unlock()
+		return nil, errors.New("the host is shutting down")
+	}
+	m.creating.Add(1)
+	defer m.creating.Done()
 	session.pane = m.paneLocked(paneID)
 	m.sessions[id] = session
 	m.mu.Unlock()
-	command.Env = withSessionEnv(command.Env, sessionEnv(session, agent, page != nil, sockPath))
 
 	startHook()
-	pid, err := term.start(command, child)
-	if child != nil {
-		_ = child.Close()
+	pid, err := 0, error(nil)
+	started := false
+	var notice []byte
+	if m.durable != nil && cfg().String(terminalBackendKey) == terminalBackendDurable {
+		pid, err = m.startIn(m.durable, session, agent, command, nil)
+		switch {
+		case err == nil:
+			started = true
+		case errors.Is(err, errCoreUnsure):
+			// The program may be running in the core: starting it again
+			// in Built-in could run it twice.
+			m.logger.Warn("durable terminal backend may have started the terminal; not starting it again", "error", err)
+		default:
+			m.logger.Warn("durable terminal backend could not start the terminal; using built-in", "error", err)
+			notice = fallbackNotice(err)
+		}
+	}
+	if !started && !errors.Is(err, errCoreUnsure) {
+		pid, err = m.startIn(m.backend, session, agent, command, notice)
 	}
 	if err != nil {
 		m.remove(id)
-		return nil, fmt.Errorf("failed to start pty: %w", err)
+		return nil, fmt.Errorf("failed to start terminal: %w", err)
 	}
 	session.mu.Lock()
 	session.started = true
 	session.mu.Unlock()
 
 	// The session is reaped when its program exits or its terminal ends.
-	term.run(func() { m.reap(id) })
-	if page != nil {
-		go session.servePage(page, m.extensionCaller)
+	session.term.run(func() { m.reap(id) })
+	if session.page != nil {
+		go session.servePage(session.page, m.extensionCaller)
 	}
-	if sock != nil && pid > 0 {
+	if sock := session.pageSocket; sock != nil && pid > 0 {
 		go session.servePageSocket(sock, pid, m.extensionCaller)
 	} else if sock != nil {
 		// An older macOS spawn agent does not say which process it
@@ -317,6 +328,69 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 	}
 
 	return session, nil
+}
+
+// startIn starts command for session in backend, with the session's page
+// channel and socket, with notice shown before the program's output. On
+// error it leaves the session as it found it.
+func (m *SessionManager) startIn(backend terminalBackend, session *Session, agent string, command *terminalCommand, notice []byte) (int, error) {
+	term, err := backend.open(session.ID, command)
+	if err != nil {
+		return 0, err
+	}
+	if t, ok := term.(*ptyTerminal); ok && notice != nil {
+		t.preface(notice)
+	}
+
+	// A terminal without a page channel still works; page commands in it
+	// say they are not in an Agent Pane terminal.
+	var page *net.UnixConn
+	var child *os.File
+	if backend.inheritsPageChannel() {
+		if page, child, err = newPageChannel(); err != nil {
+			m.logger.Warn("no page channel for terminal", "error", err)
+		}
+	}
+
+	// Commands that do not inherit the page channel (a coding agent's
+	// command tool) reach the session through this socket instead.
+	var sock *net.UnixListener
+	sockPath := ""
+	if page != nil || !backend.inheritsPageChannel() {
+		if sock, sockPath, err = newPageSocket(); err != nil {
+			m.logger.Warn("no page socket for terminal", "error", err)
+		}
+	}
+
+	session.mu.Lock()
+	session.term, session.page, session.pageSocket = term, page, sock
+	session.mu.Unlock()
+	command.Env = withSessionEnv(command.Env, sessionEnv(session, agent, page != nil, sockPath))
+
+	pid, err := term.start(command, child)
+	if child != nil {
+		_ = child.Close()
+	}
+	if err != nil {
+		session.mu.Lock()
+		session.term, session.page, session.pageSocket = nil, nil, nil
+		session.mu.Unlock()
+		if page != nil {
+			_ = page.Close()
+		}
+		if sock != nil {
+			_ = sock.Close()
+		}
+		_ = term.close()
+		return 0, err
+	}
+	return pid, nil
+}
+
+// fallbackNotice tells the person in a Built-in session why it is not
+// running in the Durable (preview) backend they chose.
+func fallbackNotice(cause error) []byte {
+	return []byte(fmt.Sprintf("\x1b[33mAgent Pane: the Durable (preview) terminal backend could not start this terminal (%s). It runs in the Built-in backend instead.\x1b[0m\r\n", strings.ReplaceAll(cause.Error(), "\n", " ")))
 }
 
 // Destroy ends a live session. One still starting is not the caller's yet.
@@ -337,6 +411,37 @@ func (m *SessionManager) Destroy(id string) error {
 	m.dropTokens(id)
 	session.finalize()
 	return nil
+}
+
+// Close ends every session whose terminal would outlive the host: the
+// Durable (preview) ones, which run in the core, and any the core may have
+// started without saying so. Built-in terminals end with the host's process.
+// Sessions still starting finish starting first, and no new ones start after.
+func (m *SessionManager) Close() {
+	m.mu.Lock()
+	m.closing = true
+	m.mu.Unlock()
+	m.creating.Wait()
+	m.mu.RLock()
+	var ids []string
+	for id, s := range m.sessions {
+		s.mu.Lock()
+		_, durable := s.term.(*coreTerminal)
+		s.mu.Unlock()
+		if durable {
+			ids = append(ids, id)
+		}
+	}
+	m.mu.RUnlock()
+	for _, id := range ids {
+		m.remove(id)
+	}
+	// Starts the host could not confirm ended may still run in the core.
+	if core, ok := m.durable.(*coreBackend); ok {
+		if err := core.settle(); err != nil {
+			m.logger.Warn("durable terminals may outlive the host", "error", err)
+		}
+	}
 }
 
 // reap removes a dead session after its program exits or its terminal ends.
@@ -392,7 +497,9 @@ func (s *Session) close() {
 		}
 	}
 	s.replies = nil
-	_ = s.term.close()
+	if s.term != nil {
+		_ = s.term.close()
+	}
 }
 
 func (s *Session) isStarted() bool {
@@ -473,9 +580,20 @@ func NewCmdServe(version string) *cobra.Command {
 				}
 			}()
 
+			// Chrome ends a host it no longer needs with SIGTERM.
+			stop := make(chan os.Signal, 1)
+			signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+			go func() {
+				<-stop
+				done <- nil
+			}()
+
 			err = <-done
 			logger.Info("Shutting down server")
 			server.Shutdown(context.Background())
+			// Durable (preview) terminals keep today's rule: they end
+			// with the host.
+			sessions.Close()
 			return err
 		},
 	}

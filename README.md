@@ -33,7 +33,7 @@ Then add the extension to Chrome. Until the Chrome Web Store listing exists, loa
 2. Click **Load unpacked** and choose `~/.local/share/agent-pane/extensions/chrome` (in the file dialog, **Cmd+Shift+.** on macOS shows hidden folders)
 3. Open the side panel from the Agent Pane extension icon
 
-The installer is published with each release and installs that release only: it downloads the release's archive for this machine, checks it against the release's `checksums.txt`, and runs the archive's `place.sh`. That script puts the program in `~/.local/bin`, adds `~/.local/bin` to `PATH`, writes the native-messaging manifest for each Chromium browser it finds, installs the [agent skill](#agent-skill), and on macOS starts the LaunchAgent that launches shells independently of Chrome. It also places a private, pinned copy of [herdr-core](https://github.com/herdrdev/herdr-core) at `~/.local/share/agent-pane/libexec/hc`, with its license and notices in `~/.local/share/agent-pane/licenses/herdr-core/`. It is never put on `PATH` or at `~/.local/bin/hc`, so a Herdr install of your own is not touched. Agent Pane does not run its terminals in it yet. It keeps a copy of the release in `~/.local/share/agent-pane/release` and ends by running `agent-pane doctor`. Nothing comes from the repository's `main` branch.
+The installer is published with each release and installs that release only: it downloads the release's archive for this machine, checks it against the release's `checksums.txt`, and runs the archive's `place.sh`. That script puts the program in `~/.local/bin`, adds `~/.local/bin` to `PATH`, writes the native-messaging manifest for each Chromium browser it finds, installs the [agent skill](#agent-skill), and on macOS starts the LaunchAgent that launches shells independently of Chrome. It also places a private, pinned copy of [herdr-core](https://github.com/herdrdev/herdr-core) at `~/.local/share/agent-pane/libexec/hc`, with its license and notices in `~/.local/share/agent-pane/licenses/herdr-core/`. It is never put on `PATH` or at `~/.local/bin/hc`, so a Herdr install of your own is not touched. Agent Pane runs pane tabs in it only when Options sets **Terminal backend** to Durable (preview); Built-in, the default, does not use it. It keeps a copy of the release in `~/.local/share/agent-pane/release` and ends by running `agent-pane doctor`. Nothing comes from the repository's `main` branch.
 
 ## Updating
 
@@ -69,7 +69,7 @@ Run the install command again, then click reload on the Agent Pane card in `chro
 
 **Blocked domains.** Options has a list of domains Agent Pane never reads, subdomains included. A block beats any approval, and it applies to Send tab too.
 
-**Settings.** Options also sets the shell and its arguments, theme, font size, extra environment variables, which agents appear in the menu, and the folder agents start in. Agent definitions are small folders described in [agents/README.md](agents/README.md); drop your own into `~/.config/agent-pane/agents/` to add or replace one.
+**Settings.** Options also sets the shell and its arguments, theme, font size, extra environment variables, which agents appear in the menu, and the folder agents start in. **Terminal backend** picks where new pane tabs run: Built-in (the default) or Durable (preview), which runs them in the terminal runtime bundled with Agent Pane. In the preview, pane tabs still end when Chrome or the host closes, and programs reach the page only through `AGENT_PANE_SOCKET` (no `AGENT_PANE_FD`). If Durable cannot start a pane tab, it runs in Built-in and the terminal says why. Agent definitions are small folders described in [agents/README.md](agents/README.md); drop your own into `~/.config/agent-pane/agents/` to add or replace one.
 
 ### Agent skill
 
@@ -112,11 +112,11 @@ flowchart LR
 
 Chrome starts the `agent-pane` program through native messaging. The program starts your shell in a pseudo-terminal and streams it to the side panel over a loopback WebSocket that only the extension can open. On macOS a small LaunchAgent starts the shells so they are not tied to Chrome's process group.
 
-A page read goes the other way: the program in the pane tab asks the host over a connection the host gave that terminal, the host knows which pane tab is asking and has the side panel prompt you if needed, and the extension reads the page. Approvals live in the host's memory, so restarting Chrome or the host starts every pane tab without one.
+A page read goes the other way: the program in the pane tab asks the host over a connection the host gave that terminal, the host knows which pane tab is asking and has the side panel prompt you if needed, and the extension reads the page. That connection is an inherited descriptor (`AGENT_PANE_FD`) or, for commands that did not inherit it, the terminal's own socket (`AGENT_PANE_SOCKET`) in a folder only you can open, which answers only processes started in that terminal and refuses any other. Durable (preview) pane tabs have only the socket. Approvals live in the host's memory, so restarting Chrome or the host starts every pane tab without one.
 
 ## Security
 
-The extension asks for `nativeMessaging`, `scripting`, `tabs`, `sidePanel`, `storage` and access to all sites, the last two being what page reading needs. Everything on your machine runs as your user: a shell in a pane tab can do what you can do, and any other program running as you can read Chrome's profile, run `agent-pane`, or edit the installed files. Agent Pane is not a sandbox. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+The extension asks for `nativeMessaging`, `scripting`, `tabs`, `sidePanel`, `storage` and access to all sites, the last two being what page reading needs. Everything on your machine runs as your user: a shell in a pane tab can do what you can do, and any other program running as you can read Chrome's profile, run `agent-pane`, or edit the installed files. Agent Pane is not a sandbox. Page content goes only to the terminal that asked for it: over its inherited descriptor, or over its page socket, which checks that the connecting process was started in that terminal. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## Where it is going
 
