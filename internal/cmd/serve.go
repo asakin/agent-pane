@@ -76,9 +76,11 @@ type Session struct {
 	agent string
 	// window is the Chrome window the session is shown in, as
 	// <browserId>:<windowId>; "" once that window closed or when unknown.
-	// coreWindow is what its core terminal's label holds (Durable only).
+	// coreWindow is what its core terminal's label holds (Durable only);
+	// windowMu orders the writes of that label.
 	window     string
 	coreWindow string
+	windowMu   sync.Mutex
 	// socketPath is the page socket's path, which the program was given.
 	socketPath string
 	// detached is set when the host let go of a Durable session and left
