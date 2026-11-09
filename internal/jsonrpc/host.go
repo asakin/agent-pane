@@ -72,6 +72,11 @@ func NewHost(logger *slog.Logger) *Host {
 	}
 }
 
+// SetInput sets where the host reads messages. Call it before Listen.
+func (h *Host) SetInput(r io.Reader) {
+	h.in = r
+}
+
 // SetOutput sets where the host writes messages. Call it before Listen.
 func (h *Host) SetOutput(w io.Writer) {
 	h.out = w

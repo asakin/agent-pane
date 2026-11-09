@@ -1,0 +1,669 @@
+//go:build unix
+
+package cmd
+
+import (
+	"context"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"agent-pane/internal/herdrcore"
+	"agent-pane/internal/jsonrpc"
+	"github.com/gorilla/websocket"
+)
+
+// fakeCore stands in for the bundled core at the coreAPI boundary.
+type fakeCore struct {
+	mu       sync.Mutex
+	runs     []herdrcore.RunParams
+	attaches []herdrcore.AttachParams
+	killed   []string
+	removed  []string
+	streams  []*fakeStream
+	events   map[string]chan herdrcore.Event
+	runErr   error
+	pid      int
+	done     chan struct{}
+}
+
+func newFakeCore() *fakeCore {
+	return &fakeCore{events: map[string]chan herdrcore.Event{}, pid: os.Getpid(), done: make(chan struct{})}
+}
+
+func (f *fakeCore) Run(_ context.Context, p herdrcore.RunParams) (herdrcore.Terminal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.runErr != nil {
+		return herdrcore.Terminal{}, f.runErr
+	}
+	f.runs = append(f.runs, p)
+	address := fmt.Sprintf("t%d", len(f.runs))
+	f.events[p.Labels[coreSessionLabel]] = make(chan herdrcore.Event, 4)
+	pid := f.pid
+	return herdrcore.Terminal{Address: address, State: "live", Labels: p.Labels, Pid: &pid}, nil
+}
+
+func (f *fakeCore) Attach(_ context.Context, p herdrcore.AttachParams) (coreStream, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attaches = append(f.attaches, p)
+	s := &fakeStream{out: make(chan []byte, 8), closed: make(chan struct{})}
+	s.out <- []byte("paint of " + p.Terminal)
+	f.streams = append(f.streams, s)
+	return s, nil
+}
+
+func (f *fakeCore) Subscribe(_ context.Context, labels map[string]string) (coreEvents, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ch := f.events[labels[coreSessionLabel]]
+	address := fmt.Sprintf("t%d", len(f.runs))
+	return &fakeEvents{ch: ch, snapshot: []herdrcore.Terminal{{Address: address, State: "live"}}}, nil
+}
+
+func (f *fakeCore) Kill(_ context.Context, terminal string) (herdrcore.Terminal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.killed = append(f.killed, terminal)
+	return herdrcore.Terminal{Address: terminal, State: "finished"}, nil
+}
+
+func (f *fakeCore) Remove(_ context.Context, terminal string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed = append(f.removed, terminal)
+	return nil
+}
+
+func (f *fakeCore) Done() <-chan struct{} { return f.done }
+
+// finish reports the session's terminal finished, as the core does when its
+// program exits.
+func (f *fakeCore) finish(session, address string) {
+	f.mu.Lock()
+	ch := f.events[session]
+	f.mu.Unlock()
+	ch <- herdrcore.Event{Seq: 1, Type: "finished", Terminal: address}
+}
+
+func (f *fakeCore) stream(i int) *fakeStream {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.streams[i]
+}
+
+type fakeStream struct {
+	out    chan []byte
+	closed chan struct{}
+	once   sync.Once
+
+	mu      sync.Mutex
+	input   []string
+	resizes [][2]int
+}
+
+func (s *fakeStream) Read(p []byte) (int, error) {
+	select {
+	case b := <-s.out:
+		return copy(p, b), nil
+	case <-s.closed:
+		return 0, herdrcore.ErrStreamClosed
+	}
+}
+
+func (s *fakeStream) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.input = append(s.input, string(p))
+	return len(p), nil
+}
+
+func (s *fakeStream) Resize(cols, rows int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resizes = append(s.resizes, [2]int{cols, rows})
+	return nil
+}
+
+func (s *fakeStream) Close() error {
+	s.once.Do(func() { close(s.closed) })
+	return nil
+}
+
+func (s *fakeStream) isClosed() bool {
+	select {
+	case <-s.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+type fakeEvents struct {
+	ch       chan herdrcore.Event
+	snapshot []herdrcore.Terminal
+	once     sync.Once
+	closed   chan struct{}
+}
+
+func (e *fakeEvents) Snapshot() []herdrcore.Terminal { return e.snapshot }
+
+func (e *fakeEvents) Next(ctx context.Context) (herdrcore.Event, error) {
+	e.once.Do(func() { e.closed = make(chan struct{}) })
+	select {
+	case ev := <-e.ch:
+		return ev, nil
+	case <-e.closed:
+		return herdrcore.Event{}, herdrcore.ErrStreamClosed
+	case <-ctx.Done():
+		return herdrcore.Event{}, ctx.Err()
+	}
+}
+
+func (e *fakeEvents) Close() error {
+	e.once.Do(func() { e.closed = make(chan struct{}) })
+	select {
+	case <-e.closed:
+	default:
+		close(e.closed)
+	}
+	return nil
+}
+
+// useBackend sets the terminalBackend setting for one test.
+func useBackend(t *testing.T, name string) {
+	t.Helper()
+	cfg().Set(terminalBackendKey, name)
+	t.Cleanup(func() { cfg().Delete(terminalBackendKey) })
+}
+
+// nativeHarness drives a messaging host over native-messaging framing, as
+// Chrome does, with the host's WebSocket server for its attach URLs.
+type nativeHarness struct {
+	sessions *SessionManager
+	in       *io.PipeWriter
+	out      *io.PipeReader
+	mu       sync.Mutex
+	next     int
+}
+
+func newNativeHarness(t *testing.T, durable terminalBackend) *nativeHarness {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ln, err := listenLoopback()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewSessionManager(ln.Addr().(*net.TCPAddr).Port, logger)
+	m.durable = durable
+	server := &http.Server{Handler: NewWebSocketHandler(m)}
+	go server.Serve(ln)
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	host := NewMessagingHost(logger, m, "test")
+	host.SetInput(inR)
+	host.SetOutput(outW)
+	go host.Listen()
+	t.Cleanup(func() {
+		inW.Close()
+		outR.Close()
+		server.Close()
+		m.Close()
+		for _, id := range m.List() {
+			m.Destroy(id)
+		}
+	})
+	return &nativeHarness{sessions: m, in: inW, out: outR}
+}
+
+// call sends one request and returns its result, or the error message.
+func (h *nativeHarness) call(t *testing.T, method string, params any) (json.RawMessage, string) {
+	t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.next++
+	id := fmt.Sprint(h.next)
+	raw, _ := json.Marshal(params)
+	req, _ := json.Marshal(jsonrpc.JSONRPCRequest{JSONRPCVersion: "2.0", ID: id, Method: method, Params: raw})
+	if err := binary.Write(h.in, binary.LittleEndian, uint32(len(req))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.in.Write(req); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var n uint32
+		if err := binary.Read(h.out, binary.LittleEndian, &n); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, n)
+		if _, err := io.ReadFull(h.out, buf); err != nil {
+			t.Fatal(err)
+		}
+		var resp jsonrpc.JSONRPCResponse
+		if err := json.Unmarshal(buf, &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.ID != id {
+			continue
+		}
+		if resp.Error != nil {
+			var e struct {
+				Message string `json:"message"`
+			}
+			json.Unmarshal(resp.Error, &e)
+			return nil, e.Message
+		}
+		return resp.Result, ""
+	}
+}
+
+type endpointResult struct {
+	ID   string `json:"id"`
+	URL  string `json:"url"`
+	Pane string `json:"pane"`
+}
+
+func (h *nativeHarness) create(t *testing.T, params map[string]any) endpointResult {
+	t.Helper()
+	raw, msg := h.call(t, "tty.create", params)
+	if msg != "" {
+		t.Fatalf("tty.create: %s", msg)
+	}
+	var ep endpointResult
+	if err := json.Unmarshal(raw, &ep); err != nil {
+		t.Fatal(err)
+	}
+	return ep
+}
+
+func (h *nativeHarness) list(t *testing.T) []string {
+	t.Helper()
+	raw, msg := h.call(t, "tty.list", nil)
+	if msg != "" {
+		t.Fatalf("tty.list: %s", msg)
+	}
+	var r struct {
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+	}
+	json.Unmarshal(raw, &r)
+	var ids []string
+	for _, s := range r.Sessions {
+		ids = append(ids, s.ID)
+	}
+	return ids
+}
+
+func dialAttach(t *testing.T, url string) *websocket.Conn {
+	t.Helper()
+	header := http.Header{}
+	header.Set("Origin", extOrigin)
+	conn, _, err := websocket.DefaultDialer.Dial(url, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
+func readFrame(t *testing.T, conn *websocket.Conn) string {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	kind, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != websocket.BinaryMessage {
+		t.Fatalf("frame kind %d", kind)
+	}
+	return string(data)
+}
+
+func eventually(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestBuiltinBackendIsTheDefault(t *testing.T) {
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	s, ok := h.sessions.Get(ep.ID)
+	if !ok {
+		t.Fatal("session not found")
+	}
+	if _, ok := s.term.(*ptyTerminal); !ok {
+		t.Fatalf("default backend made %T", s.term)
+	}
+	if len(core.runs) != 0 {
+		t.Fatal("the core ran a terminal with the preview off")
+	}
+}
+
+func TestDurableBackendMapsTTYCalls(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+
+	// tty.create runs a core terminal with the session's command, size,
+	// environment and labels, and answers with the host's own ids.
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 100, "rows": 30})
+	if strings.HasPrefix(ep.ID, "t") && len(ep.ID) < 4 || ep.Pane == "" || !strings.Contains(ep.URL, "/tty/"+ep.ID+"?token=") {
+		t.Fatalf("endpoint %+v", ep)
+	}
+	if len(core.runs) != 1 {
+		t.Fatalf("runs %d", len(core.runs))
+	}
+	run := core.runs[0]
+	if run.Size == nil || run.Size.Cols != 100 || run.Size.Rows != 30 || !run.NoParent || len(run.Argv) == 0 {
+		t.Fatalf("run %+v", run)
+	}
+	if run.Env[envSessionID] != publicID("session", ep.ID) || run.Env[envTabID] != publicID("tab", ep.Pane) {
+		t.Fatalf("env %v", run.Env)
+	}
+	if run.Labels[coreSessionLabel] != publicID("session", ep.ID) || run.Labels[corePaneLabel] != publicID("tab", ep.Pane) {
+		t.Fatalf("labels %v", run.Labels)
+	}
+	for _, v := range run.Labels {
+		if v == ep.Pane || v == ep.ID {
+			t.Fatal("a secret host id is in the core's labels")
+		}
+	}
+	// No inherited descriptor: the page socket is the way to the page.
+	if _, ok := run.Env[pageFDEnv]; ok {
+		t.Fatalf("%s set for a core terminal", pageFDEnv)
+	}
+	if !strings.HasPrefix(run.Env[envSocket], pageSocketDir+"/") {
+		t.Fatalf("socket %q", run.Env[envSocket])
+	}
+	for k := range run.Env {
+		if strings.HasPrefix(k, "HC_") {
+			t.Fatalf("%s passed over the core's own", k)
+		}
+	}
+
+	if ids := h.list(t); len(ids) != 1 || ids[0] != ep.ID {
+		t.Fatalf("tty.list %v", ids)
+	}
+
+	// The WebSocket gets the core's first paint as its one replay frame,
+	// then live output; its input goes to the core stream.
+	conn := dialAttach(t, ep.URL)
+	if got := readFrame(t, conn); got != "paint of t1" {
+		t.Fatalf("replay %q", got)
+	}
+	if a := core.attaches[0]; a.Terminal != "t1" || a.Cols != 100 || a.Rows != 30 || a.History != coreHistoryLines {
+		t.Fatalf("attach %+v", a)
+	}
+	stream := core.stream(0)
+	stream.out <- []byte("live")
+	if got := readFrame(t, conn); got != "live" {
+		t.Fatalf("live %q", got)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("ls\r")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "input", func() bool {
+		stream.mu.Lock()
+		defer stream.mu.Unlock()
+		return len(stream.input) == 1 && stream.input[0] == "ls\r"
+	})
+
+	// tty.resize goes to the core through the viewer's stream.
+	if _, msg := h.call(t, "tty.resize", map[string]any{"tty": ep.ID, "cols": 120, "rows": 40}); msg != "" {
+		t.Fatal(msg)
+	}
+	stream.mu.Lock()
+	resizes := append([][2]int(nil), stream.resizes...)
+	stream.mu.Unlock()
+	if len(resizes) != 1 || resizes[0] != [2]int{120, 40} {
+		t.Fatalf("resizes %v", resizes)
+	}
+
+	// tty.attach hands out a new token; the new viewer replaces the old one
+	// at the new size.
+	raw, msg := h.call(t, "tty.attach", map[string]any{"id": ep.ID})
+	if msg != "" {
+		t.Fatal(msg)
+	}
+	var again endpointResult
+	json.Unmarshal(raw, &again)
+	conn2 := dialAttach(t, again.URL)
+	if got := readFrame(t, conn2); got != "paint of t1" {
+		t.Fatalf("second replay %q", got)
+	}
+	if a := core.attaches[1]; a.Cols != 120 || a.Rows != 40 {
+		t.Fatalf("reattach %+v", a)
+	}
+	eventually(t, "the first stream to close", stream.isClosed)
+
+	// tty.destroy kills and removes the core terminal and revokes the
+	// pane tab's grants.
+	if _, msg := h.call(t, "tty.destroy", map[string]any{"id": ep.ID, "pane": ep.Pane}); msg != "" {
+		t.Fatal(msg)
+	}
+	if len(core.killed) != 1 || core.killed[0] != "t1" || len(core.removed) != 1 || core.removed[0] != "t1" {
+		t.Fatalf("killed %v removed %v", core.killed, core.removed)
+	}
+	if ids := h.list(t); len(ids) != 0 {
+		t.Fatalf("tty.list after destroy %v", ids)
+	}
+	if _, err := os.Stat(run.Env[envSocket]); !os.IsNotExist(err) {
+		t.Fatalf("page socket outlived the session: %v", err)
+	}
+}
+
+func TestDurableSessionIsReapedWhenItsProgramEnds(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	core.finish(core.runs[0].Labels[coreSessionLabel], "t1")
+	eventually(t, "the session to be reaped", func() bool { return len(h.sessions.List()) == 0 })
+	if _, msg := h.call(t, "tty.attach", map[string]any{"id": ep.ID}); msg == "" {
+		t.Fatal("attached to an ended session")
+	}
+	core.mu.Lock()
+	defer core.mu.Unlock()
+	if len(core.removed) != 1 {
+		t.Fatalf("finished terminal not removed: %v", core.removed)
+	}
+}
+
+func TestDurableFallsBackToBuiltinWithANotice(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS terminals start through the spawn agent")
+	}
+	useBackend(t, terminalBackendDurable)
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return nil, errCoreMissing }})
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	s, ok := h.sessions.Get(ep.ID)
+	if !ok {
+		t.Fatal("no session")
+	}
+	if _, ok := s.term.(*ptyTerminal); !ok {
+		t.Fatalf("fallback made %T", s.term)
+	}
+	replay := readFrame(t, dialAttach(t, ep.URL))
+	if !strings.Contains(replay, "Durable (preview) terminal backend could not start") || !strings.Contains(replay, errCoreMissing.Error()) {
+		t.Fatalf("replay %q", replay)
+	}
+}
+
+func TestDurableStartFailureLeavesNothingBehind(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS terminals start through the spawn agent")
+	}
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	core.runErr = &herdrcore.Error{Message: "spawn_failed", Kind: "spawn_failed"}
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	before, _ := os.ReadDir(pageSocketDir)
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	if ids := h.list(t); len(ids) != 1 || ids[0] != ep.ID {
+		t.Fatalf("tty.list %v", ids)
+	}
+	// One socket for the Built-in session; the failed Durable one's is gone.
+	after, _ := os.ReadDir(pageSocketDir)
+	if len(after) != len(before)+1 {
+		t.Fatalf("page sockets %d, then %d", len(before), len(after))
+	}
+}
+
+func TestCloseEndsDurableSessions(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	h.sessions.Close()
+	if len(h.sessions.List()) != 0 || len(core.removed) != 1 {
+		t.Fatalf("sessions %v removed %v", h.sessions.List(), core.removed)
+	}
+}
+
+func TestCoreBackendRedialsADroppedConnection(t *testing.T) {
+	first, second := newFakeCore(), newFakeCore()
+	dials := 0
+	b := &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) {
+		dials++
+		if dials == 1 {
+			return first, nil
+		}
+		return second, nil
+	}}
+	ctx := context.Background()
+	if c, _ := b.connect(ctx); c != first {
+		t.Fatal("first dial")
+	}
+	if c, _ := b.connect(ctx); c != first || dials != 1 {
+		t.Fatal("an open connection was redialled")
+	}
+	close(first.done)
+	if c, _ := b.connect(ctx); c != second || dials != 2 {
+		t.Fatal("a dropped connection was not redialled")
+	}
+}
+
+func TestCoreEnvKeepsTheCoresOwnKeys(t *testing.T) {
+	env := coreEnv([]string{"HOME=/home/me", "HC_SESSION=mine", "HC_SOCKET=/x", "PATH=/bin", "XDG_STATE_HOME=/state"})
+	if _, ok := env["HC_SESSION"]; ok {
+		t.Fatal("HC_SESSION passed on")
+	}
+	if env["PATH"] != "/bin" || env["XDG_STATE_HOME"] != "/state" || env["XDG_CONFIG_HOME"] != "/home/me/.config" {
+		t.Fatalf("env %v", env)
+	}
+}
+
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// TestDurableBackendRealCore runs a pane tab through the pinned core when
+// AGENT_PANE_TEST_HC names it, the way the side panel does: tty.create,
+// WebSocket attach, typing, resize, a page read over the page socket, and
+// tty.destroy.
+func TestDurableBackendRealCore(t *testing.T) {
+	binary := os.Getenv("AGENT_PANE_TEST_HC")
+	if binary == "" {
+		t.Skip("set AGENT_PANE_TEST_HC to the pinned hc to run against a real core")
+	}
+	binary, err := filepath.Abs(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.MkdirTemp("", "apcore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(data) })
+	core := herdrcore.Private(data)
+	core.Binary = binary
+	t.Cleanup(func() {
+		cmd := exec.Command(core.Binary, "server", "stop")
+		cmd.Env = core.Env(os.Environ())
+		cmd.Run()
+	})
+	useBackend(t, terminalBackendDurable)
+	cfg().Set("command", "/bin/sh")
+	t.Cleanup(func() { cfg().Delete("command") })
+
+	ext := &fakeExtension{tab: pageTab{TabID: 7}, choice: "all", content: "from the tab"}
+	h := newNativeHarness(t, newCoreBackend(discardLogger(), core))
+	h.sessions.SetExtensionCaller(ext.call)
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	s, ok := h.sessions.Get(ep.ID)
+	if !ok {
+		t.Fatal("no session")
+	}
+	if _, ok := s.term.(*coreTerminal); !ok {
+		t.Fatalf("session runs in %T", s.term)
+	}
+
+	conn := dialAttach(t, ep.URL)
+	readFrame(t, conn)
+	var out strings.Builder
+	waitWS := func(want string) {
+		t.Helper()
+		for !strings.Contains(out.String(), want) {
+			out.WriteString(readFrame(t, conn))
+		}
+	}
+	type_ := func(line string) {
+		t.Helper()
+		if err := conn.WriteMessage(websocket.BinaryMessage, []byte(line+"\r")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type_(`echo "SOCK[$AGENT_PANE_SOCKET] FD[$AGENT_PANE_FD] TAB[$AGENT_PANE_TAB_ID]"`)
+	waitWS("SOCK[" + pageSocketDir)
+	if !strings.Contains(out.String(), "FD[]") || !strings.Contains(out.String(), "TAB["+publicID("tab", ep.Pane)+"]") {
+		t.Fatalf("environment %q", out.String())
+	}
+
+	if _, msg := h.call(t, "tty.resize", map[string]any{"tty": ep.ID, "cols": 101, "rows": 33}); msg != "" {
+		t.Fatal(msg)
+	}
+	type_(`stty size`)
+	waitWS("33 101")
+
+	// A page read from the terminal's process goes through the page socket,
+	// checked against the pid the core reported, and the approval prompt.
+	type_(fmt.Sprintf(`PAGE_SOCKET_HELPER=1 %q -test.run='^TestPageSocketHelperProcess$'`, os.Args[0]))
+	waitWS("OK[from the tab]")
+	if ext.promptCount() != 1 {
+		t.Fatalf("prompts %d", ext.promptCount())
+	}
+
+	if _, msg := h.call(t, "tty.destroy", map[string]any{"id": ep.ID, "pane": ep.Pane}); msg != "" {
+		t.Fatal(msg)
+	}
+	c, err := core.Dial(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	left, err := c.List(context.Background(), nil, true)
+	if err != nil || len(left) != 0 {
+		t.Fatalf("core terminals after destroy: %+v %v", left, err)
+	}
+}

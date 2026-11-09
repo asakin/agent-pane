@@ -69,7 +69,7 @@ Run the install command again, then click reload on the Agent Pane card in `chro
 
 **Blocked domains.** Options has a list of domains Agent Pane never reads, subdomains included. A block beats any approval, and it applies to Send tab too.
 
-**Settings.** Options also sets the shell and its arguments, theme, font size, extra environment variables, which agents appear in the menu, and the folder agents start in. Agent definitions are small folders described in [agents/README.md](agents/README.md); drop your own into `~/.config/agent-pane/agents/` to add or replace one.
+**Settings.** Options also sets the shell and its arguments, theme, font size, extra environment variables, which agents appear in the menu, and the folder agents start in. **Terminal backend** picks where new pane tabs run: Built-in (the default) or Durable (preview), which runs them in the terminal runtime bundled with Agent Pane. In the preview, pane tabs still end when Chrome or the host closes, and programs reach the page only through `AGENT_PANE_SOCKET` (no `AGENT_PANE_FD`). If Durable cannot start a pane tab, it runs in Built-in and the terminal says why. Agent definitions are small folders described in [agents/README.md](agents/README.md); drop your own into `~/.config/agent-pane/agents/` to add or replace one.
 
 ### Agent skill
 

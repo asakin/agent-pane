@@ -6,6 +6,7 @@ import type {
     ResponseConfigSet,
 } from "./rpc";
 import { clampFontSize } from "./fontSize";
+import { normalizeTerminalBackend } from "./terminalBackend";
 import {
     BLOCKED_DOMAINS_KEY,
     type BlockedDomainEdit,
@@ -21,6 +22,7 @@ const configPathEl = document.getElementById("config-path") as HTMLParagraphElem
 const commandEl = document.getElementById("command") as HTMLInputElement;
 const argsEl = document.getElementById("args") as HTMLInputElement;
 const themeEl = document.getElementById("theme") as HTMLSelectElement;
+const terminalBackendEl = document.getElementById("terminalBackend") as HTMLSelectElement;
 const fontSizeEl = document.getElementById("fontSize") as HTMLInputElement;
 const envEl = document.getElementById("env") as HTMLTextAreaElement;
 const cwdEl = document.getElementById("cwd") as HTMLInputElement;
@@ -230,6 +232,7 @@ async function load() {
         ? config.xterm as Record<string, unknown>
         : {};
     fontSizeEl.value = String(clampFontSize(xterm.fontSize ?? 13));
+    terminalBackendEl.value = normalizeTerminalBackend(config.terminalBackend);
     envEl.value = envToText(config.env);
     cwdEl.value = typeof config.cwd === "string" ? config.cwd : "";
     alphabeticalEl.checked = config.agentMenuAlphabetical === true;
@@ -255,6 +258,7 @@ async function save(event: Event) {
         },
         agents: agentOverrides(),
         agentMenuAlphabetical: alphabeticalEl.checked,
+        terminalBackend: normalizeTerminalBackend(terminalBackendEl.value),
     };
 
     const resp = await browser.runtime.sendMessage<RequestConfigSet, ResponseConfigSet>({

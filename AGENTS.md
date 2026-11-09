@@ -51,7 +51,7 @@ npm --prefix extension run build
 - `main.go`, `internal/cmd/`: Go CLI entry point, native-messaging host (`serve.go`), PTY session environment (`env.go`), page channel, page socket and `agent-pane page` commands (`page.go`, `page_unix.go`), agent catalog loader (`agents.go`), install checks (`doctor.go`), and macOS LaunchAgent spawn (`spawn_darwin.go`).
 - `internal/jsonrpc/`, `internal/scrollback/`: JSON-RPC framing and terminal scrollback ring/mode replay.
 - `internal/peercred/`: unix socket peer checks (uid, executable, ancestry) for Linux and macOS.
-- `internal/herdrcore/`: client for the bundled herdr-core's framed JSON-RPC socket (handshake and generation check, terminal calls, attach streams, events) and the private `HC_SESSION=agent-pane` environment; not used by the host yet. `AGENT_PANE_TEST_HC=<path to the pinned hc> go test ./internal/herdrcore` also runs it against a real core.
+- `internal/herdrcore/`: client for the bundled herdr-core's framed JSON-RPC socket (handshake and generation check, terminal calls, attach streams, events) and the private `HC_SESSION=agent-pane` environment. The host uses it for the Durable (preview) terminal backend (`internal/cmd/backend_core.go`). `AGENT_PANE_TEST_HC=<path to the pinned hc> go test ./internal/herdrcore ./internal/cmd` also runs both against a real core.
 - `extension/entrypoints/`: WXT extension entry points (`background.ts`, `sidepanel.html`, `options.html`, the injected `page-reader.ts`) and shared terminal/tab/RPC/page modules in `extension/entrypoints/shared/`.
 - `extension/tests/`: Node test runner suites (`*.test.mjs`).
 - `skills/agent-pane/`: the canonical skill the installer installs for coding agents; see [README](README.md#agent-skill).
