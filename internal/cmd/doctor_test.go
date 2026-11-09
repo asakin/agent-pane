@@ -1,9 +1,13 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +18,31 @@ func writeFile(t *testing.T, path, content string, mode os.FileMode) {
 	}
 	if err := os.WriteFile(path, []byte(content), mode); err != nil {
 		t.Fatal(err)
+	}
+}
+
+const (
+	testCore        = "core binary"
+	testCoreVersion = "0.1.19"
+)
+
+func testCoreLock() string {
+	sum := sha256.Sum256([]byte(testCore))
+	return "# comment\nversion " + testCoreVersion + "\ngeneration 1\n" +
+		"linux_amd64 https://example.invalid/core.tar.gz 00 " + hex.EncodeToString(sum[:]) + "\n" +
+		"darwin_arm64 https://example.invalid/core.tar.gz 00 " + hex.EncodeToString(sum[:]) + "\n"
+}
+
+// testEnv is a doctorEnv for a healthy install on goos.
+func testEnv(goos string) doctorEnv {
+	arch := "amd64"
+	if goos == "darwin" {
+		arch = "arm64"
+	}
+	return doctorEnv{
+		goos: goos, goarch: arch, version: "0.3.0",
+		spawnAgent:  func() bool { return true },
+		coreVersion: func(string) (string, error) { return "hc " + testCoreVersion, nil },
 	}
 }
 
@@ -30,10 +59,15 @@ func healthyInstall(t *testing.T, goos, extensionVersion string) installLayout {
 		"skills/agent-pane/SKILL.md":      "name: agent-pane\n",
 		"extensions/chrome/manifest.json": `{"version":"` + extensionVersion + `"}`,
 		"extensions/chrome/background.js": "//\n",
+		"herdr-core.lock":                 testCoreLock(),
+		"licenses/herdr-core/LICENSE":     "Apache License\n",
 	}
 	for rel, content := range release {
 		writeFile(t, filepath.Join(l.release, rel), content, 0o644)
 	}
+	writeFile(t, filepath.Join(l.release, "libexec", "hc"), testCore, 0o755)
+	writeFile(t, l.core, testCore, 0o755)
+	writeFile(t, filepath.Join(l.dataDir, "licenses", "herdr-core", "LICENSE"), release["licenses/herdr-core/LICENSE"], 0o644)
 	writeFile(t, l.binary, "binary", 0o755)
 	writeFile(t, l.host, "#!/bin/sh\nexec "+shQuote(l.binary)+" serve\n", 0o755)
 	browser := browserDirs(goos, l.home)[0]
@@ -77,7 +111,7 @@ func TestDoctorHealthyInstall(t *testing.T) {
 	for _, goos := range []string{"linux", "darwin"} {
 		t.Run(goos, func(t *testing.T) {
 			l := healthyInstall(t, goos, "0.3.0")
-			env := doctorEnv{goos: goos, version: "0.3.0", spawnAgent: func() bool { return true }}
+			env := testEnv(goos)
 			for _, r := range runChecks(l, env) {
 				if r.status != checkOK {
 					t.Errorf("%s %s: %s", r.status, r.item, r.detail)
@@ -156,6 +190,41 @@ func TestDoctorFindsProblems(t *testing.T) {
 		{name: "extension stale", item: "extension", want: checkFail, damage: func(t *testing.T, l installLayout) {
 			writeFile(t, filepath.Join(l.dataDir, "extensions", "chrome", "background.js"), "old", 0o644)
 		}},
+		{name: "core missing", item: "core", want: checkFail, damage: func(t *testing.T, l installLayout) {
+			os.Remove(l.core)
+		}},
+		{name: "core is another build", item: "core", want: checkFail, damage: func(t *testing.T, l installLayout) {
+			writeFile(t, l.core, "other core", 0o755)
+		}},
+		{name: "core not executable", item: "core", want: checkFail, damage: func(t *testing.T, l installLayout) {
+			os.Chmod(l.core, 0o644)
+		}},
+		{name: "core reports another version", item: "core", want: checkFail, env: func(_ *testing.T, e *doctorEnv) {
+			e.coreVersion = func(string) (string, error) { return "hc 0.1.18", nil }
+		}},
+		{name: "core does not run", item: "core", want: checkFail, env: func(_ *testing.T, e *doctorEnv) {
+			e.coreVersion = func(string) (string, error) { return "", errors.New("exec format error") }
+		}},
+		{name: "core lock missing", item: "core", want: checkFail, damage: func(t *testing.T, l installLayout) {
+			os.Remove(filepath.Join(l.release, "herdr-core.lock"))
+		}},
+		{name: "core lock without this platform", item: "core", want: checkFail, env: func(_ *testing.T, e *doctorEnv) {
+			e.goarch = "386"
+		}},
+		{name: "core license missing", item: "core licenses", want: checkFail, damage: func(t *testing.T, l installLayout) {
+			os.RemoveAll(filepath.Join(l.dataDir, "licenses"))
+		}},
+		{name: "core libexec on PATH", item: "core isolation", want: checkFail, env: func(_ *testing.T, e *doctorEnv) {
+			e.path = "/usr/bin" + string(os.PathListSeparator) + "LIBEXEC"
+		}},
+		{name: "bundled core linked as ~/.local/bin/hc", item: "core isolation", want: checkFail, damage: func(t *testing.T, l installLayout) {
+			if err := os.Symlink(l.core, filepath.Join(filepath.Dir(l.binary), "hc")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "a person's own hc is left alone", item: "core isolation", want: checkOK, damage: func(t *testing.T, l installLayout) {
+			writeFile(t, filepath.Join(filepath.Dir(l.binary), "hc"), "their hc", 0o755)
+		}},
 		{name: "versions differ", item: "versions", want: checkFail, env: func(_ *testing.T, e *doctorEnv) { e.version = "0.4.0" }},
 		{name: "dev binary skips the version check", item: "versions", want: "", env: func(_ *testing.T, e *doctorEnv) { e.version = "dev" }},
 	}
@@ -166,10 +235,11 @@ func TestDoctorFindsProblems(t *testing.T) {
 				goos = "linux"
 			}
 			l := healthyInstall(t, goos, "0.3.0")
-			env := doctorEnv{goos: goos, version: "0.3.0", spawnAgent: func() bool { return true }}
+			env := testEnv(goos)
 			if tc.env != nil {
 				tc.env(t, &env)
 			}
+			env.path = strings.ReplaceAll(env.path, "LIBEXEC", filepath.Dir(l.core))
 			if tc.damage != nil {
 				tc.damage(t, l)
 			}

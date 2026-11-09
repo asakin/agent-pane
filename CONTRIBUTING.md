@@ -18,6 +18,8 @@ Contributions are provided under the repository's [MIT License](LICENSE). Preser
 
 Releases are made from tags. Pushing a `vX.Y.Z` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds the extension and the program, signs and notarizes the macOS binaries, publishes the GitHub release with an `install.sh` that installs that tag, and then installs the published release on Linux and macOS, runs `agent-pane doctor` on it, and on macOS checks that the binary passes `codesign --verify --strict` and that Gatekeeper accepts it as notarized Developer ID software.
 
+Each archive carries the herdr-core build that [`scripts/herdr-core.lock`](scripts/herdr-core.lock) pins for its platform: `scripts/fetch-herdr-core.sh` downloads it, checks the archive and binary checksums, and lays out `libexec/hc`, `herdr-core.lock` and `licenses/herdr-core/` (herdr-core's `LICENSE` and `THIRD-PARTY-NOTICES`, the text `hc --licenses` prints). To move to another herdr-core release, update the lock's version, URLs and checksums from `https://releases.herdr.dev/core/<version>/manifest.json` and the binaries in those archives.
+
 ### One-time signing setup
 
 GoReleaser signs and notarizes the darwin binaries with its built-in `notarize.macos` step (`.goreleaser.yaml`), which runs on the Linux release runner and needs no Mac. A maintainer sets this up once:

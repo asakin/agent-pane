@@ -1,0 +1,16 @@
+# The herdr-core (hc) build each Agent Pane release ships privately, as
+# libexec/hc in the release archive, with its license and notices in
+# licenses/herdr-core/. scripts/fetch-herdr-core.sh reads this file for release
+# builds and scripts/dev-install.sh; `agent-pane doctor` checks the installed
+# copy against it. Change the core only here, with checksums taken from
+# https://releases.herdr.dev/core/<version>/manifest.json and the archives.
+#
+#   version <hc version>
+#   generation <core protocol generation>
+#   <goos>_<goarch> <archive url> <archive sha256> <herdr-core binary sha256>
+version 0.1.19
+generation 1
+darwin_amd64 https://releases.herdr.dev/core/0.1.19/herdr-core-macos-x86_64.tar.gz 2f95bedae2ca1bf9f9611d61066ef3ac211c62ca08282132d48e287b6da14d08 2fcdb90aa2ff894639338d1772a909211f9730fdc646d5446503fddf92493418
+darwin_arm64 https://releases.herdr.dev/core/0.1.19/herdr-core-macos-aarch64.tar.gz 5338d900adadb6d273b9c8e97027247db3179ccffede10a1793358f16e08d683 dacb8354d38955da79dac1652c34ecaaf835e88156e7b7e744bdf1902861c40e
+linux_amd64 https://releases.herdr.dev/core/0.1.19/herdr-core-linux-x86_64.tar.gz 4adcfb423d52f24c5cc4a1e2cd2fcad1f62d28bb77876ac472c29082a3eaa424 d408197a6b85af97b2fe93a10e6f4bee18d3a654307db94df2b35aea277c466f
+linux_arm64 https://releases.herdr.dev/core/0.1.19/herdr-core-linux-aarch64.tar.gz f95c34fd7177ed58807d74fe4ee78bb3dc73eb37f21c69496064000a21abcb10 4de2d8b0dd999891b48ea9b1546fdef9c243eff434443db787a5fb194a7f18e9

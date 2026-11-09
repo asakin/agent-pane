@@ -44,7 +44,7 @@ Then add the extension to Chrome. Until the Chrome Web Store listing exists, loa
 2. Click **Load unpacked** and choose `~/.local/share/agent-pane/extensions/chrome` (in the file dialog, **Cmd+Shift+.** on macOS shows hidden folders)
 3. Open the side panel from the Agent Pane extension icon
 
-The installer is published with each release and installs that release only: it downloads the release's archive for this machine, checks it against the release's `checksums.txt`, and runs the archive's `place.sh`. That script puts the program in `~/.local/bin`, adds `~/.local/bin` to `PATH`, writes the native-messaging manifest for each Chromium browser it finds, installs the [agent skill](#agent-skill), and on macOS starts the LaunchAgent that launches shells independently of Chrome. It keeps a copy of the release in `~/.local/share/agent-pane/release` and ends by running `agent-pane doctor`. Nothing comes from the repository's `main` branch.
+The installer is published with each release and installs that release only: it downloads the release's archive for this machine, checks it against the release's `checksums.txt`, and runs the archive's `place.sh`. That script puts the program in `~/.local/bin`, adds `~/.local/bin` to `PATH`, writes the native-messaging manifest for each Chromium browser it finds, installs the [agent skill](#agent-skill), and on macOS starts the LaunchAgent that launches shells independently of Chrome. It also places a private, pinned copy of [herdr-core](https://github.com/herdrdev/herdr-core) at `~/.local/share/agent-pane/libexec/hc`, with its license and notices in `~/.local/share/agent-pane/licenses/herdr-core/`. It is never put on `PATH` or at `~/.local/bin/hc`, so a Herdr install of your own is not touched. Agent Pane does not run its terminals in it yet. It keeps a copy of the release in `~/.local/share/agent-pane/release` and ends by running `agent-pane doctor`. Nothing comes from the repository's `main` branch.
 
 ## Updating
 
@@ -60,7 +60,7 @@ curl -fsSL https://github.com/asakin/agent-pane/releases/download/v0.3.0/install
 
 ## Checking and repairing an install
 
-`agent-pane doctor` checks the files the installer owns against the installed release and reports each one; `~/AGENTS.md` and `~/CLAUDE.md` are yours and are not checked. `agent-pane doctor --fix` puts the installed release back in place when a check fails. It uses only the copy in `~/.local/share/agent-pane/release`, downloads nothing, and does not change the version.
+`agent-pane doctor` checks the files the installer owns against the installed release and reports each one, including that the bundled herdr-core has the pinned version and checksum and is not reachable as `hc` on `PATH`; `~/AGENTS.md` and `~/CLAUDE.md` are yours and are not checked. `agent-pane doctor --fix` puts the installed release back in place when a check fails. It uses only the copy in `~/.local/share/agent-pane/release`, downloads nothing, and does not change the version.
 
 ## How it works
 
@@ -214,7 +214,7 @@ cd agent-pane
 scripts/dev-install.sh
 ```
 
-`scripts/dev-install.sh` builds the program and the extension, lays them out like a release archive, and installs them with the same `place.sh` a release uses. It downloads nothing of Agent Pane; npm fetches the extension's dependencies. The program reports version `dev`, which passes the side panel's version check, and `agent-pane doctor --fix` repairs from this build. Running the install command from [Install](#install) goes back to a release.
+`scripts/dev-install.sh` builds the program and the extension, lays them out like a release archive, and installs them with the same `place.sh` a release uses. It downloads nothing of Agent Pane; npm fetches the extension's dependencies, and the pinned herdr-core build from `scripts/herdr-core.lock` is downloaded once into `bin/herdr-core/`. The program reports version `dev`, which passes the side panel's version check, and `agent-pane doctor --fix` repairs from this build. Running the install command from [Install](#install) goes back to a release.
 
 For the extension, load the build output instead of the installed copy, so a rebuild needs no install:
 
@@ -264,3 +264,5 @@ Agent Pane is an independently maintained project derived from [Agent Terminal](
 Agent Pane follows its own development direction and is not an official release of either predecessor. The original Git history and copyright notices are preserved. Earlier issues and pull request discussions remain in the [archived development fork](https://github.com/asakin/agent-terminal); new contributions belong in this repository.
 
 Distributed under the [MIT License](LICENSE).
+
+Release archives also carry a pinned build of [herdr-core](https://github.com/herdrdev/herdr-core) (`libexec/hc`), which is distributed under the Apache License 2.0. Its `LICENSE` and the third-party notices `hc --licenses` prints are in the archive's `licenses/herdr-core/` folder and are installed in `~/.local/share/agent-pane/licenses/herdr-core/`. The pinned version and its checksums are in [`scripts/herdr-core.lock`](scripts/herdr-core.lock).
