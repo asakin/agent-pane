@@ -41,3 +41,11 @@ The release workflow in `asakin/agent-pane` fails before building if any of thes
 
 1. If the extension now needs something older programs lack, raise `protocolVersion` in `internal/cmd/serve.go` and `MIN_HOST_PROTOCOL` in `extension/entrypoints/shared/hostVersion.ts`, and set `MIN_HOST_VERSION` to the version being released.
 2. Tag `main` and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. X, Y and Z are numbers only: the version becomes the extension's manifest version, which Chrome requires to be numeric, so a suffix such as `-rc.1` does not make a loadable release.
+
+## Skill evals
+
+[`.github/workflows/skill-evals.yml`](.github/workflows/skill-evals.yml) runs [Tessl](https://tessl.io) evals for the [agent skill](README.md#agent-skill): the scenarios in `skills/agent-pane/evals/`, with `skills/agent-pane` as the context under test. It is advisory: it runs only when a maintainer starts it, never on a push or pull request, and is not a required check. To run it, open **Actions** → **skill-evals** → **Run workflow**, pick the branch, and optionally change the run label (default `agent-pane skill eval`). The job waits for the run and fails if the eval run fails; open the run in Tessl for the scores. It needs a Tessl API token for the `siglify/agent-pane` project stored as the `TESSL_TOKEN` repository secret. To run the same evals locally:
+
+```sh
+tessl eval run skills/agent-pane --label "agent-pane skill eval"
+```

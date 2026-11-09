@@ -130,14 +130,6 @@ Bug reports and focused pull requests are welcome. See [CONTRIBUTING.md](CONTRIB
 | **Agent definition** | A launcher entry in `agents/<id>/`: a command, its arguments and an icon. |
 | **PTY session** | One pseudo-terminal and the process running in it. A pane tab gets a new one when its program ends and the terminal is restarted. |
 
-### Skill evals
-
-[`.github/workflows/skill-evals.yml`](.github/workflows/skill-evals.yml) runs [Tessl](https://tessl.io) evals for the [agent skill](#agent-skill): the scenarios in `skills/agent-pane/evals/`, with `skills/agent-pane` as the context under test. It is advisory: it runs only when a maintainer starts it, never on a push or pull request, and is not a required check. To run it, open **Actions** → **skill-evals** → **Run workflow**, pick the branch, and optionally change the run label (default `agent-pane skill eval`). The job waits for the run and fails if the eval run fails; open the run in Tessl for the scores. It needs a Tessl API token for the `siglify/agent-pane` project stored as the `TESSL_TOKEN` repository secret. To run the same evals locally:
-
-```sh
-tessl eval run skills/agent-pane --label "agent-pane skill eval"
-```
-
 ## Origins and license
 
 Agent Pane started as a fork of [Agent Terminal](https://github.com/rishiskhare/agent-terminal) by Rishi Khare, itself based on [Tweety](https://github.com/pomdtr/tweety) by Achille Lacoin, and is now developed independently with a different focus. Thank you to both projects and their contributors. The Git history and copyright notices are preserved; earlier discussions remain in the [archived fork](https://github.com/asakin/agent-terminal).
