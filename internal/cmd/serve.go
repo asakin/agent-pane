@@ -76,7 +76,9 @@ type Session struct {
 	agent string
 	// window is the Chrome window the session is shown in, as
 	// <browserId>:<windowId>; "" once that window closed or when unknown.
-	window string
+	// coreWindow is what its core terminal's label holds (Durable only).
+	window     string
+	coreWindow string
 	// socketPath is the page socket's path, which the program was given.
 	socketPath string
 	// detached is set when the host let go of a Durable session and left
@@ -143,6 +145,9 @@ type SessionManager struct {
 	rediscoverMu   sync.Mutex
 	rediscovered   bool
 	lastRediscover time.Time
+	// detachedEarly holds the ids of sessions whose window closed before
+	// the host took them back; guarded by mu.
+	detachedEarly map[string]struct{}
 }
 
 func (m *SessionManager) takePageRead() bool {
@@ -488,6 +493,7 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 	defer m.creating.Done()
 	session.pane = m.paneLocked(paneID)
 	session.window = m.windowLabelLocked(command.Window)
+	session.coreWindow = session.window
 	command.Window = session.window
 	m.sessions[id] = session
 	m.mu.Unlock()
@@ -710,10 +716,18 @@ func (s *Session) close() {
 		t.detach()
 		return
 	}
+	var err error
 	if s.term != nil {
-		_ = s.term.close()
+		err = s.term.close()
 	}
-	if _, ok := s.term.(*coreTerminal); ok && s.manager != nil && s.manager.registry != nil {
+	if t, ok := s.term.(*coreTerminal); ok && s.manager != nil && s.manager.registry != nil {
+		if err != nil {
+			// Its program may still run: keep its record, marked closed, and
+			// keep trying to end it, so no later host takes it back.
+			s.manager.logger.Warn("failed to end durable pane tab", "error", err, "session", s.ID)
+			s.manager.closeLater(s.ID, t)
+			return
+		}
 		if err := s.manager.registry.remove(s.ID); err != nil {
 			s.manager.logger.Warn("failed to forget durable pane tab", "error", err)
 		}
@@ -923,8 +937,11 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 		}
 
 		// A session an earlier host started may still run in the core.
-		sessions.ensureRediscovered()
+		complete := sessions.ensureRediscovered()
 		session, ok := sessions.Get(params.ID)
+		if !ok && !complete {
+			return nil, errors.New(errRediscoveryPending)
+		}
 		if !ok {
 			return nil, fmt.Errorf("invalid tty ID")
 		}

@@ -82,6 +82,11 @@ test("a timeout is not a missing session", () => {
     assert.equal(errorFromResponse({}), null);
 });
 
+test("a session the host has not looked for yet is not a missing session", () => {
+    const pending = errorFromResponse({ error: { code: -32603, message: "Internal error: durable pane tabs are not known yet" } });
+    assert.ok(pending instanceof NativeUnavailable);
+});
+
 test("no response resolves with an error and a late reply is ignored", async () => {
     const port = fakePort();
     const timers = clock();

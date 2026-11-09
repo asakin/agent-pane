@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"regexp"
 	"strings"
 	"sync"
@@ -22,6 +23,9 @@ type paneTab struct {
 	closed      bool
 	allowAll    bool
 	allowedTabs map[int]bool
+	// epoch counts revocations, so an answer to a prompt shown before one
+	// cannot bring the grants back.
+	epoch int
 	// turn holds one token: the right to show this pane tab's approval
 	// prompt. A channel, so waiting for it can give up.
 	turn chan struct{}
@@ -56,10 +60,34 @@ func (p *paneTab) isAllowed(tabID int) bool {
 
 // grant records an answer unless the pane tab has closed.
 func (p *paneTab) grant(tabID int, choice string) bool {
+	return p.grantAt(p.currentEpoch(), tabID, choice) == nil
+}
+
+// currentEpoch is the revocation count to pass to grantAt for a prompt
+// shown now.
+func (p *paneTab) currentEpoch() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.epoch
+}
+
+// errGrantRevoked refuses an answer to a prompt shown before the pane tab's
+// grants were revoked.
+var errGrantRevoked = errors.New("the pane tab's approvals ended while the prompt was open")
+
+// errPaneClosed refuses an answer once the pane tab has closed.
+var errPaneClosed = errors.New("the pane tab has closed")
+
+// grantAt records an answer to a prompt shown at epoch, unless the pane tab
+// has closed or its grants were revoked since.
+func (p *paneTab) grantAt(epoch, tabID int, choice string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
-		return false
+		return errPaneClosed
+	}
+	if p.epoch != epoch {
+		return errGrantRevoked
 	}
 	switch choice {
 	case "tab":
@@ -70,14 +98,16 @@ func (p *paneTab) grant(tabID int, choice string) bool {
 	case "all":
 		p.allowAll = true
 	}
-	return true
+	return nil
 }
 
 // revoke drops the pane tab's grants and leaves it open for new ones, as
 // when the Chrome window it was shown in closes and the pane tab lives on.
+// A prompt already open cannot grant any more.
 func (p *paneTab) revoke() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.epoch++
 	p.allowAll = false
 	p.allowedTabs = nil
 }

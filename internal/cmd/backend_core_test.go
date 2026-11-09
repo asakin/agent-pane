@@ -50,8 +50,11 @@ type fakeCore struct {
 	// listErr, when set, fails List. killErr fails Kill for an address.
 	listErr error
 	killErr map[string]error
-	subs    []*fakeEvents
-	labels  []fakeLabel
+	// subErr fails Subscribe, labelErr fails Label.
+	subErr   error
+	labelErr error
+	subs     []*fakeEvents
+	labels   []fakeLabel
 	// finished lists terminals whose program ended.
 	finished []string
 	pid      int
@@ -141,6 +144,9 @@ func (f *fakeCore) Attach(_ context.Context, p herdrcore.AttachParams) (coreStre
 func (f *fakeCore) Subscribe(_ context.Context, labels map[string]string) (coreEvents, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.subErr != nil {
+		return nil, f.subErr
+	}
 	ch := f.events[labels[coreSessionLabel]]
 	address := fmt.Sprintf("t%d", len(f.runs))
 	for i, run := range f.runs {
@@ -166,6 +172,9 @@ func (f *fakeCore) Kill(_ context.Context, terminal string) (herdrcore.Terminal,
 func (f *fakeCore) Label(_ context.Context, terminal string, labels map[string]string) (herdrcore.Terminal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.labelErr != nil {
+		return herdrcore.Terminal{}, f.labelErr
+	}
 	f.labels = append(f.labels, fakeLabel{terminal, labels})
 	return herdrcore.Terminal{Address: terminal, State: "live"}, nil
 }
@@ -1437,4 +1446,192 @@ func TestStatusHelperProcess(t *testing.T) {
 		fmt.Printf("ERR[%s]\n", err)
 	}
 	os.Exit(0)
+}
+
+// noRediscoverWait lets a failed rediscovery be tried again at once.
+func noRediscoverWait(t *testing.T) {
+	t.Helper()
+	old := rediscoverRetry
+	rediscoverRetry = 0
+	t.Cleanup(func() { rediscoverRetry = old })
+}
+
+func (f *fakeCore) set(change func(*fakeCore)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	change(f)
+}
+
+func TestHostsSharingTheRegistryKeepEachOthersRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "panes.json")
+	a, b := newPaneRegistry(path), newPaneRegistry(path)
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := a
+			if i%2 == 1 {
+				r = b
+			}
+			if err := r.put(paneRecord{ID: fmt.Sprint("s", i), Session: fmt.Sprint("session-", i)}); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	records, err := a.load()
+	if err != nil || len(records) != 20 {
+		t.Fatalf("records %d %v", len(records), err)
+	}
+}
+
+func TestAPaneTabThatCouldNotBeTakenBackIsTriedAgain(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	noRediscoverWait(t)
+	core := newFakeCore()
+	first := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	first.initialize(t, "b1")
+	ep := first.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	core.set(func(f *fakeCore) { f.subErr = errors.New("subscribe failed") })
+	h := restartHost(t, first, core, "b1")
+	if items := h.listFacts(t); len(items) != 0 {
+		t.Fatalf("tty.list %+v", items)
+	}
+	// Until it is taken back, the panel is not told the session is gone.
+	if _, msg := h.call(t, "tty.attach", map[string]any{"id": ep.ID}); !strings.Contains(msg, errRediscoveryPending) {
+		t.Fatalf("tty.attach while rediscovery failed: %q", msg)
+	}
+	core.set(func(f *fakeCore) { f.subErr = nil })
+	if items := h.listFacts(t); len(items) != 1 || items[0].ID != ep.ID {
+		t.Fatalf("tty.list after the core recovered %+v", items)
+	}
+}
+
+func TestAttachWhileTheCoreIsUnreadableIsNotAMissingSession(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	noRediscoverWait(t)
+	core := newFakeCore()
+	first := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	first.initialize(t, "b1")
+	ep := first.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	core.set(func(f *fakeCore) { f.listErr = errors.New("core unreachable") })
+	h := restartHost(t, first, core, "b1")
+	if _, msg := h.call(t, "tty.attach", map[string]any{"id": ep.ID}); !strings.Contains(msg, errRediscoveryPending) {
+		t.Fatalf("tty.attach %q", msg)
+	}
+	core.set(func(f *fakeCore) { f.listErr = nil })
+	if _, msg := h.call(t, "tty.attach", map[string]any{"id": ep.ID}); msg != "" {
+		t.Fatalf("tty.attach after the core recovered: %s", msg)
+	}
+	// Once the host has looked, an id it does not know is gone.
+	if _, msg := h.call(t, "tty.attach", map[string]any{"id": "nope"}); !strings.Contains(msg, "invalid tty ID") {
+		t.Fatalf("tty.attach of an unknown id %q", msg)
+	}
+}
+
+func TestAPaneTabWhoseProgramCouldNotBeEndedIsNotTakenBack(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	first := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	first.initialize(t, "b1")
+	ep := first.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	core.set(func(f *fakeCore) { f.killErr = map[string]error{"t1": errors.New("kill failed")} })
+	if _, msg := first.call(t, "tty.destroy", map[string]any{"id": ep.ID, "pane": ep.Pane}); msg != "" {
+		t.Fatal(msg)
+	}
+	records, err := first.sessions.registry.load()
+	if err != nil || !records[ep.ID].Closing {
+		t.Fatalf("registry after a failed close %+v %v", records, err)
+	}
+	h := restartHost(t, first, core, "b1")
+	core.set(func(f *fakeCore) { f.killErr = nil })
+	if items := h.listFacts(t); len(items) != 0 {
+		t.Fatalf("tty.list %+v", items)
+	}
+	core.mu.Lock()
+	killed := slices.Contains(core.killed, "t1")
+	core.mu.Unlock()
+	if !killed {
+		t.Fatal("the closed pane tab's program was not ended")
+	}
+	eventually(t, "the closed pane tab to be forgotten", func() bool {
+		records, _ := h.sessions.registry.load()
+		return len(records) == 0
+	})
+}
+
+func TestAnOrphanAnotherBrowserShowedIsLeftAlone(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	first := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	first.initialize(t, "chrome")
+	first.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24, "window": "3@r1"})
+	first.sessions.Close()
+	// The registry is lost, but the core still names the browser.
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	h.initialize(t, "brave")
+	if items := h.listFacts(t); len(items) != 0 {
+		t.Fatalf("tty.list %+v", items)
+	}
+}
+
+func TestAnApprovalShownBeforeTheWindowClosedGrantsNothing(t *testing.T) {
+	p := newPaneTab()
+	epoch := p.currentEpoch()
+	p.revoke()
+	if err := p.grantAt(epoch, 4, "all"); !errors.Is(err, errGrantRevoked) || p.isAllowed(4) {
+		t.Fatalf("a late answer granted after revoke: %v", err)
+	}
+	if err := p.grantAt(p.currentEpoch(), 4, "tab"); err != nil || !p.isAllowed(4) {
+		t.Fatalf("a new answer after revoke: %v", err)
+	}
+}
+
+func TestAWindowLabelTheCoreRefusedIsTriedAgain(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	h.initialize(t, "b1")
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24, "window": "4@r1"})
+	core.set(func(f *fakeCore) { f.labelErr = errors.New("label failed") })
+	if _, msg := h.call(t, "tty.attach", map[string]any{"id": ep.ID, "window": "5@r1"}); msg != "" {
+		t.Fatal(msg)
+	}
+	core.set(func(f *fakeCore) { f.labelErr = nil })
+	if _, msg := h.call(t, "tty.attach", map[string]any{"id": ep.ID, "window": "5@r1"}); msg != "" {
+		t.Fatal(msg)
+	}
+	core.mu.Lock()
+	window := core.terminalLocked(0).Labels[coreWindowLabel]
+	core.mu.Unlock()
+	if window != "b1:5@r1" {
+		t.Fatalf("window label %q", window)
+	}
+}
+
+func TestClosingTheWindowBeforeTheHostLookedDetachesThePaneTab(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	noRediscoverWait(t)
+	core := newFakeCore()
+	first := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	first.initialize(t, "b1")
+	ep := first.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24, "window": "4@r1"})
+	core.set(func(f *fakeCore) { f.listErr = errors.New("core unreachable") })
+	h := restartHost(t, first, core, "b1")
+	raw, msg := h.call(t, "tty.detach", map[string]any{"id": ep.ID, "pane": ep.Pane})
+	if msg != "" || string(raw) != `{"running":true}` {
+		t.Fatalf("detach %s %q", raw, msg)
+	}
+	core.set(func(f *fakeCore) { f.listErr = nil })
+	items := h.listFacts(t)
+	if len(items) != 1 || items[0].ID != ep.ID || items[0].Window != "" {
+		t.Fatalf("tty.list %+v", items)
+	}
+	core.mu.Lock()
+	_, labelled := core.terminalLocked(0).Labels[coreWindowLabel]
+	core.mu.Unlock()
+	if labelled {
+		t.Fatal("the closed window still labels the pane tab")
+	}
 }

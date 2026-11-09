@@ -719,6 +719,14 @@ async function main() {
         onEnd: (s) => void endRunning(s),
     });
 
+    // A window closing elsewhere can leave Durable pane tabs to offer here,
+    // even while the list is hidden for having none.
+    browser.windows.onRemoved.addListener((closed) => {
+        if (closed !== windowId) {
+            void loadFacts();
+        }
+    });
+
     async function openRunning(s: ListedTTY) {
         if (!state || hasTab(s.id)) {
             if (state && hasTab(s.id)) {

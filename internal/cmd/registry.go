@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // paneRegistryPath is the host-private record of Durable (preview) pane
@@ -34,10 +36,15 @@ type paneRecord struct {
 	Browser string `json:"browser,omitempty"`
 	// Orphan is set for a core terminal adopted without a record.
 	Orphan bool `json:"orphan,omitempty"`
+	// Closing is set when the pane tab was closed but the host could not
+	// confirm its program ended; a later host ends it instead of taking it
+	// back.
+	Closing bool `json:"closing,omitempty"`
 }
 
 // paneRegistry is panes.json, read and written whole. Only the user can open
-// it.
+// it. Each browser has its own host, so changes are made under a file lock
+// as well as mu: one host's write never drops another's records.
 type paneRegistry struct {
 	path string
 	mu   sync.Mutex
@@ -113,10 +120,20 @@ func (r *paneRegistry) saveLocked(records map[string]paneRecord) error {
 	return os.Rename(tmp.Name(), r.path)
 }
 
+// registryLockTimeout bounds waiting for another host's registry change.
+var registryLockTimeout = 5 * time.Second
+
 // update applies change to the records and writes them back.
 func (r *paneRegistry) update(change func(map[string]paneRecord)) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), registryLockTimeout)
+	defer cancel()
+	unlock, err := lockFile(ctx, r.path+".lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	records, err := r.loadLocked()
 	if err != nil {
 		// An unreadable file is replaced rather than blocking every

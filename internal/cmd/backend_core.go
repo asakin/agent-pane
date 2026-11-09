@@ -172,12 +172,17 @@ func (b *coreBackend) keepUnsure(session string) {
 	if kept {
 		return
 	}
+	b.endLater(session, func() error { return b.endUnsure(session) })
+}
+
+// endLater calls end in the background until it succeeds.
+func (b *coreBackend) endLater(session string, end func() error) {
 	go func() {
 		delay := 100 * time.Millisecond
 		for {
 			time.Sleep(delay)
 			delay = min(2*delay, coreWatchRetryMax)
-			err := b.endUnsure(session)
+			err := end()
 			if err == nil {
 				return
 			}
@@ -189,6 +194,18 @@ func (b *coreBackend) keepUnsure(session string) {
 // endUnsure kills and removes every terminal carrying the session label,
 // finished ones included, and forgets the label once the core confirms it.
 func (b *coreBackend) endUnsure(session string) error {
+	if err := b.endLabelled(session); err != nil {
+		return err
+	}
+	b.unsureMu.Lock()
+	delete(b.unsure, session)
+	b.unsureMu.Unlock()
+	return nil
+}
+
+// endLabelled kills and removes every terminal carrying the session label,
+// finished ones included.
+func (b *coreBackend) endLabelled(session string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), coreCallTimeout)
 	defer cancel()
 	conn, err := b.connect(ctx)
@@ -207,9 +224,6 @@ func (b *coreBackend) endUnsure(session string) error {
 			return err
 		}
 	}
-	b.unsureMu.Lock()
-	delete(b.unsure, session)
-	b.unsureMu.Unlock()
 	return nil
 }
 
