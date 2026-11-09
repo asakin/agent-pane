@@ -1,0 +1,36 @@
+{
+  "context": "Tests whether the agent correctly checks the environment before attempting agent-pane commands, recognizes when AGENT_PANE is unset and communicates that it cannot read the browser page, and avoids blindly attempting agent-pane commands that would not work.",
+  "type": "weighted_checklist",
+  "checklist": [
+    {
+      "name": "Env check command",
+      "description": "status.md documents that the agent ran `env | grep -E '^(AGENT_PANE|TERM_PROGRAM)'` (or equivalent env check targeting those exact variables) using its shell tool",
+      "max_score": 20
+    },
+    {
+      "name": "Env output recorded",
+      "description": "status.md records the actual output of the env check command (empty output or showing AGENT_PANE was not set)",
+      "max_score": 15
+    },
+    {
+      "name": "Correct conclusion",
+      "description": "status.md states that the agent concluded it is NOT in an Agent Pane environment (because AGENT_PANE was unset)",
+      "max_score": 20
+    },
+    {
+      "name": "No agent-pane commands attempted",
+      "description": "status.md explicitly states that the agent did NOT attempt any agent-pane page commands (e.g. agent-pane page info, agent-pane page markdown), and the commands it ran include none",
+      "max_score": 20
+    },
+    {
+      "name": "User communication",
+      "description": "status.md documents what the agent communicated to the user — that it cannot read the browser page because it is not running inside Agent Pane",
+      "max_score": 15
+    },
+    {
+      "name": "Read-only reminder",
+      "description": "status.md mentions or implies that agent-pane commands only read pages and cannot navigate, click, type, or fill forms",
+      "max_score": 10
+    }
+  ]
+}
