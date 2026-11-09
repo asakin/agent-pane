@@ -26,5 +26,4 @@ cp -R extension/dist/chrome-mv3 "$tmp/extensions/chrome"
 cp -R agents "$tmp/agents"
 cp -R skills/agent-pane "$tmp/skills/agent-pane"
 
-sh "$tmp/place.sh"
-echo "agent-pane: in Chrome, load the extension with Load unpacked from $root/extension/dist/chrome-mv3 (chrome://extensions, Developer mode); after a rebuild, click its reload button"
+AGENT_PANE_DEV_EXTENSION="$root/extension/dist/chrome-mv3" sh "$tmp/place.sh"
