@@ -414,9 +414,9 @@ func (m *SessionManager) Destroy(id string) error {
 }
 
 // Close ends every session whose terminal would outlive the host: the
-// Durable (preview) ones, which run in the core. Built-in terminals end with
-// the host's process. Sessions still starting finish starting first, and no
-// new ones start after.
+// Durable (preview) ones, which run in the core, and any the core may have
+// started without saying so. Built-in terminals end with the host's process.
+// Sessions still starting finish starting first, and no new ones start after.
 func (m *SessionManager) Close() {
 	m.mu.Lock()
 	m.closing = true
@@ -435,6 +435,12 @@ func (m *SessionManager) Close() {
 	m.mu.RUnlock()
 	for _, id := range ids {
 		m.remove(id)
+	}
+	// Starts the host could not confirm ended may still run in the core.
+	if core, ok := m.durable.(*coreBackend); ok {
+		if err := core.settle(); err != nil {
+			m.logger.Warn("durable terminals may outlive the host", "error", err)
+		}
 	}
 }
 
