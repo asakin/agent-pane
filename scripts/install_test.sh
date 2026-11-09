@@ -1,7 +1,8 @@
 #!/bin/sh
 # Tests install.sh, scripts/place.sh and `agent-pane doctor` against a release
 # built from this checkout, in temporary HOMEs. Needs Go. Touches nothing in
-# the real HOME and downloads nothing.
+# the real HOME. It downloads the pinned herdr-core build once, into
+# bin/herdr-core/ like scripts/dev-install.sh, and nothing else.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
@@ -19,6 +20,9 @@ cp "$root/scripts/instructions.md" "$rel/instructions.md"
 cp -R "$root/agents" "$rel/agents"
 cp -R "$root/skills/agent-pane" "$rel/skills/agent-pane"
 printf '{"manifest_version":3,"name":"Agent Pane","version":"0.0.0"}\n' >"$rel/extensions/chrome/manifest.json"
+platform="$(cd "$root" && go env GOOS)_$(cd "$root" && go env GOARCH)"
+sh "$root/scripts/fetch-herdr-core.sh" "$platform" "$root/bin/herdr-core/$platform"
+cp -R "$root/bin/herdr-core/$platform/." "$rel/"
 
 home="$tmp/home"
 if [ "$(uname -s)" = Darwin ]; then
@@ -58,6 +62,15 @@ grep -q '# agent-pane:path' "$home/.zshrc"
 grep -c 'agent-pane:start' "$home/AGENTS.md" | grep -qx 1
 grep -c 'agent-pane:start' "$home/CLAUDE.md" | grep -qx 1
 grep -q '^ok    release' "$tmp/first.out"
+# The bundled core is private: in the data folder, never on PATH.
+cmp "$rel/libexec/hc" "$data/libexec/hc"
+[ -x "$data/libexec/hc" ]
+[ ! -e "$home/.local/bin/hc" ]
+[ -s "$data/licenses/herdr-core/LICENSE" ]
+[ -s "$data/licenses/herdr-core/THIRD-PARTY-NOTICES" ]
+grep -q '^ok    core  ' "$tmp/first.out"
+grep -q '^ok    core licenses' "$tmp/first.out"
+grep -q '^ok    core isolation' "$tmp/first.out"
 ls -ld "$data" | grep -q '^drwx------'
 
 # A second run changes nothing.
@@ -118,6 +131,41 @@ cmp "$root/skills/agent-pane/SKILL.md" "$home/.agents/skills/agent-pane/SKILL.md
 [ ! -e "$data/extensions/chrome/extra.js" ]
 doctor >/dev/null
 doctor --fix | grep -q 'nothing to fix'
+
+# A missing or wrong bundled core is reported and put back.
+rm "$data/libexec/hc"
+if doctor >"$tmp/doctor.out" 2>&1; then
+	echo "doctor passed with a missing core" >&2
+	exit 1
+fi
+grep -q '^FAIL  core .*is missing' "$tmp/doctor.out"
+echo wrong >"$data/libexec/hc"
+chmod 755 "$data/libexec/hc"
+rm "$data/licenses/herdr-core/LICENSE"
+if doctor >"$tmp/doctor.out" 2>&1; then
+	echo "doctor passed with a wrong core" >&2
+	exit 1
+fi
+grep -q '^FAIL  core .*not the pinned herdr-core' "$tmp/doctor.out"
+grep -q '^FAIL  core licenses' "$tmp/doctor.out"
+doctor --fix >/dev/null
+cmp "$rel/libexec/hc" "$data/libexec/hc"
+doctor >/dev/null
+
+# The bundled core on PATH is a problem; a person's own hc is not touched.
+ln -s "$data/libexec/hc" "$home/.local/bin/hc"
+if doctor >"$tmp/doctor.out" 2>&1; then
+	echo "doctor passed with the bundled core on PATH" >&2
+	exit 1
+fi
+grep -q '^FAIL  core isolation' "$tmp/doctor.out"
+rm "$home/.local/bin/hc"
+printf '#!/bin/sh\necho mine\n' >"$home/.local/bin/hc"
+chmod 755 "$home/.local/bin/hc"
+place >/dev/null
+grep -qx 'echo mine' "$home/.local/bin/hc"
+doctor | grep -q '^ok    core isolation.*separate hc'
+rm "$home/.local/bin/hc"
 
 # A binary with the right bytes but no execute bit is repaired too.
 chmod 644 "$home/.local/bin/agent-pane"
