@@ -45,6 +45,19 @@
         ]
       },
       "environment": "factory-siglify-agent-pane-implement"
+    },
+    "merge-conflict-sweep": {
+      "tags": [
+        "Ticket to PR"
+      ],
+      "skill": "tessl/factory#merge-conflict-sweep",
+      "environment": "factory-siglify-agent-pane-merge-conflict-sweep",
+      "agent": "codex",
+      "model": "gpt-6-luna",
+      "timeout": "2h",
+      "inputs": {
+        "GITHUB_AUTHOR_IDS": "{{ github.tesslApp.userId }}"
+      }
     }
   },
   "triggers": {
@@ -276,6 +289,97 @@
           "GITHUB_ISSUE_NUMBER": "{{ event.issue.number }}"
         }
       }
+    },
+    "shepherd-pr-review-by-reviewer": {
+      "on": [
+        "github:pull_request_review.submitted"
+      ],
+      "when": {
+        "event.pull_request.state": "open",
+        "event.pull_request.head.ref": {
+          "matches": "^tessl/"
+        },
+        "event.pull_request.head.repo.id": 1449581805,
+        "event.pull_request.labels.*.name": {
+          "any": {
+            "equals": "tessl"
+          }
+        },
+        "event.sender.id": "{{ github.tesslReviewerApp.userId }}"
+      },
+      "action": {
+        "use": "shepherd",
+        "inputs": {
+          "GITHUB_PR_NUMBER": "{{ event.pull_request.number }}"
+        }
+      }
+    },
+    "shepherd-checks-failed": {
+      "on": [
+        "github:check_run.completed"
+      ],
+      "when": {
+        "event.check_run.pull_requests.0.number": {
+          "exists": true
+        },
+        "event.check_run.pull_requests.0.head.repo.id": 1449581805,
+        "event.check_run.check_suite.head_branch": {
+          "matches": "^tessl/"
+        },
+        "event.check_run.conclusion": {
+          "in": [
+            "failure",
+            "timed_out",
+            "startup_failure",
+            "action_required"
+          ]
+        }
+      },
+      "action": {
+        "use": "shepherd",
+        "inputs": {
+          "GITHUB_PR_NUMBER": "{{ event.check_run.pull_requests.0.number }}"
+        }
+      }
+    },
+    "shepherd-checks-passed": {
+      "on": [
+        "github:check_suite.completed"
+      ],
+      "when": {
+        "event.check_suite.pull_requests.0.number": {
+          "exists": true
+        },
+        "event.check_suite.pull_requests.0.head.repo.id": 1449581805,
+        "event.check_suite.head_branch": {
+          "matches": "^tessl/"
+        },
+        "event.check_suite.conclusion": "success"
+      },
+      "action": {
+        "use": "shepherd",
+        "inputs": {
+          "GITHUB_PR_NUMBER": "{{ event.check_suite.pull_requests.0.number }}"
+        }
+      }
+    },
+    "merge-conflict-sweep": {
+      "on": [
+        "github:push"
+      ],
+      "when": {
+        "event.ref": "refs/heads/main"
+      },
+      "concurrency": {
+        "keys": [
+          {
+            "key": "merge-conflict-sweep:{{ event.repository.id }}",
+            "limit": 1
+          }
+        ],
+        "debounce": "5m"
+      },
+      "action": "merge-conflict-sweep"
     }
   },
   "verify": {
