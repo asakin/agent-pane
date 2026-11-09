@@ -365,23 +365,31 @@ func (m *SessionManager) DetachWindow(id, pane string) bool {
 
 // setWindow records the Chrome window session is shown in, on its core
 // terminal too for a Durable one, so a panel can find it after a restart.
-// A label the core did not take is tried again on the next call.
+// A label the core did not take is tried again on the next call. Label
+// writes go one at a time and each sends the latest window asked for, so
+// overlapping calls leave the core with the last one.
 func (m *SessionManager) setWindow(session *Session, window string) {
 	session.mu.Lock()
 	session.window = window
-	changed := session.coreWindow != window
-	term := session.term
+	t, ok := session.term.(*coreTerminal)
 	session.mu.Unlock()
-	t, ok := term.(*coreTerminal)
-	if !changed || !ok {
+	if !ok {
 		return
 	}
-	if err := t.label(map[string]string{coreWindowLabel: window}); err != nil {
+	session.windowMu.Lock()
+	defer session.windowMu.Unlock()
+	session.mu.Lock()
+	want, changed := session.window, session.coreWindow != session.window
+	session.mu.Unlock()
+	if !changed {
+		return
+	}
+	if err := t.label(map[string]string{coreWindowLabel: want}); err != nil {
 		m.logger.Debug("failed to label core terminal with its window", "error", err, "session", session.ID)
 		return
 	}
 	session.mu.Lock()
-	session.coreWindow = window
+	session.coreWindow = want
 	session.mu.Unlock()
 }
 

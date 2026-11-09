@@ -53,8 +53,11 @@ type fakeCore struct {
 	// subErr fails Subscribe, labelErr fails Label.
 	subErr   error
 	labelErr error
-	subs     []*fakeEvents
-	labels   []fakeLabel
+	// labelGate, when set, receives each Label call's labels and holds
+	// the call until its reply channel is closed.
+	labelGate chan labelCall
+	subs      []*fakeEvents
+	labels    []fakeLabel
 	// finished lists terminals whose program ended.
 	finished []string
 	pid      int
@@ -169,7 +172,21 @@ func (f *fakeCore) Kill(_ context.Context, terminal string) (herdrcore.Terminal,
 	return herdrcore.Terminal{Address: terminal, State: "finished"}, nil
 }
 
+// labelCall is one Label call held by fakeCore.labelGate.
+type labelCall struct {
+	labels  map[string]string
+	release chan struct{}
+}
+
 func (f *fakeCore) Label(_ context.Context, terminal string, labels map[string]string) (herdrcore.Terminal, error) {
+	f.mu.Lock()
+	gate := f.labelGate
+	f.mu.Unlock()
+	if gate != nil {
+		call := labelCall{labels, make(chan struct{})}
+		gate <- call
+		<-call.release
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.labelErr != nil {
@@ -1606,6 +1623,52 @@ func TestAWindowLabelTheCoreRefusedIsTriedAgain(t *testing.T) {
 	window := core.terminalLocked(0).Labels[coreWindowLabel]
 	core.mu.Unlock()
 	if window != "b1:5@r1" {
+		t.Fatalf("window label %q", window)
+	}
+}
+
+// An attach to another window and one back again, overlapping, leave the
+// core labelled with the window asked for last.
+func TestOverlappingWindowUpdatesLeaveTheLatestLabel(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	h.initialize(t, "b1")
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24, "window": "4@r1"})
+	s, ok := h.sessions.Get(ep.ID)
+	if !ok {
+		t.Fatal("no session")
+	}
+	gate := make(chan labelCall)
+	core.set(func(f *fakeCore) { f.labelGate = gate })
+	first := make(chan struct{})
+	go func() { defer close(first); h.sessions.setWindow(s, "b1:5@r1") }()
+	toB := <-gate
+	// Back to window 4 while the label for window 5 is still being written.
+	second := make(chan struct{})
+	go func() { defer close(second); h.sessions.setWindow(s, "b1:4@r1") }()
+	eventually(t, "the second update to record its window", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.window == "b1:4@r1"
+	})
+	close(toB.release)
+	<-first
+	select {
+	case back := <-gate:
+		if back.labels[coreWindowLabel] != "b1:4@r1" {
+			t.Fatalf("second label %v", back.labels)
+		}
+		close(back.release)
+	case <-second:
+		t.Fatal("the label for window 4 was never written")
+	}
+	<-second
+	core.set(func(f *fakeCore) { f.labelGate = nil })
+	core.mu.Lock()
+	window := core.terminalLocked(0).Labels[coreWindowLabel]
+	core.mu.Unlock()
+	if window != "b1:4@r1" {
 		t.Fatalf("window label %q", window)
 	}
 }
