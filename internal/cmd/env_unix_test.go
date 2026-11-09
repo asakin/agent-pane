@@ -11,8 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/aymanbagabas/go-pty"
 )
 
 func TestWithSessionEnvReplacesReservedKeys(t *testing.T) {
@@ -60,16 +58,11 @@ func TestWithSessionEnvReplacesReservedKeys(t *testing.T) {
 	}
 }
 
-func TestBuildPtyCommandKeepsUserEnvButNotReservedKeys(t *testing.T) {
+func TestBuildTerminalCommandKeepsUserEnvButNotReservedKeys(t *testing.T) {
 	cfg().Set("env", map[string]any{"PATH": "/configured/bin", "AGENT_PANE_TAB_ID": "forged", "FOO": "bar"})
 	t.Cleanup(func() { cfg().Delete("env") })
 	t.Setenv("AGENT_PANE_SESSION_ID", "inherited")
-	tty, err := pty.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tty.Close()
-	cmd, err := buildPtyCommand(tty, "", "", nil, "")
+	cmd, err := buildTerminalCommand("", "", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,11 +84,11 @@ func TestBuildPtyCommandKeepsUserEnvButNotReservedKeys(t *testing.T) {
 func envSession(t *testing.T, m *SessionManager, pane, agent string, inherited ...string) (*Session, map[string]string) {
 	t.Helper()
 	prog := `for k in AGENT_PANE TERM_PROGRAM AGENT_PANE_TAB_ID AGENT_PANE_SESSION_ID AGENT_PANE_AGENT AGENT_PANE_FD AGENT_PANE_SKILL_PATH; do eval "printf '%s=%s|\n' $k \"\${$k-<unset>}\""; done; echo END; sleep 30`
-	s, err := m.Create("Terminal", pane, agent, func(tty pty.Pty, _ string) (*pty.Cmd, error) {
-		cmd := tty.Command("/bin/sh", "-c", prog)
+	s, err := m.Create("Terminal", pane, agent, func() *terminalCommand {
+		cmd := newTerminalCommand("/bin/sh", "-c", prog)
 		cmd.Env = append(os.Environ(), inherited...)
-		return cmd, nil
-	})
+		return cmd
+	}())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,9 +96,7 @@ func envSession(t *testing.T, m *SessionManager, pane, agent string, inherited .
 	var out string
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		s.writeMu.Lock()
-		out = string(s.Buf.Bytes())
-		s.writeMu.Unlock()
+		out = sessionOutput(s)
 		if strings.Contains(out, "END") {
 			break
 		}

@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-pane/internal/scrollback"
 	"github.com/aymanbagabas/go-pty"
 	"github.com/gorilla/websocket"
 )
@@ -25,7 +24,7 @@ func (p *inputCapturePty) Write(data []byte) (int, error) {
 
 func TestWebSocketPreservesTerminalControlBytes(t *testing.T) {
 	capture := &inputCapturePty{writes: make(chan []byte, 1)}
-	session := &Session{Pty: capture, Buf: scrollback.New(1024)}
+	session := &Session{term: newPtyTerminal(capture, 1024)}
 	server := httptest.NewServer(HandleWebsocket(session))
 	defer server.Close()
 	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), http.Header{"Origin": {extensionOrigins[0]}})
