@@ -105,6 +105,12 @@ type coreBackend struct {
 
 	mu   sync.Mutex
 	conn coreAPI
+
+	// unsure holds the agent-pane.session labels of starts that may have
+	// left a program running in the core and that the host has not yet
+	// confirmed ended; guarded by unsureMu.
+	unsureMu sync.Mutex
+	unsure   map[string]struct{}
 }
 
 func newCoreBackend(logger *slog.Logger, core herdrcore.Core) *coreBackend {
@@ -150,6 +156,78 @@ func (b *coreBackend) connect(ctx context.Context) (coreAPI, error) {
 	return conn, nil
 }
 
+// keepUnsure accounts for a start that may have left a program running
+// under the session label: it is ended in the background, retrying until the
+// core confirms, and no Durable session starts until then.
+func (b *coreBackend) keepUnsure(session string) {
+	b.unsureMu.Lock()
+	if b.unsure == nil {
+		b.unsure = map[string]struct{}{}
+	}
+	_, kept := b.unsure[session]
+	b.unsure[session] = struct{}{}
+	b.unsureMu.Unlock()
+	if kept {
+		return
+	}
+	go func() {
+		delay := 100 * time.Millisecond
+		for {
+			time.Sleep(delay)
+			delay = min(2*delay, coreWatchRetryMax)
+			err := b.endUnsure(session)
+			if err == nil {
+				return
+			}
+			b.logger.Debug("failed to end core terminal", "error", err, "session", session)
+		}
+	}()
+}
+
+// endUnsure kills and removes every terminal carrying the session label,
+// finished ones included, and forgets the label once the core confirms it.
+func (b *coreBackend) endUnsure(session string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), coreCallTimeout)
+	defer cancel()
+	conn, err := b.connect(ctx)
+	if err != nil {
+		return err
+	}
+	terms, err := conn.List(ctx, map[string]string{coreSessionLabel: session}, true)
+	if err != nil {
+		return err
+	}
+	for _, term := range terms {
+		if _, err := conn.Kill(ctx, term.Address); err != nil && !herdrcore.IsKind(err, "not_found") {
+			return err
+		}
+		if err := conn.Remove(ctx, term.Address); err != nil && !herdrcore.IsKind(err, "not_found") {
+			return err
+		}
+	}
+	b.unsureMu.Lock()
+	delete(b.unsure, session)
+	b.unsureMu.Unlock()
+	return nil
+}
+
+// settle ends every start still unsure. Its error is errCoreUnsure: a
+// program may still run, so nothing should start in its place.
+func (b *coreBackend) settle() error {
+	b.unsureMu.Lock()
+	sessions := make([]string, 0, len(b.unsure))
+	for session := range b.unsure {
+		sessions = append(sessions, session)
+	}
+	b.unsureMu.Unlock()
+	for _, session := range sessions {
+		if err := b.endUnsure(session); err != nil {
+			return fmt.Errorf("%w: an earlier terminal may still be running: %w", errCoreUnsure, err)
+		}
+	}
+	return nil
+}
+
 func (b *coreBackend) open(id string, command *terminalCommand) (terminal, error) {
 	return &coreTerminal{
 		id:      id,
@@ -186,6 +264,9 @@ type coreTerminal struct {
 }
 
 func (t *coreTerminal) start(command *terminalCommand, extra *os.File) (int, error) {
+	if err := t.backend.settle(); err != nil {
+		return 0, err
+	}
 	// Long enough for the first session to start the core.
 	ctx, cancel := context.WithTimeout(context.Background(), coreStartTimeout)
 	defer cancel()
@@ -215,8 +296,9 @@ func (t *coreTerminal) start(command *terminalCommand, extra *os.File) (int, err
 		}
 		// No answer: the program may be running. End whatever runs under
 		// the session's label, and do not start it anywhere else.
-		if cleanupErr := t.endUnsure(); cleanupErr != nil {
+		if cleanupErr := t.backend.endUnsure(t.session); cleanupErr != nil {
 			t.logger.Warn("failed to end core terminal", "error", cleanupErr, "session", t.id)
+			t.backend.keepUnsure(t.session)
 		}
 		return 0, fmt.Errorf("%w: %w", errCoreUnsure, err)
 	}
@@ -251,30 +333,6 @@ func (t *coreTerminal) size() (int, int) {
 		return 80, 24
 	}
 	return t.cols, t.rows
-}
-
-// endUnsure kills and removes every terminal carrying the session's label,
-// after a terminal.run the core did not answer.
-func (t *coreTerminal) endUnsure() error {
-	ctx, cancel := context.WithTimeout(context.Background(), coreCallTimeout)
-	defer cancel()
-	conn, err := t.backend.connect(ctx)
-	if err != nil {
-		return err
-	}
-	terms, err := conn.List(ctx, map[string]string{coreSessionLabel: t.session}, true)
-	if err != nil {
-		return err
-	}
-	for _, term := range terms {
-		if _, err := conn.Kill(ctx, term.Address); err != nil && !herdrcore.IsKind(err, "not_found") {
-			return err
-		}
-		if err := conn.Remove(ctx, term.Address); err != nil && !herdrcore.IsKind(err, "not_found") {
-			return err
-		}
-	}
-	return nil
 }
 
 // setEvents makes events the terminal's subscription, unless it is closed.
@@ -531,6 +589,7 @@ func (t *coreTerminal) end(conn coreAPI, cause error) error {
 	defer cancel()
 	if err := t.endWith(ctx, conn); err != nil {
 		t.logger.Warn("failed to end core terminal", "error", err, "session", t.id)
+		t.backend.keepUnsure(t.session)
 		return fmt.Errorf("%w: %w", errCoreUnsure, cause)
 	}
 	return cause

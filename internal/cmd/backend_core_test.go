@@ -39,6 +39,8 @@ type fakeCore struct {
 	// does. runGate, when set, holds Run until it is closed.
 	runLost bool
 	runGate chan struct{}
+	// listErr, when set, fails List.
+	listErr error
 	subs    []*fakeEvents
 	pid     int
 	done    chan struct{}
@@ -70,6 +72,9 @@ func (f *fakeCore) Run(_ context.Context, p herdrcore.RunParams) (herdrcore.Term
 func (f *fakeCore) List(_ context.Context, labels map[string]string, _ bool) ([]herdrcore.Terminal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	var out []herdrcore.Terminal
 	for i, run := range f.runs {
 		if run.Labels[coreSessionLabel] == labels[coreSessionLabel] {
@@ -617,6 +622,62 @@ func TestDurableUnansweredRunDoesNotStartTwice(t *testing.T) {
 	if ids := h.list(t); len(ids) != 0 {
 		t.Fatalf("started in Built-in too: %v", ids)
 	}
+	core.mu.Lock()
+	defer core.mu.Unlock()
+	if len(core.killed) != 1 || core.killed[0] != "t1" || len(core.removed) != 1 {
+		t.Fatalf("killed %v removed %v", core.killed, core.removed)
+	}
+}
+
+func TestDurableUnsureStartIsKeptUntilItsCleanupWorks(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	core.runLost = true
+	core.listErr = context.DeadlineExceeded
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	if _, msg := h.call(t, "tty.create", map[string]any{"mode": "shell", "cols": 80, "rows": 24}); !strings.Contains(msg, errCoreUnsure.Error()) {
+		t.Fatalf("tty.create error %q", msg)
+	}
+	// While the first program may still run, nothing starts in its place.
+	core.mu.Lock()
+	core.runLost = false
+	core.mu.Unlock()
+	if _, msg := h.call(t, "tty.create", map[string]any{"mode": "shell", "cols": 80, "rows": 24}); !strings.Contains(msg, errCoreUnsure.Error()) {
+		t.Fatalf("tty.create while unsure: error %q", msg)
+	}
+	if ids := h.list(t); len(ids) != 0 {
+		t.Fatalf("started while unsure: %v", ids)
+	}
+	core.mu.Lock()
+	runs := len(core.runs)
+	core.listErr = nil
+	core.mu.Unlock()
+	if runs != 1 {
+		t.Fatalf("runs %d", runs)
+	}
+	// Once the core answers, the first program is ended and starts resume.
+	eventually(t, "the unsure terminal to be ended", func() bool {
+		core.mu.Lock()
+		defer core.mu.Unlock()
+		return len(core.killed) == 1 && core.killed[0] == "t1" && len(core.removed) == 1
+	})
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	if ids := h.list(t); len(ids) != 1 || ids[0] != ep.ID {
+		t.Fatalf("tty.list %v", ids)
+	}
+}
+
+func TestCloseEndsAnUnsureStart(t *testing.T) {
+	core := newFakeCore()
+	b := &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }}
+	h := newNativeHarness(t, b)
+	core.mu.Lock()
+	core.runs = append(core.runs, herdrcore.RunParams{Labels: map[string]string{coreSessionLabel: "s1"}})
+	core.mu.Unlock()
+	b.unsureMu.Lock()
+	b.unsure = map[string]struct{}{"s1": {}}
+	b.unsureMu.Unlock()
+	h.sessions.Close()
 	core.mu.Lock()
 	defer core.mu.Unlock()
 	if len(core.killed) != 1 || core.killed[0] != "t1" || len(core.removed) != 1 {
