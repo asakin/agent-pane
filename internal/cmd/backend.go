@@ -78,6 +78,9 @@ type terminalCommand struct {
 	Dir  string
 	Cols int
 	Rows int
+	// Window is the Chrome window the session is shown in, as the
+	// extension names it; "" when it did not say.
+	Window string
 }
 
 // newTerminalCommand returns the command to run name with args.

@@ -9,6 +9,7 @@ import type {
     RequestCreateTTY,
     RequestGetXtermConfig,
     RequestInitialize,
+    ListedTTY,
     RequestListTTY,
     RequestResizeTTY,
     ResponseConfigGet,
@@ -46,6 +47,7 @@ import { createApprovalPrompts, createReadNotice, mountSendTab } from "./pagePan
 import { isOwnExtensionPage } from "./sender";
 import { describeUrl } from "./tabLock";
 import { type PaneStatus, isStatusMessage, parseStatus } from "./paneStatus";
+import { mountRunningTabs, splitRunning } from "./runningTabs";
 
 const terminalFontFamily = "JetBrainsMono Nerd Font Mono";
 
@@ -69,6 +71,7 @@ import {
     attachTTY,
     clearWindowState,
     createTTY,
+    currentRunId,
     destroyTTY,
     ensureWindowAlive,
     loadWindowState,
@@ -81,7 +84,42 @@ import {
     tabApp,
     tabCwd,
     type TtyDimensions,
+    windowName,
 } from "./windowTabs";
+
+/** tty.list's sessions, or null when the host did not answer. */
+async function listTTY(): Promise<ListedTTY[] | null> {
+    const resp = await browser.runtime.sendMessage<RequestListTTY, ResponseListTTY>({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "tty.list",
+        params: undefined,
+    }).catch(() => undefined);
+    if (!resp || "error" in resp || !Array.isArray(resp.result?.sessions)) {
+        return null;
+    }
+    return resp.result.sessions;
+}
+
+/** The host's names of the Chrome windows open now, other than windowId. */
+async function otherWindowNames(windowId: number, runId: string): Promise<Set<string>> {
+    const names = new Set<string>();
+    try {
+        for (const win of await browser.windows.getAll()) {
+            if (win.id != null && win.id !== windowId) {
+                names.add(windowName(win.id, runId));
+            }
+        }
+    } catch {
+        // Without the list, nothing is assumed held by another window.
+    }
+    return names;
+}
+
+/** A pane tab for a running session the panel did not start. */
+function tabFromListed(s: ListedTTY): WindowTab {
+    return { id: s.id, app: typeof s.agent === "string" ? s.agent : "", ...(typeof s.pane === "string" && s.pane ? { pane: s.pane } : {}) };
+}
 
 function useBlockCursor(terminal: Terminal) {
     terminal.options.cursorStyle = "block";
@@ -365,6 +403,8 @@ async function main() {
     }
 
     await reclaimLegacySession(windowId);
+    const runId = await currentRunId();
+    const myWindow = windowName(windowId, runId);
 
     strip.hidden = false;
     strip.classList.add("at-tabs");
@@ -376,6 +416,9 @@ async function main() {
 
     const launcherHost = document.createElement("div");
     strip.appendChild(launcherHost);
+
+    const runningHost = document.createElement("div");
+    strip.appendChild(runningHost);
 
     let launcher!: LauncherController;
     launcher = mountAgentLauncher(launcherHost, {
@@ -404,6 +447,19 @@ async function main() {
     let state = await loadWindowState(windowId);
     if (state && state.tabs.length === 0) {
         state = null;
+    }
+    // Durable pane tabs last shown in this window outlive the panel's own
+    // record of them (an extension reload clears it): take them back.
+    const listedAtStart = await listTTY();
+    if (listedAtStart) {
+        const held = new Set(state?.tabs.map((tab) => tab.id) ?? []);
+        const { restore } = splitRunning(listedAtStart, myWindow, held, new Set());
+        const [first] = restore;
+        if (first) {
+            const tabs = [...(state?.tabs ?? []), ...restore.map(tabFromListed)];
+            state = { tabs, activeId: state?.activeId ?? first.id };
+            await saveWindowState(windowId, state);
+        }
     }
 
     const titles = new Map<string, string>();
@@ -636,24 +692,54 @@ async function main() {
 
     // What pane tabs reported before this panel opened, or, given one id,
     // before that new session joined it. A pane tab with a live event since
-    // the query began keeps that newer one.
-    async function loadFacts(only?: string) {
+    // the query began keeps that newer one. A full load also updates the
+    // Running pane tabs list.
+    async function loadFacts(only?: string, listed?: ListedTTY[] | null) {
         const since = liveSeq;
-        const resp = await browser.runtime.sendMessage<RequestListTTY, ResponseListTTY>({
-            jsonrpc: "2.0",
-            id: crypto.randomUUID(),
-            method: "tty.list",
-            params: undefined,
-        }).catch(() => undefined);
-        if (!resp || "error" in resp || !Array.isArray(resp.result?.sessions)) {
+        const sessions = listed ?? await listTTY();
+        if (!sessions) {
             return;
         }
-        for (const session of resp.result.sessions) {
+        for (const session of sessions) {
             if (typeof session?.id === "string" && hasTab(session.id)
                 && (only === undefined || session.id === only) && (liveAt.get(session.id) ?? 0) <= since) {
                 applyFacts(session.id, parseStatus(session.status), typeof session.title === "string" ? session.title : undefined);
             }
         }
+        if (only === undefined) {
+            const held = new Set(state?.tabs.map((tab) => tab.id) ?? []);
+            running.set(splitRunning(sessions, myWindow, held, await otherWindowNames(windowId, runId)).offer);
+        }
+    }
+
+    // Running pane tabs: Durable sessions no open side panel shows.
+    const running = mountRunningTabs(runningHost, {
+        onRefresh: () => loadFacts(),
+        onOpen: (s) => void openRunning(s),
+        onEnd: (s) => void endRunning(s),
+    });
+
+    async function openRunning(s: ListedTTY) {
+        if (!state || hasTab(s.id)) {
+            if (state && hasTab(s.id)) {
+                await switchTo(s.id);
+            }
+            return;
+        }
+        state = { tabs: [...state.tabs, tabFromListed(s)], activeId: state.activeId };
+        await saveWindowState(windowId, state);
+        refreshStrip();
+        await switchTo(s.id);
+        void loadFacts();
+    }
+
+    async function endRunning(s: ListedTTY) {
+        if (hasTab(s.id)) {
+            await closeTab(s.id);
+        } else {
+            await destroyTTY(s.id, typeof s.pane === "string" && s.pane ? s.pane : undefined);
+        }
+        void loadFacts();
     }
 
     try {
@@ -679,7 +765,7 @@ async function main() {
 
     async function openKind(app: string, size: TtyDimensions, remember: boolean, cwd?: string): Promise<{ id: string; url: string; pane?: string; app: string; cwd?: string }> {
         try {
-            const created = await createTTY(optsFromAppId(app, size, cwd));
+            const created = await createTTY(optsFromAppId(app, size, cwd), undefined, myWindow);
             if (remember) {
                 await launcher.rememberApp(app, app !== "");
             }
@@ -689,7 +775,7 @@ async function main() {
                 throw err;
             }
             await launcher.rememberApp("", false);
-            const created = await createTTY({ mode: "shell", cwd, cols: size.cols, rows: size.rows });
+            const created = await createTTY({ mode: "shell", cwd, cols: size.cols, rows: size.rows }, undefined, myWindow);
             return { ...created, app: "", cwd };
         }
     }
@@ -723,7 +809,7 @@ async function main() {
             return false;
         }
 
-        let endpoint = await attachTTY(state.activeId);
+        let endpoint = await attachTTY(state.activeId, myWindow);
         if (!endpoint) {
             const deadId = state.activeId;
             const kind = tabApp(state, deadId);
@@ -732,7 +818,7 @@ async function main() {
                 throw new Error("Terminal has no size yet");
             }
             // Same pane tab, new PTY session: it keeps the pane tab's grants.
-            const created = await createTTY(optsFromAppId(kind, size, tabCwd(state, deadId)), tabPane(state, deadId));
+            const created = await createTTY(optsFromAppId(kind, size, tabCwd(state, deadId)), tabPane(state, deadId), myWindow);
             if (gen !== switchGen) {
                 await destroyTTY(created.id);
                 return false;
@@ -744,7 +830,7 @@ async function main() {
             await saveWindowState(windowId, state);
             refreshStrip();
             void loadFacts(created.id);
-            endpoint = await attachTTY(state.activeId);
+            endpoint = await attachTTY(state.activeId, myWindow);
             if (!endpoint) {
                 throw new Error("Could not attach to terminal session");
             }
@@ -909,7 +995,7 @@ async function main() {
             liveAt.delete(id);
             let created: { id: string; url: string; pane?: string };
             try {
-                created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
+                created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows }, undefined, myWindow);
                 await ensureWindowAlive(windowId, created.id);
             } catch (err) {
                 await clearWindowState(windowId);
@@ -998,7 +1084,7 @@ async function main() {
         createStarted = true;
         const gen = ++switchGen;
         try {
-            const created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows });
+            const created = await createTTY({ mode: "shell", cols: size.cols, rows: size.rows }, undefined, myWindow);
             await ensureWindowAlive(windowId, created.id);
             if (gen !== switchGen) {
                 await destroyTTY(created.id, created.pane);
@@ -1027,9 +1113,13 @@ async function main() {
         void createInitial(size);
     });
 
+    if (!state) {
+        // Nothing to show here yet; the Running pane tabs list still is.
+        void loadFacts(undefined, listedAtStart);
+    }
     if (state) {
         refreshStrip();
-        void loadFacts();
+        void loadFacts(undefined, listedAtStart);
         const gen = ++switchGen;
         try {
             await attachActive(gen);
