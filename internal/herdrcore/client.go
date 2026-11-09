@@ -31,6 +31,12 @@ const frameHeader = 9
 // header's u32.
 const maxFrame = 16 << 20
 
+// maxAbandoned bounds the attach and subscribe calls a connection keeps
+// registered after their callers gave up, waiting for a reply whose channel
+// must be closed. A core that leaves more unanswered is not answering, so the
+// connection ends instead of growing.
+const maxAbandoned = 64
+
 // maxDataFrame splits writes to a stream into frames no larger than this.
 const maxDataFrame = 64 << 10
 
@@ -122,8 +128,10 @@ type Client struct {
 	nextID  uint64
 	calls   map[uint64]*pendingCall
 	streams map[uint32]*channel
-	err     error // set once the read loop ends
-	done    chan struct{}
+	// abandoned counts the calls in calls marked abandoned.
+	abandoned int
+	err       error // set once the read loop ends
+	done      chan struct{}
 }
 
 // NewClient performs the handshake on conn and switches it to framed mode.
@@ -292,6 +300,7 @@ func (c *Client) readLoop(r io.Reader) {
 	c.err = err
 	calls, streams := c.calls, c.streams
 	c.calls, c.streams = map[uint64]*pendingCall{}, map[uint32]*channel{}
+	c.abandoned = 0
 	c.mu.Unlock()
 	for _, call := range calls {
 		close(call.done)
@@ -313,6 +322,9 @@ func (c *Client) handleResponse(payload []byte) {
 	c.mu.Lock()
 	call := c.calls[*resp.ID]
 	delete(c.calls, *resp.ID)
+	if call != nil && call.abandoned {
+		c.abandoned--
+	}
 	if call != nil && call.opens && resp.Error == nil {
 		var r struct {
 			Channel uint32 `json:"channel"`
@@ -509,15 +521,23 @@ func (c *Client) call(ctx context.Context, method string, params, result any, op
 func (c *Client) abandon(id uint64, call *pendingCall) {
 	c.mu.Lock()
 	pending := c.calls[id] == call
+	tooMany := false
 	if pending {
 		if call.opens {
 			// Leave it registered, so a channel its reply opens is closed.
 			call.abandoned = true
+			c.abandoned++
+			tooMany = c.abandoned > maxAbandoned
 		} else {
 			delete(c.calls, id)
 		}
 	}
 	c.mu.Unlock()
+	if tooMany {
+		// Ending the connection drops every registration, and the core
+		// closes the channels it opened on it.
+		c.conn.Close()
+	}
 	if !pending {
 		// The reply came as ctx ended.
 		if resp, ok := <-call.done; ok && resp.Error == nil && call.stream != nil {
