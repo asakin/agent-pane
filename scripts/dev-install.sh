@@ -2,7 +2,8 @@
 # Builds Agent Pane from this checkout and installs it the way a release is
 # installed: it lays the build out like a release archive and runs
 # scripts/place.sh on it. Nothing of Agent Pane is downloaded; npm fetches the
-# extension's dependencies.
+# extension's dependencies, and the pinned herdr-core build is downloaded once
+# into bin/herdr-core/ (scripts/herdr-core.lock).
 #
 # The binary reports version "dev". To go back to a release, run the install
 # command from the README.
@@ -17,6 +18,8 @@ go build -buildvcs=false -o bin/agent-pane .
 # install, not ci: a no-op when node_modules already matches the lockfile.
 npm --prefix extension install
 npm --prefix extension run build
+platform="$(go env GOOS)_$(go env GOARCH)"
+sh scripts/fetch-herdr-core.sh "$platform" "bin/herdr-core/$platform"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -25,6 +28,7 @@ mkdir -p "$tmp/extensions" "$tmp/skills"
 cp -R extension/dist/chrome-mv3 "$tmp/extensions/chrome"
 cp -R agents "$tmp/agents"
 cp -R skills/agent-pane "$tmp/skills/agent-pane"
+cp -R "bin/herdr-core/$platform/." "$tmp/"
 
 AGENT_PANE_DEV_INSTALL=1 sh "$tmp/place.sh"
 echo "agent-pane: in Chrome, load the extension with Load unpacked from $root/extension/dist/chrome-mv3 (chrome://extensions, Developer mode); after a rebuild, click its reload button"

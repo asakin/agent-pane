@@ -3,7 +3,7 @@
 # folder this script sits in, laid out like a release archive:
 #
 #   agent-pane  place.sh  instructions.md  extensions/chrome/  agents/
-#   skills/agent-pane/
+#   skills/agent-pane/  libexec/hc  herdr-core.lock  licenses/herdr-core/
 #
 # install.sh runs it from a downloaded archive, scripts/dev-install.sh from a
 # checkout build, and `agent-pane doctor --fix` from the installed copy in
@@ -35,6 +35,9 @@ data_dir="$home/.local/share/agent-pane"
 release="$data_dir/release"
 host="$data_dir/native_messaging_host"
 config_dir="$home/.config/agent-pane"
+# The bundled herdr-core binary. Only Agent Pane runs it: it is never put on
+# PATH or at ~/.local/bin/hc, where a person's own Herdr install lives.
+core="$data_dir/libexec/hc"
 extension_id="eakooboihfgnikdhdldcmoiafgioeglm"
 skill_marker=".agent-pane-managed"
 # Present from the moment the binary or plist changes until the spawn agent has
@@ -90,6 +93,10 @@ check_layout() {
 	[ -s "$src/skills/agent-pane/SKILL.md" ] || fail "$src has no agent-pane skill"
 	[ -s "$src/instructions.md" ] || fail "$src has no instructions.md"
 	[ -f "$src/extensions/chrome/manifest.json" ] || fail "$src has no Chrome extension"
+	[ -f "$src/libexec/hc" ] || fail "$src has no bundled herdr-core (libexec/hc)"
+	[ -s "$src/herdr-core.lock" ] || fail "$src has no herdr-core.lock"
+	[ -s "$src/licenses/herdr-core/LICENSE" ] || fail "$src has no herdr-core license"
+	[ -s "$src/licenses/herdr-core/THIRD-PARTY-NOTICES" ] || fail "$src has no herdr-core third-party notices"
 }
 
 # keep_release makes $release a copy of the folder this script came from, so
@@ -131,6 +138,25 @@ place_binary() {
 	chmod 755 "$staged" || fail "could not make the binary executable"
 	mv -f "$staged" "$dest" || fail "could not install the binary"
 	updated "$dest"
+}
+
+# Like place_binary: a new inode, so a running core is never written into.
+place_core() {
+	mkdir -p "$(dirname "$core")"
+	if [ -f "$core" ] && [ -x "$core" ] && cmp -s "$release/libexec/hc" "$core"; then
+		return 0
+	fi
+	staged=$(mktemp "$(dirname "$core")/.hc.XXXXXX") || fail "could not create a temporary core binary"
+	cp "$release/libexec/hc" "$staged" || fail "could not copy the core binary"
+	chmod 755 "$staged" || fail "could not make the core binary executable"
+	mv -f "$staged" "$core" || fail "could not install the core binary"
+	updated "$core"
+}
+
+sync_core_licenses() {
+	if sync_tree "$release/licenses/herdr-core" "$data_dir/licenses/herdr-core"; then
+		updated "$data_dir/licenses/herdr-core"
+	fi
 }
 
 write_host() {
@@ -399,6 +425,8 @@ install_skill_copy() {
 
 keep_release
 place_binary
+place_core
+sync_core_licenses
 write_host
 write_manifests
 write_launchd
