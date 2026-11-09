@@ -406,22 +406,29 @@ func checkCore(l installLayout, env doctorEnv) []checkResult {
 		add(checkFail, "core licenses", fmt.Sprintf("%s: %v", licenses, err))
 	} else if !same {
 		add(checkFail, "core licenses", licenses+" differs from the installed release")
-	} else if _, err := os.Stat(filepath.Join(licenses, "LICENSE")); err != nil {
-		add(checkFail, "core licenses", licenses+" has no LICENSE")
+	} else if missing := missingCoreLicense(licenses); missing != "" {
+		add(checkFail, "core licenses", licenses+" has no "+missing)
 	} else {
 		add(checkOK, "core licenses", licenses)
 	}
 
-	// A person's own hc, wherever it is, is theirs and fine. Agent Pane's core
-	// must not be reachable as `hc` on PATH, ~/.local/bin/hc included.
-	libexec := filepath.Dir(l.core)
+	// A person's own hc, wherever it is, is theirs and fine. Agent Pane's core,
+	// installed or the copy the kept release holds, must not be reachable as
+	// `hc` on PATH, ~/.local/bin/hc included.
+	bundled := []string{l.core, filepath.Join(l.release, "libexec", "hc")}
 	other := ""
 	for _, dir := range append(filepath.SplitList(env.path), filepath.Dir(l.binary)) {
 		if dir == "" {
 			continue
 		}
 		candidate := filepath.Join(dir, "hc")
-		if filepath.Clean(dir) == libexec || sameInode(candidate, l.core) {
+		isBundled := false
+		for _, b := range bundled {
+			if filepath.Clean(dir) == filepath.Dir(b) || sameInode(candidate, b) {
+				isBundled = true
+			}
+		}
+		if isBundled {
 			add(checkFail, "core isolation", candidate+" is Agent Pane's bundled core; only Agent Pane runs it, so take it off PATH")
 			return out
 		}
@@ -435,6 +442,17 @@ func checkCore(l installLayout, env doctorEnv) []checkResult {
 		add(checkOK, "core isolation", "the bundled core is not on PATH")
 	}
 	return out
+}
+
+// missingCoreLicense names the first file herdr-core's license requires that
+// dir lacks, or returns "".
+func missingCoreLicense(dir string) string {
+	for _, name := range []string{"LICENSE", "THIRD-PARTY-NOTICES"} {
+		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || info.Size() == 0 {
+			return name
+		}
+	}
+	return ""
 }
 
 // sameInode reports whether a and b, after symlinks, are the same file.

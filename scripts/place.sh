@@ -96,6 +96,7 @@ check_layout() {
 	[ -f "$src/libexec/hc" ] || fail "$src has no bundled herdr-core (libexec/hc)"
 	[ -s "$src/herdr-core.lock" ] || fail "$src has no herdr-core.lock"
 	[ -s "$src/licenses/herdr-core/LICENSE" ] || fail "$src has no herdr-core license"
+	[ -s "$src/licenses/herdr-core/THIRD-PARTY-NOTICES" ] || fail "$src has no herdr-core third-party notices"
 }
 
 # keep_release makes $release a copy of the folder this script came from, so

@@ -52,15 +52,16 @@ func healthyInstall(t *testing.T, goos, extensionVersion string) installLayout {
 	t.Helper()
 	l := layoutFor(t.TempDir())
 	release := map[string]string{
-		"agent-pane":                      "binary",
-		"instructions.md":                 "<!-- agent-pane:start -->\n# Agent Pane\n<!-- agent-pane:end -->\n",
-		"place.sh":                        "#!/bin/sh\n",
-		"agents/enabled.json":             `{"agents":{}}`,
-		"skills/agent-pane/SKILL.md":      "name: agent-pane\n",
-		"extensions/chrome/manifest.json": `{"version":"` + extensionVersion + `"}`,
-		"extensions/chrome/background.js": "//\n",
-		"herdr-core.lock":                 testCoreLock(),
-		"licenses/herdr-core/LICENSE":     "Apache License\n",
+		"agent-pane":                              "binary",
+		"instructions.md":                         "<!-- agent-pane:start -->\n# Agent Pane\n<!-- agent-pane:end -->\n",
+		"place.sh":                                "#!/bin/sh\n",
+		"agents/enabled.json":                     `{"agents":{}}`,
+		"skills/agent-pane/SKILL.md":              "name: agent-pane\n",
+		"extensions/chrome/manifest.json":         `{"version":"` + extensionVersion + `"}`,
+		"extensions/chrome/background.js":         "//\n",
+		"herdr-core.lock":                         testCoreLock(),
+		"licenses/herdr-core/LICENSE":             "Apache License\n",
+		"licenses/herdr-core/THIRD-PARTY-NOTICES": "notices\n",
 	}
 	for rel, content := range release {
 		writeFile(t, filepath.Join(l.release, rel), content, 0o644)
@@ -68,6 +69,7 @@ func healthyInstall(t *testing.T, goos, extensionVersion string) installLayout {
 	writeFile(t, filepath.Join(l.release, "libexec", "hc"), testCore, 0o755)
 	writeFile(t, l.core, testCore, 0o755)
 	writeFile(t, filepath.Join(l.dataDir, "licenses", "herdr-core", "LICENSE"), release["licenses/herdr-core/LICENSE"], 0o644)
+	writeFile(t, filepath.Join(l.dataDir, "licenses", "herdr-core", "THIRD-PARTY-NOTICES"), release["licenses/herdr-core/THIRD-PARTY-NOTICES"], 0o644)
 	writeFile(t, l.binary, "binary", 0o755)
 	writeFile(t, l.host, "#!/bin/sh\nexec "+shQuote(l.binary)+" serve\n", 0o755)
 	browser := browserDirs(goos, l.home)[0]
@@ -214,11 +216,23 @@ func TestDoctorFindsProblems(t *testing.T) {
 		{name: "core license missing", item: "core licenses", want: checkFail, damage: func(t *testing.T, l installLayout) {
 			os.RemoveAll(filepath.Join(l.dataDir, "licenses"))
 		}},
+		{name: "core notices missing from release and install", item: "core licenses", want: checkFail, damage: func(t *testing.T, l installLayout) {
+			os.Remove(filepath.Join(l.release, "licenses", "herdr-core", "THIRD-PARTY-NOTICES"))
+			os.Remove(filepath.Join(l.dataDir, "licenses", "herdr-core", "THIRD-PARTY-NOTICES"))
+		}},
 		{name: "core libexec on PATH", item: "core isolation", want: checkFail, env: func(_ *testing.T, e *doctorEnv) {
 			e.path = "/usr/bin" + string(os.PathListSeparator) + "LIBEXEC"
 		}},
 		{name: "bundled core linked as ~/.local/bin/hc", item: "core isolation", want: checkFail, damage: func(t *testing.T, l installLayout) {
 			if err := os.Symlink(l.core, filepath.Join(filepath.Dir(l.binary), "hc")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "release libexec on PATH", item: "core isolation", want: checkFail, env: func(_ *testing.T, e *doctorEnv) {
+			e.path = "/usr/bin" + string(os.PathListSeparator) + "RELEASE_LIBEXEC"
+		}},
+		{name: "release core linked as ~/.local/bin/hc", item: "core isolation", want: checkFail, damage: func(t *testing.T, l installLayout) {
+			if err := os.Symlink(filepath.Join(l.release, "libexec", "hc"), filepath.Join(filepath.Dir(l.binary), "hc")); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -239,6 +253,7 @@ func TestDoctorFindsProblems(t *testing.T) {
 			if tc.env != nil {
 				tc.env(t, &env)
 			}
+			env.path = strings.ReplaceAll(env.path, "RELEASE_LIBEXEC", filepath.Join(l.release, "libexec"))
 			env.path = strings.ReplaceAll(env.path, "LIBEXEC", filepath.Dir(l.core))
 			if tc.damage != nil {
 				tc.damage(t, l)
