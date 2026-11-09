@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -39,8 +41,9 @@ type fakeCore struct {
 	// does. runGate, when set, holds Run until it is closed.
 	runLost bool
 	runGate chan struct{}
-	// listErr, when set, fails List.
+	// listErr, when set, fails List. killErr fails Kill for an address.
 	listErr error
+	killErr map[string]error
 	subs    []*fakeEvents
 	pid     int
 	done    chan struct{}
@@ -107,6 +110,9 @@ func (f *fakeCore) Subscribe(_ context.Context, labels map[string]string) (coreE
 func (f *fakeCore) Kill(_ context.Context, terminal string) (herdrcore.Terminal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.killErr[terminal]; err != nil {
+		return herdrcore.Terminal{}, err
+	}
 	f.killed = append(f.killed, terminal)
 	return herdrcore.Terminal{Address: terminal, State: "finished"}, nil
 }
@@ -682,6 +688,35 @@ func TestCloseEndsAnUnsureStart(t *testing.T) {
 	defer core.mu.Unlock()
 	if len(core.killed) != 1 || core.killed[0] != "t1" || len(core.removed) != 1 {
 		t.Fatalf("killed %v removed %v", core.killed, core.removed)
+	}
+}
+
+func TestSettleTriesEveryUnsureStart(t *testing.T) {
+	core := newFakeCore()
+	b := &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }}
+	core.mu.Lock()
+	for _, session := range []string{"s1", "s2", "s3"} {
+		core.runs = append(core.runs, herdrcore.RunParams{Labels: map[string]string{coreSessionLabel: session}})
+	}
+	core.killErr = map[string]error{"t2": context.DeadlineExceeded}
+	core.mu.Unlock()
+	b.unsureMu.Lock()
+	b.unsure = map[string]struct{}{"s1": {}, "s2": {}, "s3": {}}
+	b.unsureMu.Unlock()
+	if err := b.settle(); !errors.Is(err, errCoreUnsure) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("settle error %v", err)
+	}
+	core.mu.Lock()
+	killed := append([]string(nil), core.killed...)
+	core.mu.Unlock()
+	slices.Sort(killed)
+	if !slices.Equal(killed, []string{"t1", "t3"}) {
+		t.Fatalf("killed %v", killed)
+	}
+	b.unsureMu.Lock()
+	defer b.unsureMu.Unlock()
+	if _, kept := b.unsure["s2"]; len(b.unsure) != 1 || !kept {
+		t.Fatalf("still unsure %v", b.unsure)
 	}
 }
 
