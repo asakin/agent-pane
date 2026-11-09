@@ -394,3 +394,10 @@ func nonNil(m map[string]string) map[string]string {
 	}
 	return m
 }
+
+// Label sets labels on a terminal; an empty value removes that label.
+func (c *Client) Label(ctx context.Context, terminal string, labels map[string]string) (Terminal, error) {
+	var t Terminal
+	err := c.Call(ctx, "terminal.label", map[string]any{"terminal": terminal, "labels": nonNil(labels)}, &t)
+	return t, err
+}

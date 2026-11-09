@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -22,6 +23,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	pageSocketDir = dir
+	paneRegistryPath = filepath.Join(dir, "state", "panes.json")
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

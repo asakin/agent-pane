@@ -32,12 +32,30 @@ export type RequestCreateTTY = JSONRPCRequestBase<"tty.create", {
     cwd?: string;
     /** The pane tab a replacement session joins. */
     pane?: string;
+    /** The Chrome window it is shown in, as windowName makes it. */
+    window?: string;
     cols: number;
     rows: number;
 }>
 
 export type RequestAttachTTY = JSONRPCRequestBase<"tty.attach", {
     id: string;
+    /** The Chrome window it is now shown in, as windowName makes it. */
+    window?: string;
+}>
+
+/**
+ * The Chrome window showing a pane tab closed. A Durable session keeps
+ * running with its grants revoked; a Built-in one ends with its pane tab.
+ */
+export type RequestDetachTTY = JSONRPCRequestBase<"tty.detach", {
+    id: string;
+    pane?: string;
+}>
+
+export type ResponseDetachTTY = JSONRPCResponseBase<{
+    /** Whether the session still runs. */
+    running: boolean;
 }>
 
 export type RequestListTTY = JSONRPCRequestBase<"tty.list", undefined>
@@ -106,9 +124,26 @@ export type ResponseCreateTTY = JSONRPCResponseBase<{
 
 export type ResponseAttachTTY = ResponseCreateTTY
 
+/** One live session in tty.list's answer. */
+export type ListedTTY = {
+    id: string;
+    /** What the session's program last reported (Durable only). */
+    status?: unknown;
+    title?: string;
+    /** The host's id for its pane tab. */
+    pane?: string;
+    /** The agent-definition id it runs, absent for a shell. */
+    agent?: string;
+    /** What approval prompts call it: the agent's name or Terminal. */
+    label?: string;
+    /** The Chrome window it was last shown in (windowName), absent once that window closed. */
+    window?: string;
+    /** Set when it runs in the Durable (preview) backend and outlives the side panel. */
+    durable?: boolean;
+};
+
 export type ResponseListTTY = JSONRPCResponseBase<{
-    /** status and title: what the session's program last reported (Durable only). */
-    sessions: { id: string; status?: unknown; title?: string }[];
+    sessions: ListedTTY[];
 }>
 
 export type AgentInfo = {

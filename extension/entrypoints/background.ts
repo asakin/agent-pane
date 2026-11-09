@@ -1,6 +1,6 @@
-import { createHostConnection, type HostPort } from "~/entrypoints/shared/hostConnection"
-import { requestNative } from "~/entrypoints/shared/nativeRpc"
-import type { RequestConfigGet, RequestDestroyTTY } from "~/entrypoints/shared/rpc"
+import { createHostConnection } from "~/entrypoints/shared/hostConnection"
+import { detachOnWindowClose } from "~/entrypoints/shared/nativeRpc"
+import type { RequestConfigGet } from "~/entrypoints/shared/rpc"
 import { isOwnExtensionPage } from "~/entrypoints/shared/sender"
 import { blockedDomainsFromConfig } from "~/entrypoints/shared/blockedDomains"
 import { type StatusMessage, parseTtyEvent } from "~/entrypoints/shared/paneStatus"
@@ -16,7 +16,9 @@ import {
 } from "~/entrypoints/shared/pageAccess"
 import {
   type WindowTabState,
+  RUN_ID_KEY,
   legacySessionKey,
+  newRunId,
   windowStateKey,
 } from "~/entrypoints/shared/windowTabs"
 
@@ -140,22 +142,20 @@ export default defineBackground(() => {
   // Ensure panel-on-click is set even if the extension was already installed.
   browser.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true });
 
-  // Panel close survives; closing the Chrome window ends that window's terminal.
-  browser.windows.onRemoved.addListener((windowId) => {
-    void destroyWindowSession(windowId);
+  // Chrome starting again reuses window ids, so a pane tab left running
+  // must not take the new window with the same id for its own.
+  browser.runtime.onStartup.addListener(() => {
+    void browser.storage.local.set({ [RUN_ID_KEY]: newRunId() });
   });
 
-  async function destroyTTYViaNative(nativePort: HostPort, ttyId: string, pane?: string) {
-    const msg: RequestDestroyTTY = {
-      jsonrpc: "2.0",
-      id: crypto.randomUUID(),
-      method: "tty.destroy",
-      params: pane ? { id: ttyId, pane } : { id: ttyId },
-    };
-    await requestNative(nativePort, msg, 2000);
-  }
+  // Panel close survives. Closing the Chrome window detaches its pane tabs:
+  // Durable ones keep running, with their grants revoked, for a side panel
+  // to reopen; Built-in ones end.
+  browser.windows.onRemoved.addListener((windowId) => {
+    void detachWindowSessions(windowId);
+  });
 
-  async function destroyWindowSession(windowId: number) {
+  async function detachWindowSessions(windowId: number) {
     const wKey = windowStateKey(windowId);
     const legacyKey = legacySessionKey(windowId);
     const stored = await browser.storage.session.get([wKey, legacyKey]);
@@ -163,7 +163,7 @@ export default defineBackground(() => {
     const legacyId = stored[legacyKey] as string | undefined;
 
     // PTY session id to its pane tab's id, when it has one; the window's
-    // pane tabs close with it.
+    // pane tabs detach from it.
     const ids = new Map<string, string | undefined>();
     const tabs = state?.tabs as unknown;
     if (Array.isArray(tabs)) {
@@ -194,7 +194,7 @@ export default defineBackground(() => {
     }
 
     for (const [ttyId, pane] of ids) {
-      await destroyTTYViaNative(nativePort, ttyId, pane);
+      await detachOnWindowClose(nativePort, ttyId, pane);
     }
   }
 

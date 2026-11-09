@@ -59,13 +59,21 @@ function rpcError(id: string, code: number, message: string): JSONRPCResponse {
     };
 }
 
+/**
+ * The host's answer about a session it cannot yet say is gone: Durable pane
+ * tabs may still run in a terminal runtime it could not read. Like a host
+ * that did not answer, it is not a missing session to replace.
+ */
+export const REDISCOVERY_PENDING = "durable pane tabs are not known yet";
+
 export function errorFromResponse(response: {
     error?: { code: number; message: string };
 }): Error | null {
     if (!response.error) {
         return null;
     }
-    if (response.error.code === NATIVE_TIMEOUT || response.error.code === NATIVE_DISCONNECTED) {
+    if (response.error.code === NATIVE_TIMEOUT || response.error.code === NATIVE_DISCONNECTED
+        || response.error.message.includes(REDISCOVERY_PENDING)) {
         return new NativeUnavailable(response.error.message);
     }
     return new Error(response.error.message);
@@ -107,4 +115,21 @@ export function requestNative<T extends { id?: string }>(
             finish(rpcError(id, NATIVE_DISCONNECTED, "Native host is not connected"));
         }
     });
+}
+
+/** JSON-RPC "method not found", which a host older than a method answers. */
+export const METHOD_NOT_FOUND = -32601;
+
+/**
+ * Tells the host that the Chrome window showing a pane tab closed. A Durable
+ * session keeps running with its grants revoked; a Built-in one ends. A host
+ * without tty.detach ends the session and its pane tab instead, as closing a
+ * window did before.
+ */
+export async function detachOnWindowClose(port: NativeMessagePort, id: string, pane?: string, timeoutMs = 2000): Promise<void> {
+    const params = pane ? { id, pane } : { id };
+    const resp = await requestNative(port, { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tty.detach", params }, timeoutMs);
+    if (resp.error?.code === METHOD_NOT_FOUND) {
+        await requestNative(port, { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tty.destroy", params }, timeoutMs);
+    }
 }

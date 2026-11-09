@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,6 +72,20 @@ type Session struct {
 	// facts is what the program last reported about itself (Durable
 	// sessions only).
 	facts terminalFacts
+	// agent is the agent-definition id the session runs, "" for a shell.
+	agent string
+	// window is the Chrome window the session is shown in, as
+	// <browserId>:<windowId>; "" once that window closed or when unknown.
+	// coreWindow is what its core terminal's label holds (Durable only);
+	// windowMu orders the writes of that label.
+	window     string
+	coreWindow string
+	windowMu   sync.Mutex
+	// socketPath is the page socket's path, which the program was given.
+	socketPath string
+	// detached is set when the host let go of a Durable session and left
+	// its program running in the core.
+	detached bool
 }
 
 // extensionOrigins are the only origins that may open a PTY WebSocket. Add the
@@ -119,6 +134,22 @@ type SessionManager struct {
 	creating sync.WaitGroup
 	// pageReads counts page reads in flight across all sessions.
 	pageReads atomic.Int32
+
+	// registry records Durable sessions so a later host can take them
+	// back; nil where there is none. browser is the extension's browser
+	// id, set (browserSet) by initialize; both guarded by mu.
+	registry   *paneRegistry
+	browser    string
+	browserSet bool
+	// rediscoverMu guards rediscovered and lastRediscover: whether this host
+	// has taken back the Durable pane tabs still running, and when it last
+	// tried.
+	rediscoverMu   sync.Mutex
+	rediscovered   bool
+	lastRediscover time.Time
+	// detachedEarly holds the ids of sessions whose window closed before
+	// the host took them back; guarded by mu.
+	detachedEarly map[string]struct{}
 }
 
 func (m *SessionManager) takePageRead() bool {
@@ -240,11 +271,70 @@ func (m *SessionManager) resendFacts() {
 }
 
 // ttyListItem is one session in tty.list's answer, with what its program
-// last reported.
+// last reported and where it was last shown, so a side panel can offer the
+// pane tabs it does not hold.
 type ttyListItem struct {
 	ID     string      `json:"id"`
 	Status *paneStatus `json:"status"`
 	Title  string      `json:"title,omitempty"`
+	Pane   string      `json:"pane,omitempty"`
+	Agent  string      `json:"agent,omitempty"`
+	Label  string      `json:"label,omitempty"`
+	// Window names the Chrome window the session was last shown in, when
+	// it is this browser's and still open as far as the host knows.
+	Window  string `json:"window,omitempty"`
+	Durable bool   `json:"durable,omitempty"`
+}
+
+// listItems is tty.list's answer: the live sessions.
+func (m *SessionManager) listItems() []ttyListItem {
+	ids := m.List()
+	slices.Sort(ids)
+	m.mu.RLock()
+	browser := m.browser
+	m.mu.RUnlock()
+	items := make([]ttyListItem, 0, len(ids))
+	for _, id := range ids {
+		item := ttyListItem{ID: id}
+		if s, ok := m.Get(id); ok {
+			durable := s.isDurable()
+			s.mu.Lock()
+			item.Status, item.Title = s.facts.Status, s.facts.Title
+			item.Agent, item.Label, item.Durable = s.agent, s.Label, durable
+			if s.pane != nil {
+				item.Pane = s.pane.id
+			}
+			if b, w, ok := strings.Cut(s.window, ":"); ok && b == browser {
+				item.Window = w
+			}
+			s.mu.Unlock()
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+// windowRe matches the window names the extension sends: opaque, short,
+// and safe in a core label.
+var windowRe = regexp.MustCompile(`^[A-Za-z0-9@_-]{1,64}$`)
+
+func validWindow(window string) bool {
+	return window == "" || windowRe.MatchString(window)
+}
+
+// windowLabel names a Chrome window of this host's browser, as the
+// agent-pane.window label has it (<browserId>:<window>); "" for none.
+func (m *SessionManager) windowLabel(window string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.windowLabelLocked(window)
+}
+
+func (m *SessionManager) windowLabelLocked(window string) string {
+	if window == "" {
+		return ""
+	}
+	return m.browser + ":" + window
 }
 
 func nativeNotifier(host *jsonrpc.Host) extensionNotifier {
@@ -261,6 +351,7 @@ func NewSessionManager(port int, logger *slog.Logger) *SessionManager {
 		panes:    make(map[string]*paneTab),
 		backend:  ptyBackend{logger: logger},
 		durable:  newCoreBackend(logger, herdrcore.Private(dataDir)),
+		registry: newPaneRegistry(paneRegistryPath),
 		port:     port,
 		logger:   logger,
 	}
@@ -391,6 +482,7 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 		ID:      id,
 		manager: m,
 		Label:   label,
+		agent:   agent,
 	}
 	// Register the session before it starts, so its pane tab is held and
 	// its environment can name it. It is not live until it has started.
@@ -402,6 +494,9 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 	m.creating.Add(1)
 	defer m.creating.Done()
 	session.pane = m.paneLocked(paneID)
+	session.window = m.windowLabelLocked(command.Window)
+	session.coreWindow = session.window
+	command.Window = session.window
 	m.sessions[id] = session
 	m.mu.Unlock()
 
@@ -433,6 +528,9 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 	session.mu.Lock()
 	session.started = true
 	session.mu.Unlock()
+	if session.isDurable() {
+		m.record(session)
+	}
 
 	// The session is reaped when its program exits or its terminal ends.
 	session.term.run(func() { m.reap(id) }, func(f terminalFacts) { m.reportFacts(session, f) })
@@ -483,7 +581,7 @@ func (m *SessionManager) startIn(backend terminalBackend, session *Session, agen
 	}
 
 	session.mu.Lock()
-	session.term, session.page, session.pageSocket = term, page, sock
+	session.term, session.page, session.pageSocket, session.socketPath = term, page, sock, sockPath
 	session.mu.Unlock()
 	command.Env = withSessionEnv(command.Env, sessionEnv(session, agent, page != nil, sockPath))
 
@@ -493,7 +591,7 @@ func (m *SessionManager) startIn(backend terminalBackend, session *Session, agen
 	}
 	if err != nil {
 		session.mu.Lock()
-		session.term, session.page, session.pageSocket = nil, nil, nil
+		session.term, session.page, session.pageSocket, session.socketPath = nil, nil, nil, ""
 		session.mu.Unlock()
 		if page != nil {
 			_ = page.Close()
@@ -533,10 +631,12 @@ func (m *SessionManager) Destroy(id string) error {
 	return nil
 }
 
-// Close ends every session whose terminal would outlive the host: the
-// Durable (preview) ones, which run in the core, and any the core may have
-// started without saying so. Built-in terminals end with the host's process.
-// Sessions still starting finish starting first, and no new ones start after.
+// Close lets go of the host's sessions as it exits. Durable (preview)
+// sessions keep running in the core, recorded for the next host to take
+// back; their grants end with this host. Any start the core may have made
+// without saying so is ended. Built-in terminals end with the host's
+// process. Sessions still starting finish starting first, and no new ones
+// start after.
 func (m *SessionManager) Close() {
 	m.mu.Lock()
 	m.closing = true
@@ -545,16 +645,13 @@ func (m *SessionManager) Close() {
 	m.mu.RLock()
 	var ids []string
 	for id, s := range m.sessions {
-		s.mu.Lock()
-		_, durable := s.term.(*coreTerminal)
-		s.mu.Unlock()
-		if durable {
+		if s.isDurable() {
 			ids = append(ids, id)
 		}
 	}
 	m.mu.RUnlock()
 	for _, id := range ids {
-		m.remove(id)
+		m.release(id)
 	}
 	// Starts the host could not confirm ended may still run in the core.
 	if core, ok := m.durable.(*coreBackend); ok {
@@ -617,8 +714,25 @@ func (s *Session) close() {
 		}
 	}
 	s.replies = nil
+	if t, ok := s.term.(*coreTerminal); ok && s.detached {
+		t.detach()
+		return
+	}
+	var err error
 	if s.term != nil {
-		_ = s.term.close()
+		err = s.term.close()
+	}
+	if t, ok := s.term.(*coreTerminal); ok && s.manager != nil && s.manager.registry != nil {
+		if err != nil {
+			// Its program may still run: keep its record, marked closed, and
+			// keep trying to end it, so no later host takes it back.
+			s.manager.logger.Warn("failed to end durable pane tab", "error", err, "session", s.ID)
+			s.manager.closeLater(s.ID, t)
+			return
+		}
+		if err := s.manager.registry.remove(s.ID); err != nil {
+			s.manager.logger.Warn("failed to forget durable pane tab", "error", err)
+		}
 	}
 }
 
@@ -712,8 +826,7 @@ func NewCmdServe(version string) *cobra.Command {
 			err = <-done
 			logger.Info("Shutting down server")
 			server.Shutdown(context.Background())
-			// Durable (preview) terminals keep today's rule: they end
-			// with the host.
+			// Durable (preview) terminals keep running for the next host.
 			sessions.Close()
 			return err
 		},
@@ -732,7 +845,7 @@ type initializeResult struct {
 	Protocol int    `json:"protocol"`
 }
 
-func initializeHandler(logger *slog.Logger, version string) jsonrpc.RequestHandlerFunc {
+func initializeHandler(logger *slog.Logger, version string, sessions *SessionManager) jsonrpc.RequestHandlerFunc {
 	return func(input []byte) (any, error) {
 		var params struct {
 			Version   string `json:"version"`
@@ -744,6 +857,9 @@ func initializeHandler(logger *slog.Logger, version string) jsonrpc.RequestHandl
 		}
 
 		logger.Info("Received initialize notification", "version", params.Version, "browserId", params.BrowserID)
+		if sessions != nil {
+			sessions.SetBrowser(params.BrowserID)
+		}
 		return initializeResult{Version: version, Protocol: protocolVersion}, nil
 	}
 }
@@ -751,7 +867,7 @@ func initializeHandler(logger *slog.Logger, version string) jsonrpc.RequestHandl
 func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version string) *jsonrpc.Host {
 	messagingHost := jsonrpc.NewHost(logger)
 
-	messagingHost.HandleRequest("initialize", initializeHandler(logger, version))
+	messagingHost.HandleRequest("initialize", initializeHandler(logger, version, sessions))
 
 	messagingHost.HandleRequest("tty.create", func(input []byte) (any, error) {
 		var params struct {
@@ -764,6 +880,8 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			Pane string `json:"pane"`
 			Cols int    `json:"cols"`
 			Rows int    `json:"rows"`
+			// Window names the Chrome window the session is shown in.
+			Window string `json:"window"`
 		}
 
 		if len(input) > 0 {
@@ -795,6 +913,10 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			return nil, err
 		}
 		command.Cols, command.Rows = params.Cols, params.Rows
+		if !validWindow(params.Window) {
+			return nil, fmt.Errorf("invalid window %q", params.Window)
+		}
+		command.Window = params.Window
 		session, err := sessions.Create(label, params.Pane, app, command)
 		if err != nil {
 			return nil, err
@@ -806,6 +928,8 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 	messagingHost.HandleRequest("tty.attach", func(input []byte) (any, error) {
 		var params struct {
 			ID string `json:"id"`
+			// Window names the Chrome window the session is now shown in.
+			Window string `json:"window"`
 		}
 		if err := json.Unmarshal(input, &params); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal attach params: %w", err)
@@ -814,30 +938,43 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			return nil, fmt.Errorf("id is required")
 		}
 
+		// A session an earlier host started may still run in the core.
+		complete := sessions.ensureRediscovered()
 		session, ok := sessions.Get(params.ID)
+		if !ok && !complete {
+			return nil, errors.New(errRediscoveryPending)
+		}
 		if !ok {
 			return nil, fmt.Errorf("invalid tty ID")
 		}
 		if session.isClosed() {
 			return nil, fmt.Errorf("tty session is closed")
 		}
+		if !validWindow(params.Window) {
+			return nil, fmt.Errorf("invalid window %q", params.Window)
+		}
+		if params.Window != "" {
+			sessions.setWindow(session, sessions.windowLabel(params.Window))
+		}
 
 		return sessions.endpoint(session.ID)
 	})
 
 	messagingHost.HandleRequest("tty.list", func(input []byte) (any, error) {
-		ids := sessions.List()
-		items := make([]ttyListItem, 0, len(ids))
-		for _, id := range ids {
-			item := ttyListItem{ID: id}
-			if s, ok := sessions.Get(id); ok {
-				s.mu.Lock()
-				item.Status, item.Title = s.facts.Status, s.facts.Title
-				s.mu.Unlock()
-			}
-			items = append(items, item)
+		sessions.ensureRediscovered()
+		return map[string]any{"sessions": sessions.listItems()}, nil
+	})
+
+	messagingHost.HandleRequest("tty.detach", func(input []byte) (any, error) {
+		var params struct {
+			ID string `json:"id"`
+			// Pane is the pane tab whose window closed: its grants end.
+			Pane string `json:"pane"`
 		}
-		return map[string]any{"sessions": items}, nil
+		if err := json.Unmarshal(input, &params); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal detach params: %w", err)
+		}
+		return map[string]any{"running": sessions.DetachWindow(params.ID, params.Pane)}, nil
 	})
 
 	messagingHost.HandleRequest("tty.destroy", func(input []byte) (any, error) {
