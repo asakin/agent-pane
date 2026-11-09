@@ -59,13 +59,21 @@ function rpcError(id: string, code: number, message: string): JSONRPCResponse {
     };
 }
 
+/**
+ * The host's answer about a session it cannot yet say is gone: Durable pane
+ * tabs may still run in a terminal runtime it could not read. Like a host
+ * that did not answer, it is not a missing session to replace.
+ */
+export const REDISCOVERY_PENDING = "durable pane tabs are not known yet";
+
 export function errorFromResponse(response: {
     error?: { code: number; message: string };
 }): Error | null {
     if (!response.error) {
         return null;
     }
-    if (response.error.code === NATIVE_TIMEOUT || response.error.code === NATIVE_DISCONNECTED) {
+    if (response.error.code === NATIVE_TIMEOUT || response.error.code === NATIVE_DISCONNECTED
+        || response.error.message.includes(REDISCOVERY_PENDING)) {
         return new NativeUnavailable(response.error.message);
     }
     return new Error(response.error.message);

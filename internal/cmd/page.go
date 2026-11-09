@@ -314,6 +314,7 @@ func (s *Session) approve(ctx context.Context, t pageTimeouts, call extensionCal
 		return false, errors.New(errApprovalTimeout)
 	}
 	id := strings.ToLower(rand.Text())
+	epoch := pane.currentEpoch()
 	step, cancel := stepContext(ctx, timeout)
 	raw, err := call(step, "page.approve", map[string]any{
 		"id":        id,
@@ -348,7 +349,13 @@ func (s *Session) approve(ctx context.Context, t pageTimeouts, call extensionCal
 	if answer.Choice != "tab" && answer.Choice != "all" {
 		return true, errors.New(errDenied)
 	}
-	if s.isClosed() || !pane.grant(tab.TabID, answer.Choice) {
+	if s.isClosed() {
+		return true, errors.New(errTerminalClosed)
+	}
+	if err := pane.grantAt(epoch, tab.TabID, answer.Choice); err != nil {
+		if errors.Is(err, errGrantRevoked) {
+			return true, errors.New(errDenied)
+		}
 		return true, errors.New(errTerminalClosed)
 	}
 	return true, nil
