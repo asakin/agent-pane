@@ -9,17 +9,17 @@
     },
     {
       "name": "Re-runs page info before Part 2",
-      "description": "research.md command log shows `agent-pane page info` was run a second time before answering Part 2 — confirming the agent did not simply reuse the URL or title from the first read",
+      "description": "research.md command log shows `agent-pane page info` was run after the Part 1 read and before answering Part 2 — confirming the agent did not simply reuse the URL or title from the first read",
       "max_score": 25
     },
     {
       "name": "Part 1 attributed to correct page",
-      "description": "research.md attributes the Part 1 answer (default API key scope) to the Authentication page — either URL https://docs.example.com/api/authentication or title 'Authentication — Example API Docs'",
+      "description": "research.md gives `read` as the default API key scope and attributes that answer to the Authentication page — either URL https://docs.example.com/api/authentication or title 'Authentication — Example API Docs'",
       "max_score": 20
     },
     {
       "name": "Part 2 attributed to correct page",
-      "description": "research.md attributes the Part 2 answer (rate limit status code and retry guidance) to the Rate Limiting page — either URL https://docs.example.com/api/rate-limiting or title 'Rate Limiting — Example API Docs'",
+      "description": "research.md gives HTTP 429 and exponential back-off, waiting at least `Retry-After` seconds, and attributes that answer to the Rate Limiting page — either URL https://docs.example.com/api/rate-limiting or title 'Rate Limiting — Example API Docs'",
       "max_score": 20
     },
     {
