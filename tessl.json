@@ -27,7 +27,8 @@
         ],
         "debounce": "90s"
       },
-      "environment": "factory-siglify-agent-pane-shepherd"
+      "environment": "factory-siglify-agent-pane-shepherd",
+      "instructions": "Fix advisory review findings too, not only the ones that require changes, unless a finding is wrong; then reply on and resolve each thread."
     },
     "implement": {
       "tags": [
