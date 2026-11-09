@@ -70,6 +70,7 @@ func NewCmdRoot(version string) *cobra.Command {
 		NewCmdRun(),
 		NewCmdSpawn(),
 		NewCmdPage(),
+		NewCmdStatus(),
 		NewCmdDoctor(version),
 	)
 

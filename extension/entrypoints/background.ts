@@ -3,6 +3,7 @@ import { requestNative } from "~/entrypoints/shared/nativeRpc"
 import type { RequestConfigGet, RequestDestroyTTY } from "~/entrypoints/shared/rpc"
 import { isOwnExtensionPage } from "~/entrypoints/shared/sender"
 import { blockedDomainsFromConfig } from "~/entrypoints/shared/blockedDomains"
+import { type StatusMessage, parseTtyEvent } from "~/entrypoints/shared/paneStatus"
 import {
   type ApproveMessage,
   type CancelMessage,
@@ -33,6 +34,7 @@ export default defineBackground(() => {
     extensionVersion: browser.runtime.getManifest().version,
     lastError: () => browser.runtime.lastError?.message,
     onHostRequest: answerHost,
+    onHostNotification: relayHostNotification,
   });
 
   const pageApis = {
@@ -114,6 +116,20 @@ export default defineBackground(() => {
       default:
         throw new Error(`Method not found: ${method}`);
     }
+  }
+
+  // A pane tab's status or title changed: tell the side panels, and the one
+  // holding that pane tab shows it.
+  function relayHostNotification(method: string, params: unknown) {
+    if (method !== "tty.event") {
+      return;
+    }
+    const event = parseTtyEvent(params);
+    if (!event) {
+      return;
+    }
+    const msg: StatusMessage = { type: "agent-pane.tty-event", event };
+    browser.runtime.sendMessage(msg).catch(() => {});
   }
 
   browser.runtime.onInstalled.addListener(async () => {

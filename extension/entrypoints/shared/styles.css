@@ -136,6 +136,58 @@ body.at-options {
     }
 }
 
+/* What the pane tab's program reports it is doing (Durable pane tabs). */
+.at-tabs__status {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    box-sizing: border-box;
+}
+
+.at-tabs__status[hidden] {
+    display: none;
+}
+
+.at-tabs__status--working {
+    border: 1.5px solid #2f80ed;
+    border-right-color: transparent;
+    animation: at-tabs-spin 1s linear infinite;
+}
+
+.at-tabs__status--blocked {
+    background: #e8a317;
+}
+
+.at-tabs__status--done {
+    background: #27ae60;
+}
+
+.at-tabs__status--error {
+    background: #d64545;
+}
+
+.at-tabs__status--idle {
+    border: 1.5px solid #8a8a8a;
+}
+
+@keyframes at-tabs-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .at-tabs__status--working {
+        animation: none;
+        border-right-color: #2f80ed;
+    }
+}
+
+.at-tabs__tab--attention {
+    box-shadow: inset 0 -2px 0 #e8a317;
+}
+
 .at-tabs__label {
     overflow: hidden;
     text-overflow: ellipsis;

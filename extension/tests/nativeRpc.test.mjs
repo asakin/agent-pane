@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isHostRequest } from "../entrypoints/shared/hostConnection.ts";
+import { isHostNotification, isHostRequest } from "../entrypoints/shared/hostConnection.ts";
 import { checkHost, MIN_HOST_PROTOCOL, MIN_HOST_VERSION } from "../entrypoints/shared/hostVersion.ts";
 import { CHOOSE_FOLDER_TIMEOUT_MS, errorFromResponse, NATIVE_RPC_TIMEOUT_MS, nativeTimeoutMs, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
 
@@ -132,4 +132,12 @@ test("a host request is told apart from a response", () => {
     assert.equal(isHostRequest({ jsonrpc: "2.0", id: "h", error: { code: 1, message: "x" } }), false);
     assert.equal(isHostRequest({ jsonrpc: "2.0", id: "", method: "page.read" }), false);
     assert.equal(isHostRequest({ id: "h", method: "page.read" }), false);
+});
+
+test("a host notification is told apart from a request and a response", () => {
+    assert.equal(isHostNotification({ jsonrpc: "2.0", method: "tty.event", params: { tty: "a", status: null } }), true);
+    assert.equal(isHostNotification({ jsonrpc: "2.0", id: "h", method: "page.read" }), false);
+    assert.equal(isHostNotification({ jsonrpc: "2.0", method: "tty.event", result: {} }), false);
+    assert.equal(isHostNotification({ method: "tty.event" }), false);
+    assert.equal(isHostRequest({ jsonrpc: "2.0", method: "tty.event", params: {} }), false);
 });

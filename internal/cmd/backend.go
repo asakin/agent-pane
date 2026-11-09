@@ -33,7 +33,9 @@ type terminal interface {
 	start(command *terminalCommand, extra *os.File) (pid int, err error)
 	// run streams the started terminal's output to its viewer and calls
 	// ended, possibly more than once, when the terminal or its program ends.
-	run(ended func())
+	// Backends that learn what the program reports about itself call facts
+	// with it each time it may have changed.
+	run(ended func(), facts func(terminalFacts))
 	// attach sends the replay to viewer as one frame, possibly empty, then
 	// live output. It replaces and closes any earlier viewer. detach stops
 	// output to this viewer if it is still the current one.
@@ -49,6 +51,22 @@ type terminal interface {
 type terminalViewer interface {
 	send(p []byte) error
 	close() error
+}
+
+// terminalFacts is what a terminal's program reports about itself.
+type terminalFacts struct {
+	// Status is the program's own status; nil when it reports none.
+	Status *paneStatus
+	Title  string
+}
+
+// paneStatus is a program's report of what it is doing. State is idle,
+// working, done, blocked or error; Kind (blocked only) is permission,
+// question or auth.
+type paneStatus struct {
+	State string `json:"state"`
+	Msg   string `json:"msg,omitempty"`
+	Kind  string `json:"kind,omitempty"`
 }
 
 // terminalCommand is the program a session runs, independent of backend.
@@ -137,7 +155,7 @@ func (t *ptyTerminal) start(command *terminalCommand, extra *os.File) (int, erro
 	return pid, nil
 }
 
-func (t *ptyTerminal) run(ended func()) {
+func (t *ptyTerminal) run(ended func(), _ func(terminalFacts)) {
 	go t.readLoop(ended)
 	go func() {
 		_ = t.wait()
