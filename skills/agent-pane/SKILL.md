@@ -24,7 +24,7 @@ env | grep -E '^(AGENT_PANE|TERM_PROGRAM)'
 | `AGENT_PANE_TAB_ID` | Opaque id of the pane tab. It stays the same when the panel restarts a dead terminal in that pane tab. |
 | `AGENT_PANE_SESSION_ID` | Opaque id of the current PTY session in that pane tab. It changes when the terminal is replaced. |
 | `AGENT_PANE_AGENT` | The agent definition the pane tab was launched with (`claude`, `codex`, ...). Unset for a plain shell. It says what was launched, not what is running now. |
-| `AGENT_PANE_FD` | The inherited page-connection descriptor. Unset when there is none. |
+| `AGENT_PANE_FD` | The inherited page-connection descriptor. Unset when there is none, as in pane tabs on the Durable (preview) terminal backend. |
 | `AGENT_PANE_SOCKET` | The session's page socket, used when this process did not inherit the descriptor. |
 | `AGENT_PANE_SKILL_PATH` | Where this file is installed. |
 

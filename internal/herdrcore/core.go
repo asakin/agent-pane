@@ -3,8 +3,8 @@
 // socket, in framed mode, so one connection carries calls and terminal
 // streams.
 //
-// The host does not run terminals in the core yet (RFC 0001); this package is
-// the bridge's lower half.
+// The host runs terminals in the core when the Durable (preview) terminal
+// backend is chosen (RFC 0001); this package is the bridge's lower half.
 package herdrcore
 
 import (
