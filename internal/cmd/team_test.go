@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,6 +26,7 @@ type fakeTeamCore struct {
 	reads  []herdrcore.ReadParams
 	sendFn func(herdrcore.SendParams) error
 	waitFn func(*herdrcore.Terminal) herdrcore.WaitResult
+	runErr error
 	closed bool
 }
 
@@ -62,6 +64,9 @@ func (f *fakeTeamCore) List(ctx context.Context, labels map[string]string, all b
 
 func (f *fakeTeamCore) Run(ctx context.Context, p herdrcore.RunParams) (herdrcore.Terminal, error) {
 	f.runs = append(f.runs, p)
+	if f.runErr != nil {
+		return herdrcore.Terminal{}, f.runErr
+	}
 	t := &herdrcore.Terminal{Address: fmt.Sprintf("t%d", f.next), State: "live", Labels: p.Labels, Argv: p.Argv, CreatedMs: uint64(f.next)}
 	f.terms[t.Address] = t
 	f.next++
@@ -103,6 +108,15 @@ func inPaneTab(t *testing.T, core *fakeTeamCore) {
 	old := dialTeamCore
 	dialTeamCore = func(context.Context) (teamCore, error) { return core, nil }
 	t.Cleanup(func() { dialTeamCore = old })
+	useTeamLock(t, t.TempDir())
+}
+
+// useTeamLock puts the team lock in dir for the test.
+func useTeamLock(t *testing.T, dir string) {
+	t.Helper()
+	old := lockTeam
+	lockTeam = func(ctx context.Context) (func(), error) { return lockFile(ctx, filepath.Join(dir, "team.lock")) }
+	t.Cleanup(func() { lockTeam = old })
 }
 
 // agentPane runs the agent-pane command line args and returns its output.
@@ -222,6 +236,47 @@ func TestTeamWaitOnFinishedHelperReportsExit(t *testing.T) {
 	if _, ok := core.terms["t3"]; ok {
 		t.Fatal("finished helper kept")
 	}
+}
+
+func TestTeamFailedReplacementKeepsFinishedHelper(t *testing.T) {
+	core := newFakeTeamCore()
+	inPaneTab(t, core)
+	if _, err := agentPane(t, "run", "--name", "tests", "--", "go", "test"); err != nil {
+		t.Fatal(err)
+	}
+	code := 1
+	core.terms["t3"].State, core.terms["t3"].ExitCode = "finished", &code
+	core.runErr = &herdrcore.Error{Kind: "spawn_failed", Message: "no such directory"}
+	if _, err := agentPane(t, "run", "--name", "tests", "--cwd", "/nonexistent", "--", "go", "test"); err == nil {
+		t.Fatal("run with a failing start succeeded")
+	}
+	if _, ok := core.terms["t3"]; !ok {
+		t.Fatal("failed replacement removed the finished helper")
+	}
+	out, err := agentPane(t, "read", "tests")
+	if err != nil || out != "screen of t3\n" {
+		t.Fatalf("read after a failed replacement: %q %v", out, err)
+	}
+}
+
+func TestTeamLockExcludesConcurrentLaunches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "team.lock")
+	ctx := context.Background()
+	unlock, err := lockFile(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	short, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if _, err := lockFile(short, path); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second lock while held: %v", err)
+	}
+	unlock()
+	again, err := lockFile(ctx, path)
+	if err != nil {
+		t.Fatalf("lock after release: %v", err)
+	}
+	again()
 }
 
 func TestTeamSendRefusesBlockedHelperUnlessForced(t *testing.T) {
@@ -373,6 +428,7 @@ func TestTeamRealCore(t *testing.T) {
 	old := dialTeamCore
 	dialTeamCore = func(ctx context.Context) (teamCore, error) { return hc.Dial(ctx) }
 	t.Cleanup(func() { dialTeamCore = old })
+	useTeamLock(t, data)
 	t.Setenv(envPresence, "1")
 	t.Setenv(envTabID, "tab-mine")
 	t.Setenv(envCoreTerminal, pane.Address)

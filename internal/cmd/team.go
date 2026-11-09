@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -64,6 +65,12 @@ var dialTeamCore = func(ctx context.Context) (teamCore, error) {
 		return nil, errNotDurable
 	}
 	return c, nil
+}
+
+// lockTeam takes the lock helper launches hold while they choose a name
+// and start the helper, and returns its release.
+var lockTeam = func(ctx context.Context) (func(), error) {
+	return lockFile(ctx, filepath.Join(filepath.Dir(herdrcore.Private(dataDir).Socket), "team.lock"))
 }
 
 // team is one command's view: the calling pane tab's core terminal and the
@@ -208,8 +215,17 @@ func defaultHelperName(agent string, argv []string) string {
 }
 
 // runHelper starts a helper as a child of the pane tab's terminal and
-// returns its name.
+// returns its name. It holds the team lock from choosing the name until the
+// helper runs, so two launches cannot give live helpers the same name.
 func (t *team) runHelper(ctx context.Context, p helperRun) (string, error) {
+	if p.name != "" && !helperNamePattern.MatchString(p.name) {
+		return "", fmt.Errorf("invalid helper name %q: use 1 to 32 of a-z, 0-9, -, _ and .", p.name)
+	}
+	unlock, err := lockTeam(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	terms, err := t.helpers(ctx)
 	if err != nil {
 		return "", err
@@ -217,9 +233,8 @@ func (t *team) runHelper(ctx context.Context, p helperRun) (string, error) {
 	name := p.name
 	if name == "" {
 		name = freeName(defaultHelperName(p.agent, p.argv), terms)
-	} else if !helperNamePattern.MatchString(name) {
-		return "", fmt.Errorf("invalid helper name %q: use 1 to 32 of a-z, 0-9, -, _ and .", name)
 	}
+	var finished []string
 	for _, term := range terms {
 		if term.Labels[coreHelperLabel] != name {
 			continue
@@ -227,10 +242,7 @@ func (t *team) runHelper(ctx context.Context, p helperRun) (string, error) {
 		if term.State == "live" {
 			return "", fmt.Errorf("a helper named %q is already running in this pane tab", name)
 		}
-		// The new helper takes the name; the finished one goes.
-		if err := t.core.Remove(ctx, term.Address); err != nil && !herdrcore.IsKind(err, "not_found") {
-			return "", err
-		}
+		finished = append(finished, term.Address)
 	}
 	labels := map[string]string{coreParentPaneLabel: t.pane, coreHelperLabel: name}
 	if p.agent != "" {
@@ -246,6 +258,12 @@ func (t *team) runHelper(ctx context.Context, p helperRun) (string, error) {
 	})
 	if err != nil {
 		return "", err
+	}
+	// The new helper has the name; the finished ones go only now, so a
+	// failed start keeps their results. One left behind is harmless: the
+	// name finds the live helper first, then the newest that finished.
+	for _, addr := range finished {
+		t.core.Remove(ctx, addr)
 	}
 	return name, nil
 }
