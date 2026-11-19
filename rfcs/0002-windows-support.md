@@ -1,6 +1,6 @@
 # RFC 0002: Windows support
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Issue:** #47
 - **Author:** Tessl, for @asakin
 
@@ -78,7 +78,7 @@ Everything goes under one per-user folder, with no administrator rights and no m
 | `~/.local/share/agent-pane/` (release, extension, agents, skills, libexec, licenses, state) | `%LOCALAPPDATA%\agent-pane\` with the same subfolders |
 | `~/.local/share/agent-pane/native_messaging_host` (sh wrapper) | None; the manifest points at `agent-pane.exe` (below) |
 | Manifest JSON in each browser's config folder | `%LOCALAPPDATA%\agent-pane\com.agentpane.native.json`, named by each browser's registry key |
-| `~/.config/agent-pane/` | `%APPDATA%\agent-pane\` (roaming, like herdr-core's config) |
+| `~/.config/agent-pane/` | `%USERPROFILE%\.config\agent-pane\`, the same place relative to the home folder as on the other platforms |
 | `~/.claude/skills/agent-pane/`, `~/.agents/skills/agent-pane/` | The same under `%USERPROFILE%`, where those agents look on Windows |
 | macOS spawn LaunchAgent | None |
 
@@ -184,7 +184,7 @@ The same checks and messages as today, with Windows sources:
 ### Testing
 
 - **CI, first.** A `go-windows` job on `windows-latest` runs `go vet ./...`, `go test -race ./...` and `go build ./...`; `gofmt` stays on Ubuntu, since its result does not depend on the OS. The first issue makes them pass by giving unix-only tests build tags and fixing shared helpers such as `eventually`; it changes no product behavior. The extension's tests are OS-independent and stay on Ubuntu.
-- **Each later stage adds its Windows tests to that job:** the placing step and doctor against a temporary `%LOCALAPPDATA%`, `%APPDATA%` and `HKCU` subkey (tests point the code at a test root so the runner's real browser keys are not touched); the named-pipe core client against a fake core, and with `AGENT_PANE_TEST_HC` against the real pinned `hc.exe`; the page channel's admission and refusal cases, ported from `page_unix_test.go` and `page_socket_unix_test.go`, plus pid-reuse and elevated-process cases.
+- **Each later stage adds its Windows tests to that job:** the placing step and doctor against a temporary `%LOCALAPPDATA%`, `%USERPROFILE%` and `HKCU` subkey (tests point the code at a test root so the runner's real browser keys are not touched); the named-pipe core client against a fake core, and with `AGENT_PANE_TEST_HC` against the real pinned `hc.exe`; the page channel's admission and refusal cases, ported from `page_unix_test.go` and `page_socket_unix_test.go`, plus pid-reuse and elevated-process cases.
 - **Installer tests.** `scripts/install_test.sh` keeps covering the Unix scripts and the lock parser, including the new `file` lines and a Windows fetch on Linux. A Pester or Go test covers `install.ps1` on the Windows runner against a local archive.
 - **Release smoke test.** `release.yml`'s smoke matrix gains `windows-latest`: create a browser user-data folder, run the published `install.ps1`, run it again and check it prints nothing, check `agent-pane --version`, check `agent-pane doctor` passes, and, if the binary is signed, check its Authenticode signature with `Get-AuthenticodeSignature`. Starting a real browser to load the extension is not covered, the same as on the other platforms.
 - **Manual, recorded in the PRs:** Chrome and Edge open a pane tab with PowerShell and with Claude Code; resize, paste and Ctrl+C work; an update with the browser open; Durable across a browser quit, once Durable lands on Windows.
@@ -240,9 +240,7 @@ Cost of doing nothing: Agent Pane stays unavailable to Windows users outside WSL
 - **Elevated programs.** Should a page read from an elevated process in a pane tab be refused, since the person may not expect an administrator shell to receive page content?
 - **Named-pipe client.** go-winio, or a small client on `golang.org/x/sys/windows`?
 - **Browser list.** Which registry keys do Vivaldi and Helium read, and does Helium ship for Windows? Brave also reads Chrome's key on some versions; is writing both needed?
-- **Config location.** `%APPDATA%\agent-pane` (roaming, proposed, like herdr-core's config) or `%USERPROFILE%\.config\agent-pane` (like the agents' skills folders, and easier to document across platforms)?
 - **Binary name of the core.** Keep `hc.exe` (proposed, matching `libexec/hc`), or keep herdr-core's `herdr-core.exe` if the rename breaks its ConPTY lookup?
-- **Default shell.** PowerShell 7, then Windows PowerShell (proposed), or `cmd.exe`, or Git Bash when installed, since many coding agents' docs assume a POSIX shell?
 - **Placing step on other platforms.** Should macOS and Linux later move from `place.sh` to the same Go placing step?
 
 ## Future possibilities
