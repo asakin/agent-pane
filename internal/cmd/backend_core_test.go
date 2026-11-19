@@ -533,17 +533,6 @@ func readFrame(t *testing.T, conn *websocket.Conn) string {
 	return string(data)
 }
 
-func eventually(t *testing.T, what string, ok func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !ok() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 func TestBuiltinBackendIsTheDefault(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("macOS terminals start through the spawn agent")
