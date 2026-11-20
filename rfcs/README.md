@@ -51,3 +51,4 @@ Use these sections, adapted from the Rust RFC template. Leave a section in with 
 | --- | --- | --- |
 | [0001](0001-herdr-core-backend.md) | Herdr core as Agent Pane's terminal backend | Accepted |
 | [0002](0002-windows-support.md) | Windows support | Accepted |
+| [0003](0003-browser-control-setup.md) | Browser control setup | Proposed |
