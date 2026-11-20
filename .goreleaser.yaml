@@ -108,12 +108,15 @@ archives:
         dst: licenses/herdr-core
 release:
   prerelease: auto
-  # install.sh with VERSION set to this tag, written by release.yml.
+  # install.sh and install.ps1 with VERSION set to this tag, written by
+  # release.yml.
   extra_files:
     - glob: ./.release/install.sh
+    - glob: ./.release/install.ps1
 checksum:
   name_template: "checksums.txt"
   extra_files:
     - glob: ./.release/install.sh
+    - glob: ./.release/install.ps1
 snapshot:
   version_template: "{{ incpatch .Version }}-next"

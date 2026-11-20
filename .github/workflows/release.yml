@@ -61,12 +61,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # The published install.sh installs this tag and nothing else.
-      - name: Stamp install.sh with this release
+      # The published install.sh and install.ps1 install this tag and nothing else.
+      - name: Stamp install.sh and install.ps1 with this release
         run: |
           mkdir -p .release
           sed "s/^VERSION=\"\"\$/VERSION=\"${GITHUB_REF_NAME}\"/" install.sh >.release/install.sh
           grep -qx "VERSION=\"${GITHUB_REF_NAME}\"" .release/install.sh
+          sed "s/^\\\$VERSION = ''\$/\\\$VERSION = '${GITHUB_REF_NAME}'/" install.ps1 >.release/install.ps1
+          grep -qx "\\\$VERSION = '${GITHUB_REF_NAME}'" .release/install.ps1
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -118,3 +120,45 @@ jobs:
           grep -q '^Authority=Developer ID Application: ' codesign.out
           spctl --assess --type install --verbose=4 "$bin" 2>&1 | tee spctl.out
           grep -q 'source=Notarized Developer ID' spctl.out
+
+  # Install the published release on Windows the way a person does, and check it.
+  verify-windows:
+    needs: goreleaser
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      INSTALL_PS1: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.ps1
+    steps:
+      - name: Create a browser user-data folder
+        run: New-Item -ItemType Directory -Force -Path "$env:LOCALAPPDATA\Google\Chrome\User Data" | Out-Null
+      # Windows PowerShell 5.1, which every supported Windows has.
+      - name: Install with the published install.ps1 in Windows PowerShell
+        shell: powershell
+        run: irm $env:INSTALL_PS1 | iex
+      - name: Run it again in PowerShell 7 and check it prints nothing
+        run: |
+          $out = irm $env:INSTALL_PS1 | iex | Out-String
+          if ($out.Trim()) {
+            Write-Output $out
+            throw 'a second install.ps1 run printed something'
+          }
+      # A new terminal finds agent-pane on PATH; this one predates the install.
+      - name: Check the installed version
+        run: |
+          $exe = "$env:LOCALAPPDATA\agent-pane\bin\agent-pane.exe"
+          & $exe doctor
+          if ($LASTEXITCODE -ne 0) { throw "agent-pane doctor exited $LASTEXITCODE" }
+          $version = & $exe --version | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "agent-pane --version exited $LASTEXITCODE" }
+          if (-not $version.Contains($env:GITHUB_REF_NAME.TrimStart('v'))) { throw "agent-pane --version printed $version" }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (-not ($userPath -split ';' -contains "$env:LOCALAPPDATA\agent-pane\bin")) { throw "the user Path does not name $env:LOCALAPPDATA\agent-pane\bin: $userPath" }
+      # Only once the binary is signed (rfcs/0002-windows-support.md leaves
+      # Authenticode signing open): a signature that is there must be valid.
+      - name: Check the binary's signature, if it has one
+        run: |
+          $sig = Get-AuthenticodeSignature "$env:LOCALAPPDATA\agent-pane\bin\agent-pane.exe"
+          Write-Output "Authenticode: $($sig.Status)"
+          if ($sig.Status -ne 'NotSigned' -and $sig.Status -ne 'Valid') { throw "agent-pane.exe has a bad signature: $($sig.Status)" }
