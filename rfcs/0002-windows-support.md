@@ -6,7 +6,7 @@
 
 ## Summary
 
-Ship Agent Pane on Windows x86_64 with the same product shape as on macOS and Linux: the same extension, a native host installed for the Chromium browsers Agent Pane supports, and pane tabs that run your shell and coding agents. A PowerShell installer published with each release installs a Windows release archive into `%LOCALAPPDATA%\agent-pane\`, registers the native-messaging manifest under each browser's `HKCU\Software\...\NativeMessagingHosts` key, and puts `agent-pane.exe` on the user's `PATH`. The placing step is a Go subcommand rather than a PowerShell port of `place.sh`, so the installer and `agent-pane doctor` share one description of the install. The bundled herdr-core becomes a multi-file build (`hc.exe` plus its ConPTY files), each file pinned by checksum in `scripts/herdr-core.lock`. The Built-in backend stays the default on Windows as on the other platforms, and Durable (preview) is offered once the core client speaks named pipes. Windows ships first **without page access**: `agent-pane page` refuses with a clear message, as `page_windows.go` does today, and a later, separately reviewed stage adds a named-pipe page channel with a Windows peer check. A `windows-latest` CI job comes first, and a Windows release smoke test comes with the installer. The work is split into ten implementation issues, in order, in [Rollout](#rollout).
+Ship Agent Pane on Windows x86_64 with the same product shape as on macOS and Linux: the same extension, a native host installed for the Chromium browsers Agent Pane supports, and pane tabs that run your shell and coding agents. A PowerShell installer published with each release installs a Windows release archive into `%LOCALAPPDATA%\agent-pane\`, registers the native-messaging manifest under each browser's `HKCU\Software\...\NativeMessagingHosts` key, and puts `agent-pane.exe` on the user's `PATH`. The placing step is a Go subcommand rather than a PowerShell port of `place.sh`, so the installer and `agent-pane doctor` share one description of the install. The bundled herdr-core becomes a multi-file build (`hc.exe` plus its ConPTY files), each file pinned by checksum in `scripts/herdr-core.lock`. The Built-in backend stays the default on Windows as on the other platforms, and Durable (preview) is offered on Windows through a named-pipe core client. Windows ships first **without page access**: `agent-pane page` refuses with a clear message, as `page_windows.go` does today, and a later, separately reviewed change adds a named-pipe page channel with a Windows peer check. The work is one implementation, delivered on one branch and merged in one pull request once Windows works end to end; [Rollout](#rollout) gives the ordered plan of commits inside it. It builds on the `go-windows` CI job already on `main`.
 
 ## Motivation
 
@@ -14,7 +14,7 @@ Agent Pane runs on macOS and Linux only. Windows users of Chrome, Edge and Brave
 
 What the repository has today:
 
-- **Build.** `GOOS=windows GOARCH=amd64 go build .` succeeds: the Windows files `start_windows.go` (go-pty's ConPTY), `page_windows.go` (refuses page reads) and `lock_windows.go` (no file locks) are stubs that compile. `go vet ./...` for Windows fails in test code (`team_test.go` uses `eventually`, which is defined in a unix-only test file). Nothing is tested on Windows.
+- **Build.** `GOOS=windows GOARCH=amd64 go build .` succeeds: the Windows files `start_windows.go` (go-pty's ConPTY), `page_windows.go` (refuses page reads) and `lock_windows.go` (no file locks) are stubs that compile. A `go-windows` CI job on `windows-latest` runs `go vet ./...`, `go test -race ./...` and `go build ./...`; unix-only tests carry build tags, so what it tests today is the platform-independent code.
 - **Installer.** `install.sh` and `scripts/place.sh` are POSIX sh and refuse any OS but Darwin and Linux. The host is a sh wrapper (`native_messaging_host`) that runs `agent-pane serve`. Manifests are JSON files written into each browser's config folder. On Windows, Chromium browsers find a host through a registry key whose default value is the path of the manifest file.
 - **Release.** `.goreleaser.yaml` builds `linux` and `darwin` only (it already has a `zip` override for `windows`). `release.yml` and its smoke test run on `ubuntu-latest` and `macos-latest`.
 - **Bundled core.** herdr-core 0.1.19 publishes `herdr-core-windows-x86_64.zip` (SHA-256 `1cf7de14...b813a`, in its `manifest.json`). It holds `herdr-core.exe`, `conpty/conpty.dll`, `conpty/x64/OpenConsole.exe`, `LICENSE`, and a `THIRD-PARTY-NOTICES/` folder of three files, where the Unix archives have one `THIRD-PARTY-NOTICES` file. `scripts/herdr-core.lock` and `scripts/fetch-herdr-core.sh` handle one `hc` binary from a `.tar.gz`.
@@ -44,11 +44,11 @@ What differs, at first:
 - **Agents.** The launcher finds agents through `PATH` and `PATHEXT`, so npm's `claude.cmd` shims are found. An agent that only installs a `.ps1` script is not found until its definition names a command that is.
 - **Page reads.** `agent-pane page` is not available on Windows in the first release and says so. Send tab still works, because it goes through the extension, not the program.
 - **Keyboard.** The Linux bindings apply (Ctrl+Backspace, Alt+Left and so on).
-- **Quitting the browser** ends Built-in pane tabs, as on Linux. Durable (preview), once available on Windows, behaves as on the other platforms, subject to the [prototype](#what-needs-a-prototype).
+- **Quitting the browser** ends Built-in pane tabs, as on Linux. Durable (preview) behaves as on the other platforms, subject to the [prototype](#what-needs-a-prototype).
 
 ### For a contributor
 
-A `go-windows` CI job runs `go vet`, `go test` and `go build` on `windows-latest`. Windows-only code sits in `_windows.go` files as today. The installer's placing logic for Windows is Go code under `internal/cmd/` with its own tests on the Windows runner, and `place.sh` keeps doing macOS and Linux unchanged.
+The `go-windows` CI job runs `go vet`, `go test` and `go build` on `windows-latest`, and the Windows tests this RFC adds run there. Windows-only code sits in `_windows.go` files as today. The installer's placing logic for Windows is Go code under `internal/cmd/` with its own tests on the Windows runner, and `place.sh` keeps doing macOS and Linux unchanged.
 
 ## Reference-level explanation
 
@@ -61,12 +61,12 @@ A `go-windows` CI job runs `go vet`, `go test` and `go build` on `windows-latest
 | Native-messaging manifest for supported Chromium browsers | **Keep**, via registry keys | That is how Chromium browsers find hosts on Windows. |
 | `agent-pane doctor` validates the install, the core, the manifests and host behavior | **Keep** | See [doctor](#agent-pane-doctor-on-windows). |
 | Pane tabs, agent launchers and the CLI work | **Keep** | Built-in already compiles for Windows with ConPTY; the gaps are shell, agent lookup, paths and `status`. |
-| Page-access features work | **Change:** a later stage with its own security review | A new trust boundary should not ride along with an installer. Shipping without it gives Windows users pane tabs sooner and keeps the review focused. |
+| Page-access features work | **Change:** a later change with its own security review | A new trust boundary should not ride along with an installer. Shipping without it gives Windows users pane tabs sooner and keeps the review focused. |
 | The side panel can launch a shell and supported agents | **Keep** | |
 | Tests pass on Windows, or documented equivalent checks | **Keep**, as a `windows-latest` CI job and a release smoke test | |
 | No separate user-installed Herdr app | **Keep** | |
 | Windows ARM out of scope | **Keep** | herdr-core ships no Windows aarch64 build. |
-| One issue for all of it | **Drop** | Split into the issues in [Rollout](#rollout), each one pull request. |
+| One issue for all of it | **Keep** | One implementation and one pull request, merged once Windows works end to end; see [Rollout](#rollout). Page access is the exception, above. |
 
 ### Install layout
 
@@ -78,7 +78,7 @@ Everything goes under one per-user folder, with no administrator rights and no m
 | `~/.local/share/agent-pane/` (release, extension, agents, skills, libexec, licenses, state) | `%LOCALAPPDATA%\agent-pane\` with the same subfolders |
 | `~/.local/share/agent-pane/native_messaging_host` (sh wrapper) | None; the manifest points at `agent-pane.exe` (below) |
 | Manifest JSON in each browser's config folder | `%LOCALAPPDATA%\agent-pane\com.agentpane.native.json`, named by each browser's registry key |
-| `~/.config/agent-pane/` | `%APPDATA%\agent-pane\` (roaming, like herdr-core's config) |
+| `~/.config/agent-pane/` | `%USERPROFILE%\.config\agent-pane\`, the same place relative to the home folder as on macOS and Linux |
 | `~/.claude/skills/agent-pane/`, `~/.agents/skills/agent-pane/` | The same under `%USERPROFILE%`, where those agents look on Windows |
 | macOS spawn LaunchAgent | None |
 
@@ -145,14 +145,14 @@ The ConPTY files keep their path relative to the executable, because that is whe
 ### Terminal backend on Windows
 
 - **Built-in (default).** go-pty's ConPTY backend, which `start_windows.go` already uses. Needed: the Windows default shell (above), agent lookup with `PATHEXT` in `agents.go`, Windows paths for config, and `agent-pane status` writing to `CONOUT$` instead of `/dev/tty`. There is no inherited page descriptor, so `AGENT_PANE_FD` is unset, as `startPty` already does. The host's children are ended with the host; whether Chrome's process handling on Windows ends them sooner (for example through a job object) is a [prototype](#what-needs-a-prototype) item.
-- **Durable (preview).** Offered on Windows once the named-pipe client and `lockFile` land, with RFC 0001's behavior. herdr-core 0.1.19's release notes say that on Windows a terminal still ends every process it started when it closes, where Unix lets deliberately detached programs survive; that difference is the core's and is noted in the README.
+- **Durable (preview).** Offered on Windows through the named-pipe client and a Windows `lockFile`, with RFC 0001's behavior. herdr-core 0.1.19's release notes say that on Windows a terminal still ends every process it started when it closes, where Unix lets deliberately detached programs survive; that difference is the core's and is noted in the README.
 - **Core missing or failing.** Unchanged from the other platforms: when Durable cannot start a pane tab, it runs in Built-in and the terminal says why (`fallbackNotice` in `serve.go`); when the host cannot tell whether `terminal.run` started it, `tty.create` fails. A missing or wrong `libexec\hc.exe` is a doctor failure that `--fix` repairs. With Built-in the default, a broken core does not stop a Windows user from opening pane tabs.
 
 ### Page access
 
 **First Windows release: none.** `agent-pane page` refuses with "page reading is not available on Windows yet", the skill says so for Windows, and `AGENT_PANE_SOCKET` is unset. This is today's `page_windows.go` behavior with a clearer message. Send tab works.
 
-**Later stage: a named-pipe page channel.** The design, for review in that stage's issue, mirrors the unix socket:
+**Later: a named-pipe page channel.** The design, for review with that change, mirrors the unix socket:
 
 - **Endpoint.** For each session the host creates a named pipe `\\.\pipe\agent-pane-<random>` with `FILE_FLAG_FIRST_PIPE_INSTANCE` (so another process cannot have squatted the name) and a DACL that grants only the current user's SID, with the default integrity label so a lower-integrity process cannot connect. Its name goes to the program in `AGENT_PANE_SOCKET`, keeping the variable's meaning: the terminal's own page endpoint. `PIPE_REJECT_REMOTE_CLIENTS` refuses network clients.
 - **Peer identity.** On each connection the host reads the client pid with `GetNamedPipeClientProcessId`, opens the process with `PROCESS_QUERY_LIMITED_INFORMATION`, and checks that its token's user SID is the host's (`peercred`'s uid check, in SIDs). `peercred.Peer` gains a SID, or the uid check moves behind a platform function, so `Policy.Allow` no longer compares with `os.Getuid()` on Windows.
@@ -162,7 +162,7 @@ The ConPTY files keep their path relative to the executable, because that is whe
 - **AF_UNIX on Windows** (supported since Windows 10 1803, and by Go's `net` package) was considered: it would let `page_unix.go` be reused nearly as is, and `SIO_AF_UNIX_GETPEERPID` gives the client pid. But it gives no user identity of its own, file-system ACLs on a socket file in `%LOCALAPPDATA%` are the only access rule, and the core already uses named pipes, so named pipes are proposed. Prototyping may change that.
 - **Inherited descriptor.** No `AGENT_PANE_FD` on Windows. Passing a handle through ConPTY's `STARTUPINFOEX` handle list is possible but not in go-pty, and Durable has no descriptor path on any platform.
 
-Shipping Windows first without page access costs Windows users the feature that most sets Agent Pane apart. It is proposed anyway, because the installer, distribution and backend work is large, valuable on its own and low-risk, and the page channel is the one part where a mistake leaks page content. Review may choose instead to hold the first Windows release until page access lands; the rollout order allows either.
+Shipping Windows first without page access costs Windows users the feature that most sets Agent Pane apart. It is proposed anyway, because the installer, distribution and backend work is large, valuable on its own and low-risk, and the page channel is the one part where a mistake leaks page content. Review may choose instead to hold the first Windows release until page access lands; [Rollout](#rollout) allows either.
 
 ### `agent-pane doctor` on Windows
 
@@ -183,11 +183,11 @@ The same checks and messages as today, with Windows sources:
 
 ### Testing
 
-- **CI, first.** A `go-windows` job on `windows-latest` runs `go vet ./...`, `go test -race ./...` and `go build ./...`; `gofmt` stays on Ubuntu, since its result does not depend on the OS. The first issue makes them pass by giving unix-only tests build tags and fixing shared helpers such as `eventually`; it changes no product behavior. The extension's tests are OS-independent and stay on Ubuntu.
-- **Each later stage adds its Windows tests to that job:** the placing step and doctor against a temporary `%LOCALAPPDATA%`, `%APPDATA%` and `HKCU` subkey (tests point the code at a test root so the runner's real browser keys are not touched); the named-pipe core client against a fake core, and with `AGENT_PANE_TEST_HC` against the real pinned `hc.exe`; the page channel's admission and refusal cases, ported from `page_unix_test.go` and `page_socket_unix_test.go`, plus pid-reuse and elevated-process cases.
+- **CI.** The `go-windows` job on `windows-latest` (`go vet ./...`, `go test -race ./...`, `go build ./...`) is already on `main`, and this work builds on it rather than adding a job. `gofmt` stays on Ubuntu, since its result does not depend on the OS. The extension's tests are OS-independent and stay on Ubuntu.
+- **The implementation adds its Windows tests to that job:** the placing step and doctor against a temporary `%LOCALAPPDATA%`, `%USERPROFILE%` and `HKCU` subkey (tests point the code at a test root so the runner's real browser keys are not touched); the named-pipe core client against a fake core, and with `AGENT_PANE_TEST_HC` against the real pinned `hc.exe`. The later page-access change adds the page channel's admission and refusal cases, ported from `page_unix_test.go` and `page_socket_unix_test.go`, plus pid-reuse and elevated-process cases.
 - **Installer tests.** `scripts/install_test.sh` keeps covering the Unix scripts and the lock parser, including the new `file` lines and a Windows fetch on Linux. A Pester or Go test covers `install.ps1` on the Windows runner against a local archive.
 - **Release smoke test.** `release.yml`'s smoke matrix gains `windows-latest`: create a browser user-data folder, run the published `install.ps1`, run it again and check it prints nothing, check `agent-pane --version`, check `agent-pane doctor` passes, and, if the binary is signed, check its Authenticode signature with `Get-AuthenticodeSignature`. Starting a real browser to load the extension is not covered, the same as on the other platforms.
-- **Manual, recorded in the PRs:** Chrome and Edge open a pane tab with PowerShell and with Claude Code; resize, paste and Ctrl+C work; an update with the browser open; Durable across a browser quit, once Durable lands on Windows.
+- **Manual, recorded in the pull request:** install with the one command; Chrome and Edge open a pane tab with PowerShell and with Claude Code; resize, paste and Ctrl+C work; an update with the browser open; Durable across a browser quit.
 
 ### What needs a prototype
 
@@ -202,13 +202,14 @@ The same checks and messages as today, with Windows sources:
 - **A third platform to test and support**, with its own shell, path, process and console semantics, on a project whose CI and maintainers' machines are macOS and Linux.
 - **A second installer language.** `install.ps1` is small, but it is PowerShell, and the placing step on Windows is Go while macOS and Linux keep `place.sh`. Two implementations of one install must be kept in step.
 - **A weaker peer check.** Windows has no equivalent of `SO_PEERCRED` plus a kernel-maintained parent pid. The ancestry walk depends on creation-time checks, and Durable cannot use job objects.
-- **Windows without page access** is a partial product for a while, and some users will find that out only after installing.
+- **Windows without page access** is a partial product until the page-access change lands, and some users will find that out only after installing.
+- **One large pull request.** Delivering Windows in one pull request means a long-lived branch and a large review. The ordered commits in [Rollout](#rollout) keep each piece reviewable on its own, and nothing reaches `main` until it works end to end.
 - **Signing costs.** An Authenticode certificate or a signing service is a recurring cost and a release secret; not signing means SmartScreen warnings and blocked installs on managed machines.
 - **A new dependency** if go-winio is chosen for named pipes.
 
 ## Rationale and alternatives
 
-**Recommended: one product, staged.** The same extension and host protocol, Built-in as the default everywhere, Windows-specific code behind build tags, a Go placing step that shares doctor's description of the install, and page access as its own reviewed stage.
+**Recommended: one product, one implementation.** The same extension and host protocol, Built-in as the default everywhere, Windows-specific code behind build tags, a Go placing step that shares doctor's description of the install, and page access as its own reviewed change after it.
 
 Alternatives considered:
 
@@ -219,7 +220,8 @@ Alternatives considered:
 - **An MSI or MSIX package, winget or Scoop.** Gives Add/Remove Programs and signing integration, but needs a packaging toolchain and, for MSI, usually machine-wide installs. A winget or Scoop manifest pointing at the release zip can come later without changing the layout.
 - **A `.bat` host wrapper,** like the sh wrapper. Simple, but it goes through `cmd.exe`, adds a process between the browser and the host, and quoting arguments through `cmd` is error-prone. Rejected for the first-argument rule.
 - **AF_UNIX for page access.** See [Page access](#page-access).
-- **Page access in the first Windows release.** Possible, and the order in [Rollout](#rollout) allows it by holding issue 9 until issue 8 lands. Not proposed, to keep the trust-boundary review separate.
+- **Page access in the first Windows release.** Possible: its commits would come before the documentation commit in [Rollout](#rollout), and the pull request would wait for them. Not proposed, to keep the trust-boundary review separate.
+- **Merging each piece into `main` on its own.** Smaller pull requests, but none of the pieces gives a working Windows product alone, so `main` would carry partial, unusable Windows code for as long as the series takes, every piece would pay its own round of CI and review, and nothing would be tested end to end until the last merge. Rejected for one pull request with ordered commits.
 
 Cost of doing nothing: Agent Pane stays unavailable to Windows users outside WSL, and #18 stays open.
 
@@ -230,7 +232,7 @@ Cost of doing nothing: Agent Pane stays unavailable to Windows users outside WSL
 - **Chromium native messaging on Windows:** per-user `HKCU` keys pointing at a manifest file; used by password managers and other extensions with native hosts, which commonly install per user without administrator rights.
 - **VS Code and Windows Terminal:** ConPTY with a bundled `OpenConsole.exe` for a newer console than the system's, and PowerShell 7 as the default shell when present.
 - **Docker Desktop and the Windows SSH agent:** named pipes with per-user DACLs as the local, same-user IPC boundary.
-- **RFC 0001:** the staged rollout and readiness-check approach this RFC copies.
+- **RFC 0001:** the readiness-check approach this RFC copies for Durable.
 
 ## Unresolved questions
 
@@ -240,9 +242,7 @@ Cost of doing nothing: Agent Pane stays unavailable to Windows users outside WSL
 - **Elevated programs.** Should a page read from an elevated process in a pane tab be refused, since the person may not expect an administrator shell to receive page content?
 - **Named-pipe client.** go-winio, or a small client on `golang.org/x/sys/windows`?
 - **Browser list.** Which registry keys do Vivaldi and Helium read, and does Helium ship for Windows? Brave also reads Chrome's key on some versions; is writing both needed?
-- **Config location.** `%APPDATA%\agent-pane` (roaming, proposed, like herdr-core's config) or `%USERPROFILE%\.config\agent-pane` (like the agents' skills folders, and easier to document across platforms)?
 - **Binary name of the core.** Keep `hc.exe` (proposed, matching `libexec/hc`), or keep herdr-core's `herdr-core.exe` if the rename breaks its ConPTY lookup?
-- **Default shell.** PowerShell 7, then Windows PowerShell (proposed), or `cmd.exe`, or Git Bash when installed, since many coding agents' docs assume a POSIX shell?
 - **Placing step on other platforms.** Should macOS and Linux later move from `place.sh` to the same Go placing step?
 
 ## Future possibilities
@@ -256,17 +256,15 @@ Cost of doing nothing: Agent Pane stays unavailable to Windows users outside WSL
 
 ## Rollout
 
-Proposed implementation issues, in order, each one pull request. None is filed by this RFC.
+One implementation: one branch and one pull request that delivers Windows support working end to end. The pieces below are an ordered plan inside that pull request, one commit each, so each can be reviewed on its own. The `go-windows` CI job is already on `main`; each commit adds its Windows tests to it.
 
-1. **Windows CI job.** Add `go-windows` (`go vet`, `go test -race`, `go build` on `windows-latest`) to `ci.yml`, and make it pass by tagging unix-only tests and sharing test helpers. No behavior change.
-2. **Built-in backend on Windows.** Windows paths in `configDir` and `layoutFor`; PowerShell default shell; `PATHEXT` agent lookup; `agent-pane status` through `CONOUT$`; the `chrome-extension://` first-argument rule; a clear `agent-pane page` refusal and a Windows note in the skill. Tested on the Windows job and manually with a hand-registered manifest.
-3. **Windows core in the lock and fetch.** `file` lines in `scripts/herdr-core.lock`, zip handling and the Windows layout in `fetch-herdr-core.sh`, the notices-folder rule, and `install_test.sh` cases. No archive yet.
-4. **Windows release archive.** `windows/amd64` in `.goreleaser.yaml` with the Windows file list and the fetched core; `goreleaser check` and a snapshot build in CI.
-5. **Windows placing step.** `agent-pane place` for Windows: release copy, binary and core placement with rename-aside, extension, agents, skill copies, instructions, manifest and registry keys, user `Path`; idempotent; tests on the Windows job.
-6. **`agent-pane doctor` on Windows.** The checks in [doctor](#agent-pane-doctor-on-windows), `--fix` through the placing step, tests on the Windows job.
+1. **Built-in backend on Windows.** Windows paths in `configDir` (`%USERPROFILE%\.config\agent-pane`) and `layoutFor`; the PowerShell default shell; `PATHEXT` agent lookup; `agent-pane status` through `CONOUT$`; the `chrome-extension://` first-argument rule; a clear `agent-pane page` refusal and a Windows note in the skill.
+2. **Windows core in the lock and fetch.** `file` lines in `scripts/herdr-core.lock`, zip handling and the Windows layout in `fetch-herdr-core.sh`, the notices-folder rule, and `install_test.sh` cases.
+3. **Windows release archive.** `windows/amd64` in `.goreleaser.yaml` with the Windows file list and the fetched core; `goreleaser check` and a snapshot build in CI.
+4. **Windows placing step.** `agent-pane place` for Windows: release copy, binary and core placement with rename-aside, extension, agents, skill copies, instructions, manifest and registry keys, user `Path`; idempotent.
+5. **`agent-pane doctor` on Windows.** The checks in [doctor](#agent-pane-doctor-on-windows), and `--fix` through the placing step.
+6. **Durable (preview) on Windows.** Named-pipe transport in `internal/herdrcore`, `LockFileEx` for `lockFile`, core paths, prototype items 2 and 3, and the real-core tests.
 7. **`install.ps1` and the Windows release smoke test.** The template, its stamping and publishing in `release.yml`, the `windows-latest` smoke job, and signing if the [signing question](#unresolved-questions) is settled by then.
-8. **Durable (preview) on Windows.** Named-pipe transport in `internal/herdrcore`, `LockFileEx` for `lockFile`, core paths, and the prototype items 2 and 3, with the real-core tests on the Windows job.
-9. **Document Windows support.** The README's platform line, install, update and uninstall for Windows, the keyboard note, and which features are not on Windows yet. This is the point Windows is announced.
-10. **Page access on Windows.** Named-pipe page endpoint, `peercred` for Windows (SID, client pid, creation-time ancestry walk, job objects in Built-in), the `agent-pane page` client's server check, and the ported and new tests. Its PR carries the threat model above for review, and updates the README's Security section.
+8. **Document Windows support.** The README's platform line, install, update and uninstall for Windows, the keyboard note, and that page reads are not on Windows yet.
 
-Issues 1 to 7 and 9 give a Windows release with Built-in pane tabs and no page access; issue 8 can land before or after 9. If review decides page access must be in the first Windows release, issue 9 waits for issue 10.
+The pull request merges once Windows is installed with one command, the side panel opens a shell and coding agents, `agent-pane doctor` passes, and CI passes on Windows. Page access on Windows (the named-pipe page endpoint, `peercred` for Windows, the `agent-pane page` client's server check and their tests) is not part of it; it is a later change that carries the [threat model](#page-access) for its own security review and updates the README's Security section.
