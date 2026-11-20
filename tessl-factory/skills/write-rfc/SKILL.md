@@ -49,6 +49,21 @@ voice. Use the terms of the README glossary, as `AGENTS.md` asks. Headings
 name what the section contains, never a slogan, and sentences state the fact
 directly.
 
+Show the design, not only describe it. A reviewer understands components,
+messages and lifecycles faster from a picture than from paragraphs, and a
+design with none is hard to review. Draw Mermaid diagrams in ```` ```mermaid ````
+blocks, which GitHub renders, as RFC 0001 and the README's "How it works" do:
+
+- at least one near the top of Reference-level explanation that shows the
+  proposed design: its parts and what talks to what;
+- when the design changes how things work today, today's picture next to it;
+- a sequence diagram for a flow across processes (extension, host, core,
+  agent) and a state diagram for a lifecycle, where the RFC has one.
+
+Keep each diagram small enough to read at a glance, label its parts with the
+names the text uses, and put the explanation in the text: a diagram shows,
+the prose says why. A table still fits a comparison better than a diagram.
+
 ## GitHub
 
 Read the issue with `gh issue view <n> --json
@@ -172,8 +187,9 @@ the answer says.
   the problem, or the proposal follows another project, look it up and cite
   it.
 - **Checks:** the change is Markdown only. Read the rendered diff for broken
-  links, and for headings that neither the template nor the example RFCs
-  use.
+  links, for headings that neither the template nor the example RFCs use,
+  and for Mermaid blocks with syntax errors, which GitHub shows as an error
+  box instead of the diagram.
 - **The pull request:** `gh label create tessl --force`, then
   `gh pr create --base <base> --label tessl --title "#<n>: RFC <NNNN>: <title>"
   --body-file <file outside the clone>`. If it fails or prints no URL, run
