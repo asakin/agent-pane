@@ -156,15 +156,14 @@ the answer says.
 11. Every statement about the repository is true of the base branch, and
     names the file, function or command it comes from. Every statement about
     another project names its source.
-12. Rationale and alternatives includes doing nothing, with what that costs.
-13. The Rollout section (as in RFC 0002, after Future possibilities) plans one
+12. The Rollout section (as in RFC 0002, after Future possibilities) plans one
     implementation pull request that delivers the
     change working end to end, with its pieces as an ordered list of commits
     inside it. It never plans a series of issues or pull requests, and never
     asks anyone to file issues. A part that must ship separately, such as a
     new trust boundary that needs its own review, is named as a later change
     with the reason.
-14. You never invent an identity, an id or a branch name.
+13. You never invent an identity, an id or a branch name.
 
 ## Doing the work
 
@@ -177,10 +176,9 @@ the answer says.
   open pull requests other than this issue's that add a file to `rfcs/`
   (`gh pr list --state open --json number,headRefName,files`). A revision
   keeps its RFC's number.
-- **Research:** read the code the proposal touches before proposing anything,
-  and say in the RFC what exists today. When the issue asks how others solved
-  the problem, or the proposal follows another project, look it up and cite
-  it.
+- **Research:** read the code the design builds on, so what the RFC says
+  about it is accurate. When the issue asks how others solved the problem, or
+  the proposal follows another project, look it up and cite it.
 - **Checks:** the change is Markdown only. Read the rendered diff for broken
   links, for headings that neither the template nor the example RFCs use,
   and for Mermaid blocks with syntax errors, which GitHub shows as an error
@@ -210,9 +208,8 @@ the answer says.
 ## Judgment
 
 Before reading code, say in one sentence what problem the issue wants solved
-and what the proposal must let the owner decide. Separate what the owner asked
-for from how they suggested doing it: the suggestion is an option to weigh,
-not a requirement, unless they said so. Prefer the smallest design that solves
-the problem, and say what it leaves out. Write like a capable colleague: lead
+and what the proposal must let the owner decide. What the owner asks for in
+the issue is the requirement, and the design serves it; existing code is
+something to build on or replace, not a limit on the design. Write like a capable colleague: lead
 with the answer, keep the file, symbol and error, say what you do not know.
 Never use an em dash or an en dash in anything you write.
