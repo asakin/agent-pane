@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func readString(t *testing.T, path string) string {
@@ -284,6 +286,74 @@ func TestPlaceWindowsKeepsPathsAndFilesThatAreNotOurs(t *testing.T) {
 	}
 }
 
+func TestPlaceWindowsLeavesASkillWithAMarkerFolder(t *testing.T) {
+	l := windowsTestLayout(t)
+	src := t.TempDir()
+	writeWindowsRelease(t, src)
+	mine := filepath.Join(l.home, ".claude", "skills", "agent-pane")
+	putFile(t, filepath.Join(mine, "SKILL.md"), "my own skill\n")
+	putFile(t, filepath.Join(mine, skillMarker, "notes.txt"), "not a marker file\n")
+
+	_, errOut := placeOnce(t, l, src, newFakeRegistry())
+	if got := readString(t, filepath.Join(mine, "SKILL.md")); got != "my own skill\n" {
+		t.Errorf("a skill whose marker is a folder changed to %q", got)
+	}
+	if !strings.Contains(errOut, "is not Agent Pane's; left unchanged") {
+		t.Errorf("stderr: %s", errOut)
+	}
+}
+
+func TestPlaceWindowsReplacesItsSkillInPlace(t *testing.T) {
+	l := windowsTestLayout(t)
+	src := t.TempDir()
+	writeWindowsRelease(t, src)
+	reg := newFakeRegistry()
+	placeOnce(t, l, src, reg)
+
+	skills := filepath.Join(l.home, ".claude", "skills")
+	// A staging folder a run cut short left behind.
+	putFile(t, filepath.Join(skills, skillStagingPrefix+"new.1", "SKILL.md"), "half\n")
+	putFile(t, filepath.Join(src, "skills", "agent-pane", "SKILL.md"), "name: agent-pane 0.4.0\n")
+	placeOnce(t, l, src, reg)
+
+	if got := readString(t, filepath.Join(skills, "agent-pane", "SKILL.md")); got != "name: agent-pane 0.4.0\n" {
+		t.Errorf("skill copy = %q", got)
+	}
+	if !isRegularFile(filepath.Join(skills, "agent-pane", skillMarker)) {
+		t.Error("the new copy has no marker")
+	}
+	entries, _ := os.ReadDir(skills)
+	if len(entries) != 1 {
+		t.Errorf("skills holds %v, want only agent-pane", entries)
+	}
+}
+
+func TestPlaceWindowsWaitsForAnotherRun(t *testing.T) {
+	l := windowsTestLayout(t)
+	src := t.TempDir()
+	writeWindowsRelease(t, src)
+	unlock, err := lockFile(context.Background(), filepath.Join(l.dataDir, "place.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _, _ := testPlacer(t, l, src, newFakeRegistry())
+	done := make(chan error, 1)
+	go func() { done <- p.run() }()
+	select {
+	case err := <-done:
+		unlock()
+		t.Fatalf("run finished while another held the lock: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if exists(l.release) {
+		t.Error("the release was kept while another run held the lock")
+	}
+	unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPlaceWindowsRefuses(t *testing.T) {
 	t.Run("no browser", func(t *testing.T) {
 		root := t.TempDir()
@@ -319,6 +389,25 @@ func TestPlaceWindowsRefuses(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
+	for name, text := range map[string]string{
+		"start marker after a block":  "mine\n" + managedStart + "\nold\n" + managedEnd + "\nmore of mine\n" + managedStart + "\nkeep me\n",
+		"end marker before the start": "mine\n" + managedEnd + "\nkeep me\n" + managedStart + "\n",
+		"start marker inside a block": managedStart + "\n" + managedStart + "\n" + managedEnd + "\nkeep me\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			l := windowsTestLayout(t)
+			src := t.TempDir()
+			writeWindowsRelease(t, src)
+			putFile(t, filepath.Join(l.home, "AGENTS.md"), text)
+			p, _, _ := testPlacer(t, l, src, newFakeRegistry())
+			if err := p.run(); err == nil || !strings.Contains(err.Error(), "left unchanged") {
+				t.Fatalf("err = %v", err)
+			}
+			if got := readString(t, filepath.Join(l.home, "AGENTS.md")); got != text {
+				t.Errorf("AGENTS.md changed to %q", got)
+			}
+		})
+	}
 	t.Run("doctor fails", func(t *testing.T) {
 		l := windowsTestLayout(t)
 		src := t.TempDir()

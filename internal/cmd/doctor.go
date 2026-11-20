@@ -443,7 +443,7 @@ func runChecks(l installLayout, env doctorEnv) []checkResult {
 			add(checkWarn, "skill copy", "%s is a symlink, not Agent Pane's; left alone", dir)
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(dir, skillMarker)); err != nil {
+		if !isRegularFile(filepath.Join(dir, skillMarker)) {
 			add(checkWarn, "skill copy", "%s is not Agent Pane's; left alone", dir)
 			continue
 		}
