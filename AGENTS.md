@@ -31,7 +31,7 @@ go test -race ./...
 go build ./...
 ```
 
-When changing `install.sh`, `scripts/place.sh`, `scripts/fetch-herdr-core.sh`, `scripts/herdr-core.lock` or `agent-pane doctor`, also run (it downloads the pinned herdr-core once):
+When changing `install.sh`, `install.ps1`, `scripts/place.sh`, `scripts/fetch-herdr-core.sh`, `scripts/herdr-core.lock` or `agent-pane doctor`, also run (it downloads the pinned herdr-core once):
 
 ```sh
 sh scripts/install_test.sh
@@ -48,7 +48,7 @@ npm --prefix extension run build
 
 ## Map
 
-- `main.go`, `internal/cmd/`: Go CLI entry point, native-messaging host (`serve.go`), PTY session environment (`env.go`), page channel, page socket and `agent-pane page` commands (`page.go`, `page_unix.go`), agent catalog loader (`agents.go`), install checks (`doctor.go`), and macOS LaunchAgent spawn (`spawn_darwin.go`).
+- `main.go`, `internal/cmd/`: Go CLI entry point, native-messaging host (`serve.go`), PTY session environment (`env.go`), page channel, page socket and `agent-pane page` commands (`page.go`, `page_unix.go`), agent catalog loader (`agents.go`), install checks (`doctor.go`), the Windows placing step `agent-pane place` (`place.go`, registry and user `Path` in `winreg_windows.go`), and macOS LaunchAgent spawn (`spawn_darwin.go`). Windows-only code sits in `_windows.go` files.
 - `internal/jsonrpc/`, `internal/scrollback/`: JSON-RPC framing and terminal scrollback ring/mode replay.
 - `internal/peercred/`: unix socket peer checks (uid, executable, ancestry) for Linux and macOS.
 - `internal/herdrcore/`: client for the bundled herdr-core's framed JSON-RPC socket (handshake and generation check, terminal calls, attach streams, events; on Windows the socket is a named pipe, dialled by the small overlapped-I/O client in `pipe_windows.go`) and the private `HC_SESSION=agent-pane` environment. The host uses it for the Durable (preview) terminal backend (`internal/cmd/backend_core.go`). `AGENT_PANE_TEST_HC=<path to the pinned hc> go test ./internal/herdrcore ./internal/cmd` also runs both against a real core.
@@ -56,7 +56,7 @@ npm --prefix extension run build
 - `extension/tests/`: Node test runner suites (`*.test.mjs`).
 - `skills/agent-pane/`: the canonical skill the installer installs for coding agents; see [README](README.md#agent-skill).
 - `agents/`: shipped agent definitions and `agents/enabled.json`; see [agents/README.md](agents/README.md).
-- `install.sh`: the release installer template; `release.yml` publishes it with `VERSION` set to the tag, and the repository copy refuses to run.
+- `install.sh`, `install.ps1`: the release installer templates (POSIX sh; PowerShell for Windows); `release.yml` publishes them with the version set to the tag, and the repository copies refuse to run. `install.ps1` runs the archive's `agent-pane.exe place`, which does on Windows what `place.sh` does elsewhere; `scripts/install_ps1_test.ps1` tests it on the `go-windows` CI job.
 - `scripts/place.sh`, `scripts/instructions.md` (the `~/.config/agent-pane/AGENTS.md` block): place.sh puts a release-shaped folder in place (binary, manifests, LaunchAgent, skill, extension); shipped in every archive. `internal/cmd/doctor.go` checks the same paths, so change both.
 - `scripts/dev-install.sh`: builds a checkout and installs it with `place.sh`. `scripts/install_test.sh`: tests for all three.
 - `scripts/herdr-core.lock`, `scripts/fetch-herdr-core.sh`: the pinned private herdr-core (`libexec/hc`) each release and dev install carries, with its license files; `place.sh` installs it under `~/.local/share/agent-pane/` and `doctor` checks it against the lock.
