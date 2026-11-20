@@ -104,6 +104,7 @@ func NewCmdRoot(version string) *cobra.Command {
 		NewCmdWait(),
 		NewCmdRead(),
 		NewCmdDoctor(version),
+		NewCmdPlace(),
 	)
 
 	return cmd

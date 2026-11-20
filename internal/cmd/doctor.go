@@ -19,30 +19,62 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// The installed layout, as scripts/place.sh writes it. place.sh is the only
-// writer; doctor reads the same paths and compares them with the copy of the
-// release kept in releaseDir.
+// The installed layout, as scripts/place.sh writes it on macOS and Linux and
+// `agent-pane place` writes it on Windows. Those are the only writers; doctor
+// reads the same paths and compares them with the copy of the release kept in
+// release.
 type installLayout struct {
-	home      string
-	binary    string // ~/.local/bin/agent-pane
-	dataDir   string // ~/.local/share/agent-pane
-	release   string // dataDir/release, the release place.sh last installed
-	host      string // dataDir/native_messaging_host
+	goos         string
+	home         string // ~, or %USERPROFILE% on Windows
+	localAppData string // %LOCALAPPDATA%; Windows only
+	binary       string // ~/.local/bin/agent-pane, or <data>\bin\agent-pane.exe
+	dataDir      string // ~/.local/share/agent-pane, or %LOCALAPPDATA%\agent-pane
+	release      string // dataDir/release, the release last placed
+	// host is what the native-messaging manifest's path names: the sh wrapper
+	// dataDir/native_messaging_host, or on Windows the binary itself.
+	host string
+	// manifest is the one manifest file each browser's registry key names on
+	// Windows; "" elsewhere, where each browser gets its own copy.
+	manifest  string
 	configDir string // ~/.config/agent-pane
-	core      string // dataDir/libexec/hc, the bundled herdr-core binary
+	core      string // dataDir/libexec/hc(.exe), the bundled herdr-core binary
+	exe       string // ".exe" on Windows, "" elsewhere
 }
 
 const (
 	nativeHostName    = "com.agentpane.native"
+	nativeHostSummary = "Claude Code, Codex and Pi in a real terminal, in Chrome's side panel."
 	extensionOrigin   = "chrome-extension://eakooboihfgnikdhdldcmoiafgioeglm/"
 	spawnAgentLabel   = "com.agentpane.spawn"
 	skillMarker       = ".agent-pane-managed"
 	installCommandURL = "https://github.com/asakin/agent-pane/releases/latest/download/install.sh"
+	installPS1URL     = "https://github.com/asakin/agent-pane/releases/latest/download/install.ps1"
 )
 
-func layoutFor(home string) installLayout {
+// layoutFor gives the install layout for goos. home is $HOME, or
+// %USERPROFILE% on Windows; localAppData is %LOCALAPPDATA% and is used only
+// on Windows.
+func layoutFor(goos, home, localAppData string) installLayout {
+	if goos == "windows" {
+		data := filepath.Join(localAppData, "agent-pane")
+		binary := filepath.Join(data, "bin", "agent-pane.exe")
+		return installLayout{
+			goos:         goos,
+			home:         home,
+			localAppData: localAppData,
+			binary:       binary,
+			dataDir:      data,
+			release:      filepath.Join(data, "release"),
+			host:         binary,
+			manifest:     filepath.Join(data, nativeHostName+".json"),
+			configDir:    filepath.Join(home, ".config", "agent-pane"),
+			core:         filepath.Join(data, "libexec", "hc.exe"),
+			exe:          ".exe",
+		}
+	}
 	data := filepath.Join(home, ".local", "share", "agent-pane")
 	return installLayout{
+		goos:      goos,
 		home:      home,
 		binary:    filepath.Join(home, ".local", "bin", "agent-pane"),
 		dataDir:   data,
@@ -53,34 +85,89 @@ func layoutFor(home string) installLayout {
 	}
 }
 
+// currentLayout is this computer's install layout, from the environment.
+func currentLayout() installLayout {
+	if runtime.GOOS == "windows" {
+		return layoutFor(runtime.GOOS, os.Getenv("USERPROFILE"), os.Getenv("LOCALAPPDATA"))
+	}
+	return layoutFor(runtime.GOOS, os.Getenv("HOME"), "")
+}
+
+// releaseBinary and releaseCore are the binary and core in the kept release.
+func (l installLayout) releaseBinary() string {
+	return filepath.Join(l.release, "agent-pane"+l.exe)
+}
+
+func (l installLayout) releaseCore() string {
+	return filepath.Join(l.release, "libexec", "hc"+l.exe)
+}
+
+// show shortens the paths in a message: ~/ for the home folder, and on
+// Windows %LOCALAPPDATA%\ and %USERPROFILE%\.
+func (l installLayout) show(s string) string {
+	sep := string(filepath.Separator)
+	if l.goos == "windows" {
+		if l.localAppData != "" {
+			s = strings.ReplaceAll(s, l.localAppData+sep, `%LOCALAPPDATA%\`)
+		}
+		if l.home != "" {
+			s = strings.ReplaceAll(s, l.home+sep, `%USERPROFILE%\`)
+		}
+		return s
+	}
+	return strings.ReplaceAll(s, l.home+sep, "~/")
+}
+
+// installHint is the command that installs the latest release on goos.
+func installHint(goos string) string {
+	if goos == "windows" {
+		return "`irm " + installPS1URL + " | iex`"
+	}
+	return "`curl -fsSL " + installCommandURL + " | sh`"
+}
+
 type browserDir struct {
 	name   string
 	parent string // the browser's own config folder; no manifest when it is missing
-	hosts  string // where its native-messaging manifests go
+	hosts  string // where its native-messaging manifests go; "" on Windows
+	// key is, on Windows, the key under HKEY_CURRENT_USER whose default value
+	// names the manifest file; "" elsewhere.
+	key string
 }
 
-// browserDirs is the list in scripts/place.sh write_manifests; change both.
-func browserDirs(goos, home string) []browserDir {
+// browserDirs is the list in scripts/place.sh write_manifests for macOS and
+// Linux; change both. On Windows `agent-pane place` and doctor both use it.
+// Vivaldi and Helium are left out on Windows until the keys they read there
+// are confirmed (RFC 0002, unresolved questions).
+func browserDirs(goos, home, localAppData string) []browserDir {
 	switch goos {
 	case "darwin":
 		s := filepath.Join(home, "Library", "Application Support")
 		return []browserDir{
-			{"Google Chrome", filepath.Join(s, "Google", "Chrome"), filepath.Join(s, "Google", "Chrome", "NativeMessagingHosts")},
-			{"Chromium", filepath.Join(s, "Chromium"), filepath.Join(s, "Chromium", "NativeMessagingHosts")},
-			{"Brave", filepath.Join(s, "BraveSoftware", "Brave-Browser"), filepath.Join(s, "BraveSoftware", "Brave-Browser", "NativeMessagingHosts")},
-			{"Vivaldi", filepath.Join(s, "Vivaldi"), filepath.Join(s, "Vivaldi", "NativeMessagingHosts")},
-			{"Helium", filepath.Join(s, "net.imput.helium"), filepath.Join(s, "net.imput.helium", "NativeMessagingHosts")},
-			{"Microsoft Edge", filepath.Join(s, "Microsoft", "Edge"), filepath.Join(s, "Microsoft", "Edge", "NativeMessagingHosts")},
+			{"Google Chrome", filepath.Join(s, "Google", "Chrome"), filepath.Join(s, "Google", "Chrome", "NativeMessagingHosts"), ""},
+			{"Chromium", filepath.Join(s, "Chromium"), filepath.Join(s, "Chromium", "NativeMessagingHosts"), ""},
+			{"Brave", filepath.Join(s, "BraveSoftware", "Brave-Browser"), filepath.Join(s, "BraveSoftware", "Brave-Browser", "NativeMessagingHosts"), ""},
+			{"Vivaldi", filepath.Join(s, "Vivaldi"), filepath.Join(s, "Vivaldi", "NativeMessagingHosts"), ""},
+			{"Helium", filepath.Join(s, "net.imput.helium"), filepath.Join(s, "net.imput.helium", "NativeMessagingHosts"), ""},
+			{"Microsoft Edge", filepath.Join(s, "Microsoft", "Edge"), filepath.Join(s, "Microsoft", "Edge", "NativeMessagingHosts"), ""},
 		}
 	case "linux":
 		c := filepath.Join(home, ".config")
 		return []browserDir{
-			{"Google Chrome", filepath.Join(c, "google-chrome"), filepath.Join(c, "google-chrome", "native-messaging-hosts")},
-			{"Chromium", filepath.Join(c, "chromium"), filepath.Join(c, "chromium", "native-messaging-hosts")},
-			{"Microsoft Edge", filepath.Join(c, "microsoft-edge"), filepath.Join(c, "microsoft-edge", "native-messaging-hosts")},
-			{"Brave", filepath.Join(c, "brave"), filepath.Join(c, "brave", "native-messaging-hosts")},
-			{"Vivaldi", filepath.Join(c, "vivaldi"), filepath.Join(c, "vivaldi", "native-messaging-hosts")},
-			{"Helium", filepath.Join(c, "helium"), filepath.Join(c, "helium", "native-messaging-hosts")},
+			{"Google Chrome", filepath.Join(c, "google-chrome"), filepath.Join(c, "google-chrome", "native-messaging-hosts"), ""},
+			{"Chromium", filepath.Join(c, "chromium"), filepath.Join(c, "chromium", "native-messaging-hosts"), ""},
+			{"Microsoft Edge", filepath.Join(c, "microsoft-edge"), filepath.Join(c, "microsoft-edge", "native-messaging-hosts"), ""},
+			{"Brave", filepath.Join(c, "brave"), filepath.Join(c, "brave", "native-messaging-hosts"), ""},
+			{"Vivaldi", filepath.Join(c, "vivaldi"), filepath.Join(c, "vivaldi", "native-messaging-hosts"), ""},
+			{"Helium", filepath.Join(c, "helium"), filepath.Join(c, "helium", "native-messaging-hosts"), ""},
+		}
+	case "windows":
+		hosts := `\NativeMessagingHosts\` + nativeHostName
+		return []browserDir{
+			{"Google Chrome", filepath.Join(localAppData, "Google", "Chrome", "User Data"), "", `Software\Google\Chrome` + hosts},
+			{"Microsoft Edge", filepath.Join(localAppData, "Microsoft", "Edge", "User Data"), "", `Software\Microsoft\Edge` + hosts},
+			{"Chromium", filepath.Join(localAppData, "Chromium", "User Data"), "", `Software\Chromium` + hosts},
+			{"Brave", filepath.Join(localAppData, "BraveSoftware", "Brave-Browser", "User Data"), "", `Software\BraveSoftware\Brave-Browser` + hosts},
 		}
 	}
 	return nil
@@ -129,7 +216,7 @@ to update, run the install command again.`,
 		// doctor reads the installation; it does not need, or create, config.json.
 		PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			layout := layoutFor(os.Getenv("HOME"))
+			layout := currentLayout()
 			env := doctorEnv{
 				goos:        runtime.GOOS,
 				goarch:      runtime.GOARCH,
@@ -225,7 +312,7 @@ func runChecks(l installLayout, env doctorEnv) []checkResult {
 	}
 
 	browsers := 0
-	for _, b := range browserDirs(env.goos, l.home) {
+	for _, b := range browserDirs(env.goos, l.home, l.localAppData) {
 		if _, err := os.Stat(b.parent); err != nil {
 			continue
 		}
