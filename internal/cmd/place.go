@@ -558,7 +558,7 @@ func (p *placer) syncSkill() error {
 
 func (p *placer) installSkillCopy(from, to string) error {
 	parent := filepath.Dir(to)
-	removeSkillStaging(parent)
+	recoverSkillStaging(to)
 	if info, err := os.Lstat(to); err == nil {
 		if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() || !isRegularFile(filepath.Join(to, skillMarker)) {
 			p.warn("%s is not Agent Pane's; left unchanged", p.l.show(to))
@@ -615,14 +615,50 @@ func (p *placer) installSkillCopy(from, to string) error {
 // aside in a skills folder. Hidden, so coding agents do not list them.
 const skillStagingPrefix = ".agent-pane-skill-"
 
-// removeSkillStaging deletes the folders a run cut short left in dir.
-func removeSkillStaging(dir string) {
-	entries, _ := os.ReadDir(dir)
+// recoverSkillStaging clears the folders a run cut short left beside to. A
+// copy moved aside goes back to to when to is missing, so it is kept until a
+// new copy is in. Only folders named as installSkillCopy names them that hold
+// the marker, or nothing, are ours; anything else is left alone.
+func recoverSkillStaging(to string) {
+	parent := filepath.Dir(to)
+	entries, _ := os.ReadDir(parent)
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), skillStagingPrefix) {
-			os.RemoveAll(filepath.Join(dir, e.Name()))
+		dir := filepath.Join(parent, e.Name())
+		switch {
+		case !e.IsDir():
+		case isSkillStaging(e.Name(), "new"):
+			if isRegularFile(filepath.Join(dir, skillMarker)) {
+				os.RemoveAll(dir)
+			} else {
+				os.Remove(dir)
+			}
+		case isSkillStaging(e.Name(), "old"):
+			moved := filepath.Join(dir, filepath.Base(to))
+			if info, err := os.Lstat(moved); err == nil && info.IsDir() && isRegularFile(filepath.Join(moved, skillMarker)) {
+				if _, err := os.Lstat(to); errors.Is(err, fs.ErrNotExist) {
+					os.Rename(moved, to)
+				} else {
+					os.RemoveAll(moved)
+				}
+			}
+			os.Remove(dir)
 		}
 	}
+}
+
+// isSkillStaging reports whether name is a folder os.MkdirTemp made from
+// skillStagingPrefix+kind+".*".
+func isSkillStaging(name, kind string) bool {
+	rest, ok := strings.CutPrefix(name, skillStagingPrefix+kind+".")
+	if !ok || rest == "" {
+		return false
+	}
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // isRegularFile reports whether path is a regular file, not a folder or a

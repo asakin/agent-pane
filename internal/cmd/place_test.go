@@ -312,6 +312,7 @@ func TestPlaceWindowsReplacesItsSkillInPlace(t *testing.T) {
 
 	skills := filepath.Join(l.home, ".claude", "skills")
 	// A staging folder a run cut short left behind.
+	putFile(t, filepath.Join(skills, skillStagingPrefix+"new.1", skillMarker), skillMarkerText)
 	putFile(t, filepath.Join(skills, skillStagingPrefix+"new.1", "SKILL.md"), "half\n")
 	putFile(t, filepath.Join(src, "skills", "agent-pane", "SKILL.md"), "name: agent-pane 0.4.0\n")
 	placeOnce(t, l, src, reg)
@@ -325,6 +326,57 @@ func TestPlaceWindowsReplacesItsSkillInPlace(t *testing.T) {
 	entries, _ := os.ReadDir(skills)
 	if len(entries) != 1 {
 		t.Errorf("skills holds %v, want only agent-pane", entries)
+	}
+}
+
+func TestPlaceWindowsKeepsFoldersThatAreNotItsStaging(t *testing.T) {
+	l := windowsTestLayout(t)
+	src := t.TempDir()
+	writeWindowsRelease(t, src)
+	skills := filepath.Join(l.home, ".claude", "skills")
+	// Named like staging, but not made by installSkillCopy.
+	notes := filepath.Join(skills, skillStagingPrefix+"notes", "SKILL.md")
+	unmarked := filepath.Join(skills, skillStagingPrefix+"new.7", "SKILL.md")
+	putFile(t, notes, "my notes\n")
+	putFile(t, unmarked, "my draft\n")
+
+	placeOnce(t, l, src, newFakeRegistry())
+	for _, path := range []string{notes, unmarked} {
+		if !exists(path) {
+			t.Errorf("%s was deleted", path)
+		}
+	}
+	if !isRegularFile(filepath.Join(skills, "agent-pane", skillMarker)) {
+		t.Error("the skill copy was not installed")
+	}
+}
+
+func TestRecoverSkillStagingPutsBackAMovedCopy(t *testing.T) {
+	skills := t.TempDir()
+	to := filepath.Join(skills, "agent-pane")
+	// A run moved the installed copy aside, then stopped before the new one
+	// was in.
+	aside := filepath.Join(skills, skillStagingPrefix+"old.3", "agent-pane")
+	putFile(t, filepath.Join(aside, skillMarker), skillMarkerText)
+	putFile(t, filepath.Join(aside, "SKILL.md"), "name: agent-pane 0.3.0\n")
+
+	recoverSkillStaging(to)
+	if got := readString(t, filepath.Join(to, "SKILL.md")); got != "name: agent-pane 0.3.0\n" {
+		t.Errorf("skill copy = %q", got)
+	}
+	if exists(filepath.Dir(aside)) {
+		t.Error("the emptied staging folder is still there")
+	}
+
+	// With a copy in place, the one moved aside is only removed.
+	putFile(t, filepath.Join(aside, skillMarker), skillMarkerText)
+	putFile(t, filepath.Join(aside, "SKILL.md"), "name: agent-pane 0.2.0\n")
+	recoverSkillStaging(to)
+	if got := readString(t, filepath.Join(to, "SKILL.md")); got != "name: agent-pane 0.3.0\n" {
+		t.Errorf("skill copy = %q", got)
+	}
+	if exists(filepath.Dir(aside)) {
+		t.Error("the old copy is still there")
 	}
 }
 
