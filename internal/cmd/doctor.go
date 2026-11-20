@@ -193,11 +193,17 @@ type doctorEnv struct {
 	goarch  string
 	version string // this binary's version
 	path    string // $PATH
+	pathext string // %PATHEXT%, on Windows
 	// spawnAgent reports whether the macOS spawn agent is loaded; nil skips
 	// the check.
 	spawnAgent func() bool
 	// coreVersion runs the bundled core's `--version`; nil skips the check.
 	coreVersion func(path string) (string, error)
+	// registry reads the browsers' keys and the user Path on Windows; nil
+	// skips those checks.
+	registry userRegistry
+	// getenv expands %NAME% in the user Path on Windows.
+	getenv func(string) string
 }
 
 func NewCmdDoctor(version string) *cobra.Command {
@@ -206,12 +212,17 @@ func NewCmdDoctor(version string) *cobra.Command {
 		Use:   "doctor",
 		Short: "Check that Agent Pane is installed correctly, and repair it with --fix",
 		Long: `Checks the files the installer owns against the release it installed,
-kept in ~/.local/share/agent-pane/release, and reports each one. ~/AGENTS.md
-and ~/CLAUDE.md are yours and are not checked.
+kept in ~/.local/share/agent-pane/release (on Windows,
+%LOCALAPPDATA%\agent-pane\release), and reports each one. On Windows it also
+checks each installed browser's native-messaging registry key under
+HKEY_CURRENT_USER and that %LOCALAPPDATA%\agent-pane\bin is on the user Path.
+~/AGENTS.md and ~/CLAUDE.md (%USERPROFILE%\AGENTS.md and CLAUDE.md on
+Windows) are yours and are not checked.
 
---fix runs that release's place.sh again when something is wrong. It uses
-only files already on this computer and does not change the installed version;
-to update, run the install command again.`,
+--fix puts that release in place again when something is wrong: it runs the
+release's place.sh, or on Windows ` + "`agent-pane place`" + ` from the release.
+It uses only files already on this computer and does not change the installed
+version; to update, run the install command again.`,
 		Args: cobra.NoArgs,
 		// doctor reads the installation; it does not need, or create, config.json.
 		PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
@@ -222,8 +233,11 @@ to update, run the install command again.`,
 				goarch:      runtime.GOARCH,
 				version:     version,
 				path:        os.Getenv("PATH"),
+				pathext:     os.Getenv("PATHEXT"),
 				spawnAgent:  spawnAgentLoaded,
 				coreVersion: coreVersion,
+				registry:    newUserRegistry(),
+				getenv:      os.Getenv,
 			}
 			out := cmd.OutOrStdout()
 			problems := printChecks(out, runChecks(layout, env))
@@ -255,9 +269,18 @@ func printChecks(w io.Writer, results []checkResult) int {
 }
 
 func runPlace(l installLayout, stdout, stderr io.Writer) error {
+	if l.goos == "windows" {
+		binary := l.releaseBinary()
+		if _, err := os.Stat(binary); err != nil {
+			return fmt.Errorf("no installed release at %s to repair from; install again with %s", l.release, installHint(l.goos))
+		}
+		c := exec.Command(binary, "place", "--from", l.release)
+		c.Stdout, c.Stderr = stdout, stderr
+		return c.Run()
+	}
 	place := filepath.Join(l.release, "place.sh")
 	if _, err := os.Stat(place); err != nil {
-		return fmt.Errorf("no installed release at %s to repair from; install again with `curl -fsSL %s | sh` (or scripts/dev-install.sh in a checkout)", l.release, installCommandURL)
+		return fmt.Errorf("no installed release at %s to repair from; install again with %s (or scripts/dev-install.sh in a checkout)", l.release, installHint(l.goos))
 	}
 	c := exec.Command("sh", place)
 	c.Stdout, c.Stderr = stdout, stderr
@@ -280,35 +303,51 @@ func coreVersion(path string) (string, error) {
 func runChecks(l installLayout, env doctorEnv) []checkResult {
 	var out []checkResult
 	add := func(status checkStatus, item, format string, args ...any) {
-		detail := strings.ReplaceAll(fmt.Sprintf(format, args...), l.home+string(filepath.Separator), "~/")
+		detail := l.show(fmt.Sprintf(format, args...))
 		out = append(out, checkResult{status, item, detail})
 	}
+	windows := env.goos == "windows"
 
-	for _, name := range []string{"agent-pane", "place.sh"} {
+	// The Windows archive carries no place.sh; agent-pane.exe places it.
+	releaseFiles := []string{"agent-pane", "place.sh"}
+	if windows {
+		releaseFiles = []string{"agent-pane.exe"}
+	}
+	for _, name := range releaseFiles {
 		if _, err := os.Stat(filepath.Join(l.release, name)); err != nil {
-			add(checkFail, "release", "%s has no %s; install again with `curl -fsSL %s | sh`", l.release, name, installCommandURL)
+			add(checkFail, "release", "%s has no %s; install again with %s", l.release, name, installHint(env.goos))
 			return out
 		}
 	}
 	add(checkOK, "release", "%s", l.release)
 
-	if same, err := sameFile(filepath.Join(l.release, "agent-pane"), l.binary); err != nil {
+	if same, err := sameFile(l.releaseBinary(), l.binary); err != nil {
 		add(checkFail, "binary", "%s: %v", l.binary, err)
 	} else if !same {
 		add(checkFail, "binary", "%s differs from the installed release", l.binary)
-	} else if info, err := os.Stat(l.binary); err != nil || info.Mode()&0o111 == 0 {
+	} else if info, err := os.Stat(l.binary); err != nil || (!windows && info.Mode()&0o111 == 0) {
 		add(checkFail, "binary", "%s is not executable", l.binary)
 	} else {
 		add(checkOK, "binary", "%s (%s)", l.binary, env.version)
 	}
 
-	wantHost := "#!/bin/sh\nexec " + shQuote(l.binary) + " serve\n"
-	if info, err := os.Stat(l.host); err != nil {
-		add(checkFail, "native host", "%s is missing", l.host)
-	} else if got, _ := os.ReadFile(l.host); string(got) != wantHost || info.Mode()&0o111 == 0 {
-		add(checkFail, "native host", "%s does not run %s", l.host, l.binary)
+	if windows {
+		// No wrapper: the manifest names agent-pane.exe, and each browser's
+		// registry key names the manifest.
+		if problem := checkManifest(l.manifest, l.host); problem != "" {
+			add(checkFail, "native host", "%s", problem)
+		} else {
+			add(checkOK, "native host", "%s", l.manifest)
+		}
 	} else {
-		add(checkOK, "native host", "%s", l.host)
+		wantHost := "#!/bin/sh\nexec " + shQuote(l.binary) + " serve\n"
+		if info, err := os.Stat(l.host); err != nil {
+			add(checkFail, "native host", "%s is missing", l.host)
+		} else if got, _ := os.ReadFile(l.host); string(got) != wantHost || info.Mode()&0o111 == 0 {
+			add(checkFail, "native host", "%s does not run %s", l.host, l.binary)
+		} else {
+			add(checkOK, "native host", "%s", l.host)
+		}
 	}
 
 	browsers := 0
@@ -317,6 +356,14 @@ func runChecks(l installLayout, env doctorEnv) []checkResult {
 			continue
 		}
 		browsers++
+		if windows {
+			if problem := checkRegistryKey(env.registry, b.key, l.manifest); problem != "" {
+				add(checkFail, "manifest", "%s: %s", b.name, problem)
+			} else {
+				add(checkOK, "manifest", "%s", b.name)
+			}
+			continue
+		}
 		path := filepath.Join(b.hosts, nativeHostName+".json")
 		if problem := checkManifest(path, l.host); problem != "" {
 			add(checkFail, "manifest", "%s: %s", b.name, problem)
@@ -325,7 +372,11 @@ func runChecks(l installLayout, env doctorEnv) []checkResult {
 		}
 	}
 	if browsers == 0 {
-		add(checkFail, "manifest", "no Chromium browser config folder found")
+		if windows {
+			add(checkFail, "manifest", "no Chromium browser user data folder found")
+		} else {
+			add(checkFail, "manifest", "no Chromium browser config folder found")
+		}
 	}
 
 	if env.goos == "darwin" {
@@ -351,6 +402,9 @@ func runChecks(l installLayout, env doctorEnv) []checkResult {
 	}
 
 	path := checkPath(l, env.path)
+	if windows {
+		path = checkWindowsPath(l, env)
+	}
 	add(path.status, path.item, "%s", path.detail)
 
 	// ~/AGENTS.md and ~/CLAUDE.md are the person's files: place.sh only
@@ -411,6 +465,16 @@ type coreLock struct {
 	version string
 	// binaries maps <goos>_<goarch> to the SHA-256 of its herdr-core binary.
 	binaries map[string]string
+	// files maps <goos>_<goarch> to the other files of its build, from
+	// `<goos>_<goarch>.file <path> <sha256>` lines, in lock order.
+	files map[string][]coreFile
+}
+
+// coreFile is a file of a core build besides the binary; path is relative to
+// libexec, with forward slashes.
+type coreFile struct {
+	path   string
+	sha256 string
 }
 
 func readCoreLock(path string) (coreLock, error) {
@@ -419,7 +483,7 @@ func readCoreLock(path string) (coreLock, error) {
 		return coreLock{}, err
 	}
 	defer f.Close()
-	lock := coreLock{binaries: map[string]string{}}
+	lock := coreLock{binaries: map[string]string{}, files: map[string][]coreFile{}}
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
@@ -428,6 +492,13 @@ func readCoreLock(path string) (coreLock, error) {
 		case fields[0] == "version" && len(fields) == 2:
 			lock.version = fields[1]
 		case fields[0] == "generation" && len(fields) == 2:
+		case strings.HasSuffix(fields[0], ".file") && len(fields) == 3:
+			rel := fields[1]
+			if rel == "" || strings.HasPrefix(rel, "/") || strings.Contains(rel, `\`) || slices.Contains(strings.Split(rel, "/"), "..") {
+				return coreLock{}, fmt.Errorf("unexpected path in line %q", scanner.Text())
+			}
+			platform := strings.TrimSuffix(fields[0], ".file")
+			lock.files[platform] = append(lock.files[platform], coreFile{rel, fields[2]})
 		case len(fields) == 4:
 			lock.binaries[fields[0]] = fields[3]
 		case len(fields) == 3 && strings.HasSuffix(fields[0], ".file"):
@@ -467,13 +538,26 @@ func checkCore(l installLayout, env doctorEnv) []checkResult {
 		data, err := os.ReadFile(l.core)
 		info, statErr := os.Stat(l.core)
 		sum := sha256.Sum256(data)
+		badFile := ""
+		for _, f := range lock.files[platform] {
+			path := filepath.Join(filepath.Dir(l.core), filepath.FromSlash(f.path))
+			if got, err := fileSHA256(path); err != nil {
+				badFile = path + " is missing"
+				break
+			} else if got != f.sha256 {
+				badFile = fmt.Sprintf("%s is not the pinned herdr-core %s file for %s", path, lock.version, platform)
+				break
+			}
+		}
 		switch {
 		case err != nil || statErr != nil:
 			add(checkFail, "core", l.core+" is missing")
 		case hex.EncodeToString(sum[:]) != want:
 			add(checkFail, "core", fmt.Sprintf("%s is not the pinned herdr-core %s for %s", l.core, lock.version, platform))
-		case info.Mode()&0o111 == 0:
+		case env.goos != "windows" && info.Mode()&0o111 == 0:
 			add(checkFail, "core", l.core+" is not executable")
+		case badFile != "":
+			add(checkFail, "core", badFile)
 		default:
 			version := ""
 			if env.coreVersion != nil {
@@ -495,7 +579,7 @@ func checkCore(l installLayout, env doctorEnv) []checkResult {
 		add(checkFail, "core licenses", fmt.Sprintf("%s: %v", licenses, err))
 	} else if !same {
 		add(checkFail, "core licenses", licenses+" differs from the installed release")
-	} else if missing := missingCoreLicense(licenses); missing != "" {
+	} else if missing := missingCoreLicense(licenses, env.goos == "windows"); missing != "" {
 		add(checkFail, "core licenses", licenses+" has no "+missing)
 	} else {
 		add(checkOK, "core licenses", licenses)
@@ -503,26 +587,33 @@ func checkCore(l installLayout, env doctorEnv) []checkResult {
 
 	// A person's own hc, wherever it is, is theirs and fine. Agent Pane's core,
 	// installed or the copy the kept release holds, must not be reachable as
-	// `hc` on PATH, ~/.local/bin/hc included.
-	bundled := []string{l.core, filepath.Join(l.release, "libexec", "hc")}
+	// `hc` on PATH, ~/.local/bin/hc included. On Windows `hc` runs any hc
+	// with an extension from PATHEXT.
+	bundled := []string{l.core, l.releaseCore()}
+	names := []string{"hc"}
+	if env.goos == "windows" {
+		names = pathextNames("hc", env.pathext)
+	}
 	other := ""
-	for _, dir := range append(filepath.SplitList(env.path), filepath.Dir(l.binary)) {
+	for _, dir := range append(splitPathList(env.goos, env.path), filepath.Dir(l.binary)) {
 		if dir == "" {
 			continue
 		}
-		candidate := filepath.Join(dir, "hc")
-		isBundled := false
-		for _, b := range bundled {
-			if filepath.Clean(dir) == filepath.Dir(b) || sameInode(candidate, b) {
-				isBundled = true
+		for _, name := range names {
+			candidate := filepath.Join(dir, name)
+			isBundled := false
+			for _, b := range bundled {
+				if samePath(env.goos, dir, filepath.Dir(b)) || sameInode(candidate, b) {
+					isBundled = true
+				}
 			}
-		}
-		if isBundled {
-			add(checkFail, "core isolation", candidate+" is Agent Pane's bundled core; only Agent Pane runs it, so take it off PATH")
-			return out
-		}
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && other == "" {
-			other = candidate
+			if isBundled {
+				add(checkFail, "core isolation", candidate+" is Agent Pane's bundled core; only Agent Pane runs it, so take it off PATH")
+				return out
+			}
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() && other == "" {
+				other = candidate
+			}
 		}
 	}
 	if other != "" {
@@ -534,14 +625,100 @@ func checkCore(l installLayout, env doctorEnv) []checkResult {
 }
 
 // missingCoreLicense names the first file herdr-core's license requires that
-// dir lacks, or returns "".
-func missingCoreLicense(dir string) string {
+// dir lacks, or returns "". On Windows THIRD-PARTY-NOTICES may be a folder of
+// non-empty files, as herdr-core's Windows archive has it.
+func missingCoreLicense(dir string, noticesFolder bool) string {
 	for _, name := range []string{"LICENSE", "THIRD-PARTY-NOTICES"} {
-		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || info.Size() == 0 {
+		path := filepath.Join(dir, name)
+		if noticesFolder && name == "THIRD-PARTY-NOTICES" {
+			if !nonEmptyNotices(path, true) {
+				return name
+			}
+		} else if info, err := os.Stat(path); err != nil || info.Size() == 0 {
 			return name
 		}
 	}
 	return ""
+}
+
+// pathextNames gives the names Windows tries for a command: base with each
+// PATHEXT extension, as written and lower-case.
+func pathextNames(base, pathext string) []string {
+	if pathext == "" {
+		pathext = ".COM;.EXE;.BAT;.CMD"
+	}
+	var names []string
+	for _, ext := range strings.Split(pathext, ";") {
+		if ext == "" {
+			continue
+		}
+		for _, e := range []string{ext, strings.ToLower(ext)} {
+			if !slices.Contains(names, base+e) {
+				names = append(names, base+e)
+			}
+		}
+	}
+	return names
+}
+
+func fileSHA256(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// checkRegistryKey describes what is wrong with a browser's native-messaging
+// registry key, or returns "". With no registry it checks nothing.
+func checkRegistryKey(reg userRegistry, key, manifest string) string {
+	if reg == nil {
+		return ""
+	}
+	got, ok, err := reg.DefaultValue(key)
+	switch {
+	case err != nil:
+		return `HKCU\` + key + ": " + err.Error()
+	case !ok:
+		return `HKCU\` + key + " is missing"
+	case !samePath("windows", got, manifest):
+		return `HKCU\` + key + " names " + got + ", not " + manifest
+	}
+	return ""
+}
+
+// checkWindowsPath warns when the bin folder is not on the user Path, or
+// another agent-pane comes first. It never fails: a terminal opened before
+// the install does not see the new Path.
+func checkWindowsPath(l installLayout, env doctorEnv) checkResult {
+	binDir := filepath.Dir(l.binary)
+	names := pathextNames("agent-pane", env.pathext)
+	for _, dir := range splitPathList(env.goos, env.path) {
+		if dir == "" {
+			continue
+		}
+		for _, name := range names {
+			candidate := filepath.Join(dir, name)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				if samePath(env.goos, dir, binDir) {
+					return checkResult{checkOK, "PATH", binDir}
+				}
+				return checkResult{checkWarn, "PATH", candidate + " comes before " + l.binary + " on Path"}
+			}
+		}
+	}
+	if env.registry == nil {
+		return checkResult{checkWarn, "PATH", binDir + " is not on Path"}
+	}
+	userPath, err := env.registry.UserPath()
+	if err != nil {
+		return checkResult{checkWarn, "PATH", "could not read the user Path: " + err.Error()}
+	}
+	if pathListHas(env.goos, userPath, binDir, env.getenv) {
+		return checkResult{checkOK, "PATH", binDir + " (on the user Path; open a new terminal)"}
+	}
+	return checkResult{checkWarn, "PATH", binDir + " is not on the user Path"}
 }
 
 // sameInode reports whether a and b, after symlinks, are the same file.
