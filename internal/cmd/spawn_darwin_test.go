@@ -4,6 +4,8 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,5 +138,61 @@ func TestSpawnHelperProcess(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSpawnRunsWithoutATerminal(t *testing.T) {
+	sock, _ := startSpawnHelper(t, "spawn-run", "")
+
+	cmd := exec.Command("/bin/sh", "-c", `echo "$GREETING from $(pwd -P)"; [ "$(ps -o sess= -p $$)" = "$(ps -o sess= -p $PPID)" ] || echo own session; exit 3`)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Dir = dir
+	cmd.Env = []string{"GREETING=hello", "PATH=/usr/bin:/bin"}
+	out, ran, err := runSpawn(context.Background(), sock, cmd)
+	if !ran {
+		t.Fatalf("spawn agent did not run the command: %v", err)
+	}
+	if err == nil || err.Error() != "exit status 3" {
+		t.Fatalf("err = %v, want exit status 3", err)
+	}
+	if got, want := string(out), "hello from "+dir+"\nown session\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestSpawnRunUnavailable(t *testing.T) {
+	_, ran, err := runSpawn(context.Background(), filepath.Join(t.TempDir(), "none.sock"), exec.Command("/usr/bin/true"))
+	if ran || err == nil {
+		t.Fatalf("ran = %v, err = %v; want not run", ran, err)
+	}
+}
+
+func TestSpawnTerminalRequestNeedsATerminal(t *testing.T) {
+	sock, _ := startSpawnHelper(t, "spawn-noterm", "")
+
+	marker := filepath.Join(t.TempDir(), "ran")
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte{0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewEncoder(conn).Encode(spawnRequest{Args: []string{"/usr/bin/touch", marker}}); err != nil {
+		t.Fatal(err)
+	}
+	var ack spawnAck
+	if err := json.NewDecoder(conn).Decode(&ack); err != nil {
+		t.Fatal(err)
+	}
+	if ack.OK || ack.Error != "missing terminal" {
+		t.Fatalf("ack = %+v, want missing terminal", ack)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("spawn ran a terminal request that came with no terminal")
 	}
 }

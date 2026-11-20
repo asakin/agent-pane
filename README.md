@@ -143,7 +143,7 @@ flowchart LR
   ext --> page
 ```
 
-Chrome starts the `agent-pane` program through native messaging. The program starts your shell in a pseudo-terminal and streams it to the side panel over a loopback WebSocket that only the extension can open. On macOS a small LaunchAgent starts the shells so they are not tied to Chrome's process group.
+Chrome starts the `agent-pane` program through native messaging. The program starts your shell in a pseudo-terminal and streams it to the side panel over a loopback WebSocket that only the extension can open. On macOS a small LaunchAgent starts the shells, and the Durable backend's herdr-core, so they are not tied to Chrome's process group and do not inherit Chrome's quarantine attribute. On Linux the Durable backend's herdr-core starts in a systemd user scope of its own (`systemd-run --user --scope`) when the user's systemd is reachable, so it is outside the browser's cgroup. A core already running keeps how it was started until it stops.
 
 A page read goes the other way: the program in the pane tab asks the host over a connection the host gave that terminal, the host knows which pane tab is asking and has the side panel prompt you if needed, and the extension reads the page. That connection is an inherited descriptor (`AGENT_PANE_FD`) or, for commands that did not inherit it, the terminal's own socket (`AGENT_PANE_SOCKET`) in a folder only you can open, which answers only processes started in that terminal and refuses any other. Durable (preview) pane tabs have only the socket. Approvals live in the host's memory, so restarting Chrome or the host starts every pane tab without one, and closing a Chrome window ends the approvals of the Durable pane tabs it showed.
 

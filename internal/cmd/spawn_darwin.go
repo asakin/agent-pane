@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 
+	"agent-pane/internal/herdrcore"
 	"agent-pane/internal/peercred"
 	"github.com/aymanbagabas/go-pty"
 	"github.com/spf13/cobra"
@@ -21,6 +24,10 @@ type spawnRequest struct {
 	Args []string `json:"args"`
 	Env  []string `json:"env"`
 	Dir  string   `json:"dir"`
+	// Run asks for the command to run with no terminal, its output
+	// returned in spawnExit, instead of on the terminal sent with the
+	// request.
+	Run bool `json:"run,omitempty"`
 }
 
 type spawnAck struct {
@@ -32,6 +39,8 @@ type spawnAck struct {
 
 type spawnExit struct {
 	Exit int `json:"exit"`
+	// Output is a Run command's combined output.
+	Output string `json:"output,omitempty"`
 }
 
 func spawnSocketPath() string {
@@ -125,6 +134,63 @@ func dialSpawn(path string, tty pty.Pty, cmd *pty.Cmd, extra *os.File) (func() e
 	}, ack.PID, nil
 }
 
+// launchCore starts the core through the spawn agent, so launchd, not the
+// browser, is the core's ancestor. A program the browser starts carries
+// Chrome's quarantine attribute, and the core and every program in its
+// terminals would inherit it: each file they write is quarantined, and
+// Gatekeeper refuses to run what they build. With no spawn agent, or one
+// from before Run, it starts the core as a child.
+func launchCore(ctx context.Context, newCmd func() *exec.Cmd) ([]byte, error) {
+	out, ran, err := runSpawn(ctx, spawnSocketPath(), newCmd())
+	if ran {
+		return out, err
+	}
+	return herdrcore.RunStart(newCmd)
+}
+
+// runSpawn has the spawn agent run cmd with no terminal and returns its
+// combined output. ran is false when the agent did not start it.
+func runSpawn(ctx context.Context, path string, cmd *exec.Cmd) (out []byte, ran bool, err error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	// The agent reads one byte that would carry the terminal, then the
+	// request.
+	if _, err := conn.Write([]byte{0}); err != nil {
+		return nil, false, err
+	}
+	if err := json.NewEncoder(conn).Encode(spawnRequest{
+		Path: cmd.Path,
+		Args: cmd.Args,
+		Env:  cmd.Env,
+		Dir:  cmd.Dir,
+		Run:  true,
+	}); err != nil {
+		return nil, false, err
+	}
+	dec := json.NewDecoder(conn)
+	var ack spawnAck
+	if err := dec.Decode(&ack); err != nil {
+		return nil, false, err
+	}
+	if !ack.OK {
+		return nil, false, fmt.Errorf("spawn agent did not run %s: %s", cmd.Path, ack.Error)
+	}
+	var done spawnExit
+	if err := dec.Decode(&done); err != nil {
+		return nil, true, err
+	}
+	if done.Exit != 0 {
+		return []byte(done.Output), true, fmt.Errorf("exit status %d", done.Exit)
+	}
+	return []byte(done.Output), true, nil
+}
+
 // serveSpawnSocket accepts only the agent-pane binary itself (the serve host)
 // running as this user.
 func serveSpawnSocket(ctx context.Context, path string) error {
@@ -194,7 +260,11 @@ func handleSpawnConn(conn *net.UnixConn) {
 		return
 	}
 	scms, err := syscall.ParseSocketControlMessage(oob[:oobn])
-	if err != nil || len(scms) == 0 {
+	if err == nil && len(scms) == 0 {
+		runSpawnRequest(conn)
+		return
+	}
+	if err != nil {
 		_ = json.NewEncoder(conn).Encode(spawnAck{Error: "missing terminal"})
 		return
 	}
@@ -253,4 +323,52 @@ func handleSpawnConn(conn *net.UnixConn) {
 		}
 	}
 	_ = json.NewEncoder(conn).Encode(spawnExit{Exit: code})
+}
+
+// runSpawnRequest serves a request sent with no terminal, which must ask to
+// Run: the command starts in a session of its own, with no input, and its
+// combined output goes back in spawnExit.
+func runSpawnRequest(conn *net.UnixConn) {
+	var req spawnRequest
+	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+		_ = json.NewEncoder(conn).Encode(spawnAck{Error: err.Error()})
+		return
+	}
+	if !req.Run {
+		_ = json.NewEncoder(conn).Encode(spawnAck{Error: "missing terminal"})
+		return
+	}
+	if len(req.Args) == 0 {
+		_ = json.NewEncoder(conn).Encode(spawnAck{Error: "missing command"})
+		return
+	}
+	cmd := exec.Command(req.Args[0], req.Args[1:]...)
+	if req.Path != "" {
+		cmd.Path = req.Path
+	}
+	cmd.Env = req.Env
+	cmd.Dir = req.Dir
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	// A daemon that inherits the output pipe must not hold the run past
+	// the command's own exit.
+	cmd.WaitDelay = 5 * time.Second
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		_ = json.NewEncoder(conn).Encode(spawnAck{Error: err.Error()})
+		return
+	}
+	if err := json.NewEncoder(conn).Encode(spawnAck{OK: true, PID: cmd.Process.Pid}); err != nil {
+		return
+	}
+	code := 0
+	if err := cmd.Wait(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() >= 0 {
+			code = ee.ExitCode()
+		} else {
+			code = 1
+		}
+	}
+	_ = json.NewEncoder(conn).Encode(spawnExit{Exit: code, Output: out.String()})
 }

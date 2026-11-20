@@ -126,7 +126,7 @@ func newCoreBackend(logger *slog.Logger, core herdrcore.Core) *coreBackend {
 			if _, err := os.Stat(core.Binary); err != nil {
 				return nil, errCoreMissing
 			}
-			if err := core.StartEnv(ctx, base); err != nil {
+			if err := core.StartVia(ctx, base, launchCore); err != nil {
 				return nil, err
 			}
 			c, err := core.Dial(ctx)
