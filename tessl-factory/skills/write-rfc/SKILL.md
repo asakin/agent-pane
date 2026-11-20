@@ -49,20 +49,15 @@ voice. Use the terms of the README glossary, as `AGENTS.md` asks. Headings
 name what the section contains, never a slogan, and sentences state the fact
 directly.
 
-Show the design, not only describe it. A reviewer understands components,
-messages and lifecycles faster from a picture than from paragraphs, and a
-design with none is hard to review. Draw Mermaid diagrams in ```` ```mermaid ````
-blocks, which GitHub renders, as RFC 0001 and the README's "How it works" do:
-
-- at least one near the top of Reference-level explanation that shows the
-  proposed design: its parts and what talks to what;
-- when the design changes how things work today, today's picture next to it;
-- a sequence diagram for a flow across processes (extension, host, core,
-  agent) and a state diagram for a lifecycle, where the RFC has one.
-
-Keep each diagram small enough to read at a glance, label its parts with the
-names the text uses, and put the explanation in the text: a diagram shows,
-the prose says why. A table still fits a comparison better than a diagram.
+Show the design where a picture makes it easier to follow. Components and
+who talks to whom, a flow of messages across processes, or a lifecycle are
+usually clearer drawn than described; a design that has none of these may need
+no diagram. Draw them as Mermaid blocks (```` ```mermaid ````), which GitHub
+renders, as RFC 0001 and the README's "How it works" do: a flowchart with
+subgraphs for layers and parts, a sequence diagram for a flow, a state diagram
+for a lifecycle. Which ones, and how many, is your call for this design. Label
+the parts with the names the text uses, keep each one readable at a glance,
+and keep the reasoning in the prose.
 
 ## GitHub
 
