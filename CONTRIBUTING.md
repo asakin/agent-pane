@@ -27,7 +27,7 @@ GoReleaser signs and notarizes the darwin binaries with its built-in `notarize.m
 1. Join the [Apple Developer Program](https://developer.apple.com/programs/) as an organization or individual. Only the Account Holder can create a Developer ID certificate.
 2. Create a **Developer ID Application** certificate (Xcode > Settings > Accounts > Manage Certificates, or the Certificates page of the developer account), then export it with its private key from Keychain Access as a `.p12` file protected by a password.
 3. In [App Store Connect > Users and Access > Integrations > Team Keys](https://appstoreconnect.apple.com/access/integrations/api), create an API key with the Developer role. Download the `.p8` file (it can be downloaded only once) and note the key ID and the issuer ID shown above the key list.
-4. Add these repository secrets under Settings > Secrets and variables > Actions:
+4. Add these secrets to the `release` environment (Settings > Environments > release, limited to `v*.*.*` tags), not to the repository, so only release runs can sign:
 
    | Secret | Value |
    | --- | --- |
