@@ -176,6 +176,59 @@ func TestPlaceWindowsUpdate(t *testing.T) {
 	}
 }
 
+func TestPlaceWindowsLeavesAnOtherCaseManifestKey(t *testing.T) {
+	l := windowsTestLayout(t)
+	src := t.TempDir()
+	writeWindowsRelease(t, src)
+	reg := newFakeRegistry()
+	placeOnce(t, l, src, reg)
+	key := browserDirs("windows", l.home, l.localAppData)[0].key
+	reg.values[key] = strings.ToUpper(l.manifest)
+
+	if out, errOut := placeOnce(t, l, src, reg); out != "" || errOut != "" {
+		t.Errorf("run printed:\n%s%s", out, errOut)
+	}
+	if reg.values[key] != strings.ToUpper(l.manifest) {
+		t.Errorf("key rewritten to %q", reg.values[key])
+	}
+}
+
+func TestPlaceWindowsMovesPastAStuckOldRelease(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		t.Skip("needs a folder that cannot be removed through permissions")
+	}
+	l := windowsTestLayout(t)
+	src := t.TempDir()
+	writeWindowsRelease(t, src)
+	reg := newFakeRegistry()
+	placeOnce(t, l, src, reg)
+
+	// A release.old that cannot be removed, as a file open in it would
+	// keep it on Windows.
+	stuck := filepath.Join(l.release+".old", "locked")
+	putFile(t, filepath.Join(stuck, "agent-pane.exe"), "old")
+	if err := os.Chmod(stuck, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(stuck, 0o700) })
+
+	putFile(t, filepath.Join(src, "agent-pane.exe"), "agent-pane.exe 0.4.0")
+	placeOnce(t, l, src, reg)
+	if got := readString(t, filepath.Join(l.release, "agent-pane.exe")); got != "agent-pane.exe 0.4.0" {
+		t.Errorf("release binary = %q", got)
+	}
+	if exists(l.release + ".old-1") {
+		t.Error("the replaced release was kept")
+	}
+
+	// A copy a run could not remove goes on a later run.
+	putFile(t, filepath.Join(l.release+".old-2", "agent-pane.exe"), "older")
+	placeOnce(t, l, src, reg)
+	if exists(l.release + ".old-2") {
+		t.Error("release.old-2 not swept")
+	}
+}
+
 func TestPlaceFileMovesTheOldCopyAside(t *testing.T) {
 	dir := t.TempDir()
 	src, dest := filepath.Join(dir, "new"), filepath.Join(dir, "bin", "x.exe")

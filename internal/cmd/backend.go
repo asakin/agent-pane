@@ -78,9 +78,19 @@ type terminalCommand struct {
 	Dir  string
 	Cols int
 	Rows int
+	// Batch is set on Windows when Args runs a .cmd or .bat file. The
+	// Built-in backend starts its cmd.exe command line instead of Args,
+	// whose quoting is for programs, not for cmd; the core gets Args.
+	Batch *batchCommand
 	// Window is the Chrome window the session is shown in, as the
 	// extension names it; "" when it did not say.
 	Window string
+}
+
+// batchCommand is a cmd.exe and the whole command line to give it.
+type batchCommand struct {
+	Shell string
+	Line  string
 }
 
 // newTerminalCommand returns the command to run name with args.
@@ -146,8 +156,15 @@ func (t *ptyTerminal) preface(p []byte) {
 }
 
 func (t *ptyTerminal) start(command *terminalCommand, extra *os.File) (int, error) {
-	cmd := t.tty.Command(command.Path)
+	path := command.Path
+	if command.Batch != nil {
+		path = command.Batch.Shell
+	}
+	cmd := t.tty.Command(path)
 	cmd.Args = command.Args
+	if command.Batch != nil {
+		setCmdLine(cmd, command.Batch.Line)
+	}
 	cmd.Env = command.Env
 	cmd.Dir = command.Dir
 	wait, pid, err := startPty(t.tty, cmd, extra)

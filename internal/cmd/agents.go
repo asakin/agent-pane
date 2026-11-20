@@ -306,10 +306,12 @@ var (
 
 // loginPATH is the PATH a login shell would use. The host's own PATH is
 // Chrome's. Windows shells do not set PATH at login, so there it is the
-// host's own.
+// registry's machine and user Path, read on every call so a program installed
+// since the browser started is found, then the host's own.
 func loginPATH() string {
 	if runtime.GOOS == "windows" {
-		return os.Getenv("PATH")
+		machine, user := registryPATH()
+		return windowsPATH(machine, user, os.Getenv("PATH"))
 	}
 	loginPathOnce.Do(func() {
 		shell := os.Getenv("SHELL")
@@ -343,4 +345,20 @@ func readLoginPATH(shell string) string {
 		return os.Getenv("PATH")
 	}
 	return path
+}
+
+// windowsPATH joins Windows Path lists in order, keeping the first of entries
+// that name the same folder (ignoring case and trailing separators) and
+// dropping empty ones.
+func windowsPATH(lists ...string) string {
+	var out []string
+	for _, list := range lists {
+		for _, entry := range splitPathList("windows", list) {
+			if entry == "" || slices.ContainsFunc(out, func(have string) bool { return samePath("windows", have, entry) }) {
+				continue
+			}
+			out = append(out, entry)
+		}
+	}
+	return strings.Join(out, ";")
 }
