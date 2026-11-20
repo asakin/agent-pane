@@ -175,8 +175,11 @@ func runSpawn(ctx context.Context, path string, cmd *exec.Cmd) (out []byte, ran 
 	}
 	dec := json.NewDecoder(conn)
 	var ack spawnAck
+	// The agent may have started cmd before the acknowledgement was lost,
+	// so only a refusal it sends says cmd did not run. Running it here as
+	// well could start the core as the browser's child after all.
 	if err := dec.Decode(&ack); err != nil {
-		return nil, false, err
+		return nil, true, fmt.Errorf("no answer from the spawn agent: %w", err)
 	}
 	if !ack.OK {
 		return nil, false, fmt.Errorf("spawn agent did not run %s: %s", cmd.Path, ack.Error)
@@ -327,7 +330,9 @@ func handleSpawnConn(conn *net.UnixConn) {
 
 // runSpawnRequest serves a request sent with no terminal, which must ask to
 // Run: the command starts in a session of its own, with no input, and its
-// combined output goes back in spawnExit.
+// combined output goes back in spawnExit. The client sends nothing more, so
+// its closing the connection cancels the run: the command is killed if it
+// is still running. A daemon it already started runs on.
 func runSpawnRequest(conn *net.UnixConn) {
 	var req spawnRequest
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
@@ -342,7 +347,9 @@ func runSpawnRequest(conn *net.UnixConn) {
 		_ = json.NewEncoder(conn).Encode(spawnAck{Error: "missing command"})
 		return
 	}
-	cmd := exec.Command(req.Args[0], req.Args[1:]...)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, req.Args[0], req.Args[1:]...)
 	if req.Path != "" {
 		cmd.Path = req.Path
 	}
@@ -360,8 +367,14 @@ func runSpawnRequest(conn *net.UnixConn) {
 		return
 	}
 	if err := json.NewEncoder(conn).Encode(spawnAck{OK: true, PID: cmd.Process.Pid}); err != nil {
+		cancel()
+		_ = cmd.Wait()
 		return
 	}
+	go func() {
+		_, _ = conn.Read(make([]byte, 1))
+		cancel()
+	}()
 	code := 0
 	if err := cmd.Wait(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() >= 0 {
