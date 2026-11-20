@@ -26,6 +26,7 @@ package herdrcore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -62,6 +63,10 @@ func dialPipe(ctx context.Context, name string) (net.Conn, error) {
 		h, err := windows.CreateFile(path, windows.GENERIC_READ|windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING,
 			windows.FILE_FLAG_OVERLAPPED|windows.SECURITY_SQOS_PRESENT|windows.SECURITY_IDENTIFICATION, 0)
 		if err == nil {
+			if err := checkPipeServer(h); err != nil {
+				windows.CloseHandle(h)
+				return nil, pipeErr("dial", name, err)
+			}
 			c, err := newPipeConn(h, name)
 			if err != nil {
 				windows.CloseHandle(h)
@@ -87,6 +92,38 @@ func dialPipe(ctx context.Context, name string) (net.Conn, error) {
 		// default, so wait at least 1ms.
 		procWaitNamedPipeW.Call(uintptr(unsafe.Pointer(path)), uintptr(max(wait.Milliseconds(), 1)))
 	}
+}
+
+// checkPipeServer fails unless the process serving the pipe h runs as the
+// same user as we do. Pipe names are one namespace for the whole machine, so
+// another user could create the name first and read what we send.
+func checkPipeServer(h windows.Handle) error {
+	var pid uint32
+	if err := windows.GetNamedPipeServerProcessId(h, &pid); err != nil {
+		return fmt.Errorf("cannot identify the pipe server: %w", err)
+	}
+	p, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return fmt.Errorf("cannot open the pipe server (pid %d): %w", pid, err)
+	}
+	defer windows.CloseHandle(p)
+	var token windows.Token
+	if err := windows.OpenProcessToken(p, windows.TOKEN_QUERY, &token); err != nil {
+		return fmt.Errorf("cannot read the pipe server's user (pid %d): %w", pid, err)
+	}
+	defer token.Close()
+	theirs, err := token.GetTokenUser()
+	if err != nil {
+		return fmt.Errorf("cannot read the pipe server's user (pid %d): %w", pid, err)
+	}
+	ours, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return fmt.Errorf("cannot read our own user: %w", err)
+	}
+	if !theirs.User.Sid.Equals(ours.User.Sid) {
+		return fmt.Errorf("pipe server (pid %d) runs as another user", pid)
+	}
+	return nil
 }
 
 // pipeConn is a net.Conn on an overlapped pipe handle. It works on either

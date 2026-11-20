@@ -1225,6 +1225,14 @@ func buildTerminalCommand(mode, app string, args []string, cwd string) (*termina
 			// Windows shells have no login profile that sets PATH, so the
 			// agent runs directly.
 			cmd = newTerminalCommand(argv[0], argv[1:]...)
+			if isBatchFile(argv[0]) {
+				shell := windowsCmdExe()
+				line, err := batchCommandLine(shell, argv)
+				if err != nil {
+					return nil, err
+				}
+				cmd.Batch = &batchCommand{Shell: shell, Line: line}
+			}
 		} else {
 			shell := configuredShell()
 			cmd = newTerminalCommand(shell, agentExecArgs(shell, argv)...)
@@ -1237,10 +1245,82 @@ func buildTerminalCommand(mode, app string, args []string, cwd string) (*termina
 		cmd = newTerminalCommand(shell, loginShellArgs(shell, cfg().Strings("args"))...)
 	}
 
-	cmd.Env = mergePtyEnv(os.Environ(), overlay, cfg().StringMap("env"))
+	base := os.Environ()
+	if runtime.GOOS == "windows" {
+		base = setEnvFold(base, "PATH", loginPATH())
+	}
+	cmd.Env = mergePtyEnv(base, overlay, cfg().StringMap("env"))
 	cmd.Dir = sessionDir(cwd, cfg().String("cwd"), mode == "app" && app != "")
 
 	return cmd, nil
+}
+
+// isBatchFile reports whether path is a Windows .cmd or .bat file, which
+// CreateProcess runs through cmd.exe.
+func isBatchFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".cmd" || ext == ".bat"
+}
+
+// windowsCmdExe is the cmd.exe that runs batch files.
+func windowsCmdExe() string {
+	if comspec := os.Getenv("ComSpec"); comspec != "" {
+		return comspec
+	}
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		root = `C:\Windows`
+	}
+	return filepath.Join(root, "System32", "cmd.exe")
+}
+
+// batchCommandLine is the command line that has shell, a cmd.exe, run argv,
+// whose first element is a batch file. CreateProcess would hand a batch file
+// to cmd.exe with the arguments quoted for programs, not for cmd, so an
+// argument could run commands. Here /d skips AutoRun, /v:off keeps ! literal,
+// and /s /c runs the rest with only its outer quotes removed. Every argument
+// is quoted, where cmd's other special characters are literal; a quote, a %
+// or a line break cannot be made literal there, so those are refused.
+func batchCommandLine(shell string, argv []string) (string, error) {
+	if strings.ContainsAny(shell, "\"%\r\n\x00") {
+		return "", fmt.Errorf("cannot run batch files through %q", shell)
+	}
+	var b strings.Builder
+	for i, arg := range argv {
+		if strings.ContainsAny(arg, "\"%\r\n\x00") {
+			return "", fmt.Errorf("cannot pass argument %d to %s: a batch file cannot be given a quote, a %% or a line break", i, filepath.Base(argv[0]))
+		}
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		// The batch file most likely passes its arguments on to a program
+		// that reads \" as a quote, so trailing backslashes are doubled.
+		trailing := len(arg) - len(strings.TrimRight(arg, `\`))
+		b.WriteString(`"` + arg + strings.Repeat(`\`, trailing) + `"`)
+	}
+	return `"` + shell + `" /d /v:off /s /c "` + b.String() + `"`, nil
+}
+
+// setEnvFold sets key to val in env, matching keys without regard to case as
+// Windows does: the first entry keeps its spelling ("Path"), later ones go.
+func setEnvFold(env []string, key, val string) []string {
+	out := make([]string, 0, len(env)+1)
+	found := false
+	for _, e := range env {
+		k, _, _ := strings.Cut(e, "=")
+		if !strings.EqualFold(k, key) {
+			out = append(out, e)
+			continue
+		}
+		if !found {
+			out = append(out, k+"="+val)
+			found = true
+		}
+	}
+	if !found {
+		out = append(out, key+"="+val)
+	}
+	return out
 }
 
 // sessionDir is the request directory, or the configured agent folder, or home.

@@ -232,7 +232,7 @@ func (p *placer) keepRelease() error {
 	if err := os.MkdirAll(p.l.dataDir, 0o755); err != nil {
 		return err
 	}
-	os.RemoveAll(release + ".old")
+	removeOldReleases(release)
 	if samePath(p.l.goos, p.src, release) {
 		return nil
 	}
@@ -246,15 +246,24 @@ func (p *placer) keepRelease() error {
 		return fmt.Errorf("could not copy the release to %s: %w", release, err)
 	}
 	if _, err := os.Stat(release); err == nil {
-		if err := os.Rename(release, release+".old"); err != nil {
+		// An .old a previous run could not remove does not block this one.
+		old := release + ".old"
+		if _, err := os.Lstat(old); err == nil {
+			old, err = moveAside(release)
+		} else {
+			err = os.Rename(release, old)
+		}
+		if err != nil {
 			return fmt.Errorf("could not move the old release aside: %w", err)
 		}
-	}
-	if err := os.Rename(release+".new", release); err != nil {
+		if err := os.Rename(release+".new", release); err != nil {
+			return fmt.Errorf("could not install the release at %s: %w", release, err)
+		}
+		// A file still open in the old copy keeps it; the next run removes it.
+		os.RemoveAll(old)
+	} else if err := os.Rename(release+".new", release); err != nil {
 		return fmt.Errorf("could not install the release at %s: %w", release, err)
 	}
-	// A file still open in the old copy keeps it; the next run removes it.
-	os.RemoveAll(release + ".old")
 	p.updated(release)
 	return nil
 }
@@ -375,7 +384,7 @@ func (p *placer) writeManifest() error {
 		if err != nil {
 			return fmt.Errorf(`could not read HKCU\%s: %w`, b.key, err)
 		}
-		if ok && got == p.l.manifest {
+		if ok && samePath("windows", got, p.l.manifest) {
 			continue
 		}
 		if err := p.reg.SetDefaultValue(b.key, p.l.manifest); err != nil {
@@ -587,6 +596,18 @@ func moveAside(path string) (string, error) {
 		old := path + ".old-" + strconv.Itoa(n)
 		if _, err := os.Lstat(old); errors.Is(err, fs.ErrNotExist) {
 			return old, os.Rename(path, old)
+		}
+	}
+}
+
+// removeOldReleases deletes the release.old and release.old-<n> copies
+// keepRelease left that are no longer in use; the rest wait for the next run.
+func removeOldReleases(release string) {
+	os.RemoveAll(release + ".old")
+	entries, _ := os.ReadDir(filepath.Dir(release))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), filepath.Base(release)+".old-") && oldCopy.MatchString(e.Name()) {
+			os.RemoveAll(filepath.Join(filepath.Dir(release), e.Name()))
 		}
 	}
 }

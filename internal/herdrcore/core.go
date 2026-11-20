@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Generation is the core protocol generation this client speaks, the one
@@ -99,6 +100,9 @@ func (c Core) StartEnv(ctx context.Context, base []string) error {
 	out, err := runStart(func() *exec.Cmd {
 		cmd := exec.CommandContext(ctx, c.Binary, "server", "start")
 		cmd.Env = c.Env(base)
+		// A daemon that inherits the output pipe must not hold the start
+		// past hc's own exit or ctx.
+		cmd.WaitDelay = 5 * time.Second
 		return cmd
 	})
 	if err != nil {

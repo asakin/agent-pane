@@ -33,8 +33,12 @@ func lockFile(ctx context.Context, path string) (func(), error) {
 		ol := new(windows.Overlapped)
 		err := windows.LockFileEx(h, windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, ol)
 		if err == nil {
-			// Closing the handle releases the lock.
-			return func() { f.Close() }, nil
+			return func() {
+				// Closing the handle would release the lock too, but
+				// only once the system gets to it.
+				windows.UnlockFileEx(h, 0, 1, 0, new(windows.Overlapped))
+				f.Close()
+			}, nil
 		}
 		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
 			f.Close()

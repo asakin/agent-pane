@@ -104,8 +104,16 @@ try {
 		throw "agent-pane: $archive has no agent-pane.exe"
 	}
 
-	& $exe place
-	$code = $LASTEXITCODE
+	# Windows PowerShell 5.1 turns a native program's stderr into error
+	# records when output is redirected, and Stop would end the script on
+	# place's first warning. The exit code says whether place worked.
+	$ErrorActionPreference = 'Continue'
+	try {
+		& $exe place
+		$code = $LASTEXITCODE
+	} finally {
+		$ErrorActionPreference = 'Stop'
+	}
 } finally {
 	Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
