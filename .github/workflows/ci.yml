@@ -93,6 +93,9 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
       - run: go build ./...
+      - name: install.ps1
+        shell: pwsh
+        run: ./scripts/install_ps1_test.ps1
 
   # install.sh, scripts/place.sh and `agent-pane doctor`, in a temporary HOME.
   installer:
@@ -143,6 +146,8 @@ jobs:
           mkdir -p .release
           sed 's/^VERSION=""$/VERSION="v0.0.0"/' install.sh >.release/install.sh
           grep -qx 'VERSION="v0.0.0"' .release/install.sh
+          sed "s/^\\\$VERSION = ''\$/\\\$VERSION = 'v0.0.0'/" install.ps1 >.release/install.ps1
+          grep -qx "\\\$VERSION = 'v0.0.0'" .release/install.ps1
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
