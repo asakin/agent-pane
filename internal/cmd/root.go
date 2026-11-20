@@ -295,7 +295,12 @@ func readConfigMap() (map[string]interface{}, error) {
 
 func getDefaultShell() string {
 	if runtime.GOOS == "windows" {
-		return windowsDefaultShell(exec.LookPath)
+		return windowsDefaultShell(func(name string) (string, error) {
+			if bin, ok := lookPathIn([]string{"PATH=" + loginPATH(), "PATHEXT=" + os.Getenv("PATHEXT")}, name); ok {
+				return bin, nil
+			}
+			return "", exec.ErrNotFound
+		})
 	}
 	shell := os.Getenv("SHELL")
 	if shell == "" {
@@ -311,8 +316,8 @@ func getDefaultShell() string {
 	return shell
 }
 
-// windowsDefaultShell is PowerShell 7 when it is on PATH, else Windows
-// PowerShell, as herdr-core chooses.
+// windowsDefaultShell is PowerShell 7 when it is on the registry's PATH, else
+// Windows PowerShell, as herdr-core chooses.
 func windowsDefaultShell(lookPath func(string) (string, error)) string {
 	if path, err := lookPath("pwsh.exe"); err == nil {
 		return path
