@@ -59,6 +59,23 @@
       "inputs": {
         "GITHUB_AUTHOR_IDS": "{{ github.tesslApp.userId }}"
       }
+    },
+    "write-rfc": {
+      "tags": [
+        "RFC"
+      ],
+      "agent": "claude",
+      "model": "claude-opus-5-5",
+      "skill": "file:tessl-factory#write-rfc",
+      "concurrency": {
+        "keys": [
+          {
+            "key": "write-rfc:github-issue:{{ inputs.GITHUB_ISSUE_NUMBER }}",
+            "limit": 1
+          }
+        ]
+      },
+      "environment": "factory-siglify-agent-pane-implement"
     }
   },
   "triggers": {
@@ -381,6 +398,53 @@
         "debounce": "5m"
       },
       "action": "merge-conflict-sweep"
+    },
+    "write-rfc": {
+      "on": [
+        "github:issues.labeled"
+      ],
+      "when": {
+        "event.label.name": "rfc",
+        "event.issue.state": "open",
+        "event.sender.id": {
+          "in": [
+            575070
+          ]
+        }
+      },
+      "action": {
+        "use": "write-rfc",
+        "inputs": {
+          "GITHUB_ISSUE_LABEL": "rfc",
+          "GITHUB_ISSUE_NUMBER": "{{ event.issue.number }}"
+        }
+      }
+    },
+    "write-rfc-issue-replied": {
+      "on": [
+        "github:issue_comment.created"
+      ],
+      "when": {
+        "isPullRequest": "false",
+        "event.sender.id": {
+          "in": [
+            575070
+          ]
+        },
+        "event.issue.state": "open",
+        "event.issue.labels.*.name": {
+          "any": {
+            "equals": "rfc"
+          }
+        }
+      },
+      "action": {
+        "use": "write-rfc",
+        "inputs": {
+          "GITHUB_ISSUE_LABEL": "rfc",
+          "GITHUB_ISSUE_NUMBER": "{{ event.issue.number }}"
+        }
+      }
     }
   },
   "verify": {
