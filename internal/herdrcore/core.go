@@ -88,6 +88,26 @@ func (c Core) Start(ctx context.Context) error {
 
 // StartEnv is Start with base in place of this process's environment.
 func (c Core) StartEnv(ctx context.Context, base []string) error {
+	return c.StartVia(ctx, base, func(_ context.Context, newCmd func() *exec.Cmd) ([]byte, error) {
+		return RunStart(newCmd)
+	})
+}
+
+// Launch runs the `hc server start` command newCmd makes and returns its
+// combined output. newCmd may be called more than once.
+type Launch func(ctx context.Context, newCmd func() *exec.Cmd) ([]byte, error)
+
+// RunStart is the Launch this package uses by default: on Linux through the
+// user's systemd when it can, elsewhere as a child of the caller.
+func RunStart(newCmd func() *exec.Cmd) ([]byte, error) {
+	return runStart(newCmd)
+}
+
+// StartVia is StartEnv with launch starting the core. The core keeps what
+// the process that starts it carries (a cgroup, a job, macOS's quarantine
+// attribute), and every terminal inherits it, so the host passes a launch
+// that starts it outside the browser where the platform has one.
+func (c Core) StartVia(ctx context.Context, base []string, launch Launch) error {
 	for _, dir := range []string{c.StateDir, c.ConfigDir, c.RunDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
@@ -97,7 +117,7 @@ func (c Core) StartEnv(ctx context.Context, base []string) error {
 			return err
 		}
 	}
-	out, err := runStart(func() *exec.Cmd {
+	out, err := launch(ctx, func() *exec.Cmd {
 		cmd := exec.CommandContext(ctx, c.Binary, "server", "start")
 		cmd.Env = c.Env(base)
 		// A daemon that inherits the output pipe must not hold the start
