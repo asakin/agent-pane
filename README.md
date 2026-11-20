@@ -53,14 +53,17 @@ What differs on Windows:
 - **Durable (preview)** pane tabs reach the bundled core over its named pipe. On Windows the core ends every process a terminal started when the terminal closes.
 - **Quitting the browser** ends Built-in pane tabs, as on Linux.
 
-To uninstall, close the browser and run:
+To uninstall, close the browser and run the following. It first stops the programs run from the install folder, the bundled core among them, which ends any Durable (preview) pane tabs still open, and it removes a skill folder only when it holds the installer's `.agent-pane-managed` marker file:
 
 ```powershell
+$data = "$env:LOCALAPPDATA\agent-pane"
+Get-Process | Where-Object { $_.Path -like "$data\*" } | Stop-Process -Force
 foreach ($k in 'Google\Chrome','Microsoft\Edge','Chromium','BraveSoftware\Brave-Browser') { Remove-Item "HKCU:\Software\$k\NativeMessagingHosts\com.agentpane.native" -ErrorAction SilentlyContinue }
-$bin = "$env:LOCALAPPDATA\agent-pane\bin"
+$bin = "$data\bin"
 $path = [Environment]::GetEnvironmentVariable('Path', 'User')
 [Environment]::SetEnvironmentVariable('Path', (($path -split ';') | Where-Object { $_ -and $_ -ne $bin }) -join ';', 'User')
-Remove-Item -Recurse -Force "$env:LOCALAPPDATA\agent-pane", "$env:USERPROFILE\.claude\skills\agent-pane", "$env:USERPROFILE\.agents\skills\agent-pane"
+foreach ($d in "$env:USERPROFILE\.claude\skills\agent-pane", "$env:USERPROFILE\.agents\skills\agent-pane") { if (Test-Path -LiteralPath "$d\.agent-pane-managed" -PathType Leaf) { Remove-Item -LiteralPath $d -Recurse -Force } }
+Remove-Item -LiteralPath $data -Recurse -Force
 ```
 
 Your config in `%USERPROFILE%\.config\agent-pane\` and the Agent Pane block in `%USERPROFILE%\AGENTS.md` and `CLAUDE.md` are left for you to remove.

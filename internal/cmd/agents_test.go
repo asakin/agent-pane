@@ -53,6 +53,7 @@ func TestAgentExecArgsDoesNotTrap(t *testing.T) {
 func TestSessionDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	if got := sessionDir("/tmp/asked", home+"/agents", true); got != "/tmp/asked" {
 		t.Fatalf("request = %s", got)
 	}

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -119,6 +120,14 @@ func (p *placer) warn(format string, args ...any) {
 }
 
 func (p *placer) run() error {
+	// One run at a time: the steps rebuild fixed staging paths such as
+	// release.new, and an overlapping install or doctor --fix would publish
+	// the other's half-built copy.
+	unlock, err := lockFile(context.Background(), filepath.Join(p.l.dataDir, "place.lock"))
+	if err != nil {
+		return fmt.Errorf("could not lock %s: %w", p.l.dataDir, err)
+	}
+	defer unlock()
 	steps := []func() error{
 		p.keepRelease,
 		p.placeBinary,
@@ -465,12 +474,13 @@ func (p *placer) upsertManaged(file, body string) error {
 	if err != nil {
 		return err
 	}
-	if !bytes.Contains(data, []byte(managedStart)) {
+	found, err := checkManagedMarkers(string(data))
+	if err != nil {
+		return fmt.Errorf("%s %v; left unchanged", file, err)
+	}
+	if !found {
 		p.warn("%s has no Agent Pane block; left unchanged", p.l.show(file))
 		return nil
-	}
-	if !bytes.Contains(data, []byte(managedEnd)) {
-		return fmt.Errorf("%s has a start marker and no end marker", file)
 	}
 	changed, err := writeIfChanged(file, []byte(replaceManagedBlock(string(data), body)))
 	if err != nil {
@@ -480,6 +490,32 @@ func (p *placer) upsertManaged(file, body string) error {
 		p.updated(file)
 	}
 	return nil
+}
+
+// checkManagedMarkers reports whether text has an Agent Pane block, matching
+// marker lines as replaceManagedBlock does, and fails unless every start
+// marker line is followed by an end marker line before the next start, so a
+// stray marker never makes replaceManagedBlock drop the person's lines.
+func checkManagedMarkers(text string) (bool, error) {
+	found, open := false, false
+	for _, line := range strings.Split(text, "\n") {
+		switch strings.TrimSuffix(line, "\r") {
+		case managedStart:
+			if open {
+				return false, errors.New("has a start marker inside an Agent Pane block")
+			}
+			found, open = true, true
+		case managedEnd:
+			if !open {
+				return false, errors.New("has an end marker with no start marker before it")
+			}
+			open = false
+		}
+	}
+	if open {
+		return false, errors.New("has a start marker and no end marker")
+	}
+	return found, nil
 }
 
 // replaceManagedBlock is place.sh's awk program: each line equal to the start
@@ -521,12 +557,10 @@ func (p *placer) syncSkill() error {
 }
 
 func (p *placer) installSkillCopy(from, to string) error {
-	tmp := filepath.Join(p.l.dataDir, "skills", ".agent-pane-copy")
-	if err := os.RemoveAll(tmp); err != nil {
-		return err
-	}
+	parent := filepath.Dir(to)
+	removeSkillStaging(parent)
 	if info, err := os.Lstat(to); err == nil {
-		if _, markerErr := os.Stat(filepath.Join(to, skillMarker)); info.Mode()&fs.ModeSymlink != 0 || markerErr != nil {
+		if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() || !isRegularFile(filepath.Join(to, skillMarker)) {
 			p.warn("%s is not Agent Pane's; left unchanged", p.l.show(to))
 			return nil
 		}
@@ -534,28 +568,68 @@ func (p *placer) installSkillCopy(from, to string) error {
 	if same, _ := sameTree(from, to); same {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return err
 	}
-	// Built in the data folder, marker first, then swapped in, so a run cut
-	// short never leaves an unmarked copy.
-	if err := os.MkdirAll(tmp, 0o755); err != nil {
+	// Built beside the copy it replaces, so the swap is a rename on one
+	// volume, and marker first, so a run cut short never leaves an unmarked
+	// copy.
+	tmp, err := os.MkdirTemp(parent, skillStagingPrefix+"new.*")
+	if err != nil {
 		return err
 	}
+	defer os.RemoveAll(tmp)
 	if err := os.WriteFile(filepath.Join(tmp, skillMarker), []byte(skillMarkerText), 0o644); err != nil {
 		return err
 	}
 	if err := copyTree(from, tmp); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(to); err != nil {
-		return err
+	// The old copy is moved aside, not deleted, until the new one is in.
+	old := ""
+	if _, err := os.Lstat(to); err == nil {
+		aside, err := os.MkdirTemp(parent, skillStagingPrefix+"old.*")
+		if err != nil {
+			return err
+		}
+		old = filepath.Join(aside, filepath.Base(to))
+		if err := os.Rename(to, old); err != nil {
+			os.Remove(aside)
+			return err
+		}
 	}
 	if err := os.Rename(tmp, to); err != nil {
+		if old != "" && os.Rename(old, to) == nil {
+			os.Remove(filepath.Dir(old))
+		}
 		return err
+	}
+	if old != "" {
+		os.RemoveAll(filepath.Dir(old))
 	}
 	p.updated(to)
 	return nil
+}
+
+// skillStagingPrefix names the folders installSkillCopy builds and moves
+// aside in a skills folder. Hidden, so coding agents do not list them.
+const skillStagingPrefix = ".agent-pane-skill-"
+
+// removeSkillStaging deletes the folders a run cut short left in dir.
+func removeSkillStaging(dir string) {
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), skillStagingPrefix) {
+			os.RemoveAll(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
+// isRegularFile reports whether path is a regular file, not a folder or a
+// symlink.
+func isRegularFile(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // writeIfChanged writes data to path through a temporary file when the
