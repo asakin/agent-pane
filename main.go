@@ -12,6 +12,7 @@ var (
 
 func main() {
 	root := cmd.NewCmdRoot(version)
+	root.SetArgs(cmd.HostArgs(os.Args[1:]))
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,15 +42,42 @@ var (
 	keepalivePingTimeout = 20 * time.Second
 )
 
-var configDir = filepath.Join(os.Getenv("HOME"), ".config", "agent-pane")
-var cacheDir = filepath.Join(os.Getenv("HOME"), ".cache", "agent-pane")
-var dataDir = filepath.Join(os.Getenv("HOME"), ".local", "share", "agent-pane")
+// homeDir is the user's home folder: %USERPROFILE% on Windows, $HOME
+// elsewhere.
+var homeDir = userHome(runtime.GOOS, os.Getenv)
+
+var configDir = filepath.Join(homeDir, ".config", "agent-pane")
+var cacheDir = userCacheDir(runtime.GOOS, os.Getenv)
+var dataDir = userDataDir(runtime.GOOS, os.Getenv)
 var shippedAgentsDir = filepath.Join(dataDir, "agents")
 var userAgentsDir = filepath.Join(configDir, "agents")
 
-var legacyConfigDir = filepath.Join(os.Getenv("HOME"), ".config", "tweety")
-var legacyCacheDir = filepath.Join(os.Getenv("HOME"), ".cache", "tweety")
-var legacyDataDir = filepath.Join(os.Getenv("HOME"), ".local", "share", "tweety")
+var legacyConfigDir = filepath.Join(homeDir, ".config", "tweety")
+var legacyCacheDir = filepath.Join(homeDir, ".cache", "tweety")
+var legacyDataDir = filepath.Join(homeDir, ".local", "share", "tweety")
+
+func userHome(goos string, getenv func(string) string) string {
+	if goos == "windows" {
+		return getenv("USERPROFILE")
+	}
+	return getenv("HOME")
+}
+
+// userDataDir is where the installer puts Agent Pane's files:
+// %LOCALAPPDATA%\agent-pane on Windows, ~/.local/share/agent-pane elsewhere.
+func userDataDir(goos string, getenv func(string) string) string {
+	if goos == "windows" {
+		return filepath.Join(getenv("LOCALAPPDATA"), "agent-pane")
+	}
+	return filepath.Join(userHome(goos, getenv), ".local", "share", "agent-pane")
+}
+
+func userCacheDir(goos string, getenv func(string) string) string {
+	if goos == "windows" {
+		return filepath.Join(userDataDir(goos, getenv), "cache")
+	}
+	return filepath.Join(userHome(goos, getenv), ".cache", "agent-pane")
+}
 
 func NewCmdRoot(version string) *cobra.Command {
 	cmd := &cobra.Command{
@@ -78,6 +107,17 @@ func NewCmdRoot(version string) *cobra.Command {
 	)
 
 	return cmd
+}
+
+// HostArgs is the command line to run for args. A browser starts a
+// native-messaging host with the calling extension's origin as the first
+// argument; on Windows the manifest names agent-pane.exe itself, with no
+// wrapper to add "serve", so that call runs serve.
+func HostArgs(args []string) []string {
+	if len(args) > 0 && strings.HasPrefix(args[0], "chrome-extension://") {
+		return []string{"serve"}
+	}
+	return args
 }
 
 func loadConfig() error {
@@ -253,6 +293,9 @@ func readConfigMap() (map[string]interface{}, error) {
 }
 
 func getDefaultShell() string {
+	if runtime.GOOS == "windows" {
+		return windowsDefaultShell(exec.LookPath)
+	}
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		switch runtime.GOOS {
@@ -265,4 +308,13 @@ func getDefaultShell() string {
 		}
 	}
 	return shell
+}
+
+// windowsDefaultShell is PowerShell 7 when it is on PATH, else Windows
+// PowerShell, as herdr-core chooses.
+func windowsDefaultShell(lookPath func(string) (string, error)) string {
+	if path, err := lookPath("pwsh.exe"); err == nil {
+		return path
+	}
+	return "powershell.exe"
 }

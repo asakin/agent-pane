@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -99,11 +100,20 @@ ignore it.`,
 	return cmd
 }
 
+// consoleDevice is the process's own terminal: CONOUT$ is the Windows
+// console's output, as /dev/tty is the controlling terminal elsewhere.
+func consoleDevice(goos string) string {
+	if goos == "windows" {
+		return "CONOUT$"
+	}
+	return "/dev/tty"
+}
+
 // writeStatusReport writes report to the controlling terminal, so it
 // reaches the pane tab even when a coding agent's command tool captures
 // stdout.
 func writeStatusReport(report string) error {
-	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	tty, err := os.OpenFile(consoleDevice(runtime.GOOS), os.O_WRONLY, 0)
 	if err != nil {
 		return fmt.Errorf("no terminal to report to: %w", err)
 	}

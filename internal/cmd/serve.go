@@ -1219,10 +1219,16 @@ func buildTerminalCommand(mode, app string, args []string, cwd string) (*termina
 		if !ok {
 			return nil, fmt.Errorf("unknown app %q", app)
 		}
-		shell := configuredShell()
 		argv := append([]string{agent.Bin}, agent.Args...)
 		argv = append(argv, args...)
-		cmd = newTerminalCommand(shell, agentExecArgs(shell, argv)...)
+		if runtime.GOOS == "windows" {
+			// Windows shells have no login profile that sets PATH, so the
+			// agent runs directly.
+			cmd = newTerminalCommand(argv[0], argv[1:]...)
+		} else {
+			shell := configuredShell()
+			cmd = newTerminalCommand(shell, agentExecArgs(shell, argv)...)
+		}
 	} else {
 		shell := cfg().String("command")
 		if shell == "" {
@@ -1244,14 +1250,12 @@ func sessionDir(requested, configured string, agent bool) string {
 	if dir == "" && agent {
 		dir = strings.TrimSpace(configured)
 	}
-	if dir == "" {
-		return os.Getenv("HOME")
+	home := userHome(runtime.GOOS, os.Getenv)
+	if dir == "" || dir == "~" {
+		return home
 	}
-	if dir == "~" {
-		return os.Getenv("HOME")
-	}
-	if strings.HasPrefix(dir, "~/") {
-		return filepath.Join(os.Getenv("HOME"), dir[2:])
+	if strings.HasPrefix(dir, "~/") || strings.HasPrefix(dir, `~\`) {
+		return filepath.Join(home, dir[2:])
 	}
 	return dir
 }

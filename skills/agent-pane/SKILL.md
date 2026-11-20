@@ -85,6 +85,9 @@ read fails with `not running inside an Agent Pane terminal`, report the message,
 retry it, and suggest that the user press **Send tab** beside the side panel's status
 bar, which pastes the page into the terminal for you.
 
+On Windows, page reading is not available yet: `agent-pane page` fails with `page
+reading is not available on Windows yet`. Do not retry it; suggest **Send tab** instead.
+
 ## 4. Report your status
 
 `agent-pane status` tells the pane tab what you are doing, so the user can see it in

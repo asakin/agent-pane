@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -79,7 +81,7 @@ func loadAgents(shippedDir, userDir string, overrides map[string]*bool, path str
 	readAgentDir(shippedDir, "shipped", byID)
 	readAgentDir(userDir, "user", byID)
 
-	pathEnv := []string{"PATH=" + path}
+	pathEnv := []string{"PATH=" + path, "PATHEXT=" + os.Getenv("PATHEXT")}
 	out := make([]Agent, 0, len(byID))
 	for id, agent := range byID {
 		if bit, ok := overrides[id]; ok {
@@ -208,11 +210,48 @@ func resolveCommand(dir, command string, pathEnv []string) (string, bool) {
 	} else {
 		return "", false
 	}
-	info, err := os.Stat(candidate)
-	if err != nil || info.IsDir() || info.Mode()&0111 == 0 {
-		return "", false
+	return findExecutable(runtime.GOOS, candidate, envValue(pathEnv, "PATHEXT"))
+}
+
+// findExecutable returns path when it is a program this platform runs. On
+// Windows that is path itself when its extension is in pathext, else path
+// with the first extension from pathext that exists, so "claude" finds npm's
+// "claude.cmd".
+func findExecutable(goos, path, pathext string) (string, bool) {
+	for _, candidate := range executableNames(goos, path, pathext) {
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if goos != "windows" && info.Mode()&0111 == 0 {
+			continue
+		}
+		return candidate, true
 	}
-	return candidate, true
+	return "", false
+}
+
+func executableNames(goos, path, pathext string) []string {
+	if goos != "windows" {
+		return []string{path}
+	}
+	if pathext == "" {
+		pathext = ".COM;.EXE;.BAT;.CMD"
+	}
+	var exts []string
+	for _, ext := range strings.Split(pathext, ";") {
+		if ext = strings.TrimSpace(ext); ext != "" {
+			exts = append(exts, strings.ToLower(ext))
+		}
+	}
+	if slices.Contains(exts, strings.ToLower(filepath.Ext(path))) {
+		return []string{path}
+	}
+	out := make([]string, 0, len(exts))
+	for _, ext := range exts {
+		out = append(out, path+ext)
+	}
+	return out
 }
 
 func envValue(env []string, key string) string {
@@ -234,12 +273,9 @@ func lookPathIn(env []string, name string) (string, bool) {
 		if dir == "" {
 			continue
 		}
-		candidate := filepath.Join(dir, name)
-		info, err := os.Stat(candidate)
-		if err != nil || info.IsDir() || info.Mode()&0111 == 0 {
-			continue
+		if bin, ok := findExecutable(runtime.GOOS, filepath.Join(dir, name), envValue(env, "PATHEXT")); ok {
+			return bin, true
 		}
-		return candidate, true
 	}
 	return "", false
 }
@@ -268,8 +304,13 @@ var (
 	loginPathVal  string
 )
 
-// loginPATH is the PATH a login shell would use. The host's own PATH is Chrome's.
+// loginPATH is the PATH a login shell would use. The host's own PATH is
+// Chrome's. Windows shells do not set PATH at login, so there it is the
+// host's own.
 func loginPATH() string {
+	if runtime.GOOS == "windows" {
+		return os.Getenv("PATH")
+	}
 	loginPathOnce.Do(func() {
 		shell := os.Getenv("SHELL")
 		if shell == "" {
