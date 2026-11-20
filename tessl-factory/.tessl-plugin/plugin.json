@@ -1,0 +1,9 @@
+{
+  "name": "siglify/agent-pane-factory",
+  "version": "0.1.0",
+  "description": "Agent Pane's own factory skills: write an RFC for an issue, in the repository's RFC format.",
+  "private": true,
+  "skills": [
+    "skills/write-rfc"
+  ]
+}

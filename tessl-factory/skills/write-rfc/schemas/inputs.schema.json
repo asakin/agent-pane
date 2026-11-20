@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["GITHUB_ISSUE_NUMBER"],
+  "properties": {
+    "GITHUB_ISSUE_NUMBER": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "description": "The number of the issue to write an RFC for, in the repository the run is cloned from."
+    },
+    "GITHUB_ISSUE_LABEL": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The label that hands an issue to this skill. Default: rfc."
+    }
+  }
+}
