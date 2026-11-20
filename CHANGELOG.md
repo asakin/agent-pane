@@ -4,6 +4,8 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-20
+
 ### Fixed
 
 - The macOS binaries are signed and notarized again. In v0.4.0 the signing step found no darwin build and skipped them.
@@ -30,5 +32,6 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 - The macOS binaries in this release are not signed or notarized.
 
-[Unreleased]: https://github.com/asakin/agent-pane/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/asakin/agent-pane/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/asakin/agent-pane/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/asakin/agent-pane/compare/v0.3.0...v0.4.0
