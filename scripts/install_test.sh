@@ -33,6 +33,91 @@ sh "$root/scripts/fetch-herdr-core.sh" "$platform" "$cache"
 cmp "$rel/licenses/herdr-core/THIRD-PARTY-NOTICES" "$cache/licenses/herdr-core/THIRD-PARTY-NOTICES"
 cmp "$rel/libexec/hc" "$cache/libexec/hc"
 
+sum() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | cut -d' ' -f1
+	else
+		shasum -a 256 "$1" | cut -d' ' -f1
+	fi
+}
+
+# The lock: one line a platform, `file` lines only for the Windows build.
+for p in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64; do
+	grep -c "^$p " "$root/scripts/herdr-core.lock" | grep -qx 1
+done
+grep -c '^windows_amd64\.file ' "$root/scripts/herdr-core.lock" | grep -qx 2
+[ "$(grep -c '^[a-z0-9_]*\.file ' "$root/scripts/herdr-core.lock")" = 2 ]
+
+# fetch-herdr-core.sh against local stand-in builds, with a lock that has
+# `file` lines: a Unix build next to them still fetches as before, and the
+# Windows build is laid out on this host.
+fake="$tmp/fake-core"
+mkdir -p "$fake/scripts" "$fake/tar" "$fake/zip/conpty/x64" "$fake/zip/THIRD-PARTY-NOTICES"
+cp "$root/scripts/fetch-herdr-core.sh" "$fake/scripts/"
+printf 'unix core\n' >"$fake/tar/herdr-core"
+printf 'license\n' >"$fake/tar/LICENSE"
+printf 'notices\n' >"$fake/tar/THIRD-PARTY-NOTICES"
+(cd "$fake/tar" && tar -czf "$fake/core.tar.gz" herdr-core LICENSE THIRD-PARTY-NOTICES)
+printf 'windows core\n' >"$fake/zip/herdr-core.exe"
+printf 'dll\n' >"$fake/zip/conpty/conpty.dll"
+printf 'console\n' >"$fake/zip/conpty/x64/OpenConsole.exe"
+printf 'license\n' >"$fake/zip/LICENSE"
+printf 'core notices\n' >"$fake/zip/THIRD-PARTY-NOTICES/herdr-core.txt"
+printf 'conpty notices\n' >"$fake/zip/THIRD-PARTY-NOTICES/conpty.txt"
+printf 'extra\n' >"$fake/zip/README"
+(cd "$fake/zip" && zip -qr "$fake/core.zip" .)
+cat >"$fake/scripts/herdr-core.lock" <<EOF
+# comment
+version 0.0.1
+generation 1
+linux_amd64 file://$fake/core.tar.gz $(sum "$fake/core.tar.gz") $(sum "$fake/tar/herdr-core")
+windows_amd64 file://$fake/core.zip $(sum "$fake/core.zip") $(sum "$fake/zip/herdr-core.exe")
+windows_amd64.file conpty/conpty.dll $(sum "$fake/zip/conpty/conpty.dll")
+windows_amd64.file conpty/x64/OpenConsole.exe $(sum "$fake/zip/conpty/x64/OpenConsole.exe")
+EOF
+fetch() {
+	sh "$fake/scripts/fetch-herdr-core.sh" "$@"
+}
+fetch linux_amd64 "$fake/out-linux"
+cmp "$fake/tar/herdr-core" "$fake/out-linux/libexec/hc"
+[ -x "$fake/out-linux/libexec/hc" ]
+[ ! -e "$fake/out-linux/libexec/conpty" ]
+cmp "$fake/tar/THIRD-PARTY-NOTICES" "$fake/out-linux/licenses/herdr-core/THIRD-PARTY-NOTICES"
+cmp "$fake/scripts/herdr-core.lock" "$fake/out-linux/herdr-core.lock"
+
+win="$fake/out-windows"
+fetch windows_amd64 "$win"
+cmp "$fake/zip/herdr-core.exe" "$win/libexec/hc.exe"
+cmp "$fake/zip/conpty/conpty.dll" "$win/libexec/conpty/conpty.dll"
+cmp "$fake/zip/conpty/x64/OpenConsole.exe" "$win/libexec/conpty/x64/OpenConsole.exe"
+cmp "$fake/zip/LICENSE" "$win/licenses/herdr-core/LICENSE"
+cmp "$fake/zip/THIRD-PARTY-NOTICES/herdr-core.txt" "$win/licenses/herdr-core/THIRD-PARTY-NOTICES/herdr-core.txt"
+cmp "$fake/zip/THIRD-PARTY-NOTICES/conpty.txt" "$win/licenses/herdr-core/THIRD-PARTY-NOTICES/conpty.txt"
+cmp "$fake/scripts/herdr-core.lock" "$win/herdr-core.lock"
+[ ! -e "$win/libexec/hc" ] && [ ! -e "$win/libexec/README" ] && [ ! -e "$win/libexec/herdr-core.exe" ]
+[ -z "$(find "$fake" -name '.herdr-core.*')" ]
+# A complete Windows folder is left as it is, without downloading.
+mv "$fake/core.zip" "$fake/core.zip.away"
+fetch windows_amd64 "$win"
+# A changed ConPTY file is fetched again.
+echo wrong >"$win/libexec/conpty/x64/OpenConsole.exe"
+if fetch windows_amd64 "$win" 2>/dev/null; then
+	echo "fetch kept a wrong ConPTY file without downloading" >&2
+	exit 1
+fi
+mv "$fake/core.zip.away" "$fake/core.zip"
+fetch windows_amd64 "$win"
+cmp "$fake/zip/conpty/x64/OpenConsole.exe" "$win/libexec/conpty/x64/OpenConsole.exe"
+# An archive whose ConPTY file does not match its file line installs nothing.
+sed "s|^\(windows_amd64.file conpty/conpty.dll\) .*|\1 $(sum "$fake/zip/LICENSE")|" "$fake/scripts/herdr-core.lock" >"$fake/lock.new"
+mv "$fake/lock.new" "$fake/scripts/herdr-core.lock"
+if fetch windows_amd64 "$fake/out-bad" 2>"$fake/bad.err"; then
+	echo "fetch accepted a ConPTY file that does not match the lock" >&2
+	exit 1
+fi
+grep -q 'do not match the windows_amd64.file lines' "$fake/bad.err"
+[ ! -e "$fake/out-bad/herdr-core.lock" ] && [ ! -e "$fake/out-bad/libexec/hc.exe" ]
+
 home="$tmp/home"
 if [ "$(uname -s)" = Darwin ]; then
 	chrome="$home/Library/Application Support/Google/Chrome"

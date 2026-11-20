@@ -343,6 +343,8 @@ func readCoreLock(path string) (coreLock, error) {
 		case fields[0] == "generation" && len(fields) == 2:
 		case len(fields) == 4:
 			lock.binaries[fields[0]] = fields[3]
+		case len(fields) == 3 && strings.HasSuffix(fields[0], ".file"):
+			// The other files of a platform's build (Windows' ConPTY).
 		default:
 			return coreLock{}, fmt.Errorf("unexpected line %q", scanner.Text())
 		}

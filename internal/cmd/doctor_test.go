@@ -32,7 +32,9 @@ func testCoreLock() string {
 	sum := sha256.Sum256([]byte(testCore))
 	return "# comment\nversion " + testCoreVersion + "\ngeneration 1\n" +
 		"linux_amd64 https://example.invalid/core.tar.gz 00 " + hex.EncodeToString(sum[:]) + "\n" +
-		"darwin_arm64 https://example.invalid/core.tar.gz 00 " + hex.EncodeToString(sum[:]) + "\n"
+		"darwin_arm64 https://example.invalid/core.tar.gz 00 " + hex.EncodeToString(sum[:]) + "\n" +
+		"windows_amd64 https://example.invalid/core.zip 00 00\n" +
+		"windows_amd64.file conpty/conpty.dll 00\n"
 }
 
 // testEnv is a doctorEnv for a healthy install on goos.
