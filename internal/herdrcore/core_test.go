@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,14 @@ func TestRealCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := []string{"HOME=" + home, "PATH=/usr/bin:/bin", "LANG=C.UTF-8"}
+	// A program that prints ready, then echoes what is typed.
+	argv := []string{"sh", "-c", "echo ready; exec cat"}
+	if runtime.GOOS == "windows" {
+		// Windows programs need SystemRoot and more; Env still makes the
+		// core's HC_* and XDG paths private.
+		base = os.Environ()
+		argv = []string{"cmd.exe", "/d", "/q", "/k", "echo ready"}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -49,8 +58,12 @@ func TestRealCore(t *testing.T) {
 		cmd.Env = core.Env(base)
 		cmd.Run()
 	})
-	for _, dir := range []string{core.StateDir, filepath.Dir(core.Socket)} {
-		if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+	for _, dir := range []string{core.StateDir, core.RunDir} {
+		fi, err := os.Stat(dir)
+		if err == nil && fi.IsDir() && runtime.GOOS == "windows" {
+			continue // no unix modes: the directory inherits its ACL
+		}
+		if err != nil || fi.Mode().Perm() != 0o700 {
 			t.Fatalf("%s: %v %v, want a 0700 directory", dir, fi.Mode(), err)
 		}
 	}
@@ -66,7 +79,7 @@ func TestRealCore(t *testing.T) {
 
 	labels := map[string]string{"agent-pane.pane": "test"}
 	term, err := c.Run(ctx, RunParams{
-		Argv:   []string{"sh", "-c", "echo ready; exec cat"},
+		Argv:   argv,
 		Cwd:    data,
 		Labels: labels,
 		Size:   &Size{Cols: 40, Rows: 10},
