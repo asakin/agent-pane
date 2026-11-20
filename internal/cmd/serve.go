@@ -1242,6 +1242,9 @@ func buildTerminalCommand(mode, app string, args []string, cwd string) (*termina
 		if shell == "" {
 			shell = getDefaultShell()
 		}
+		if runtime.GOOS == "windows" {
+			shell = windowsShellPath(shell, loginPATH(), os.Getenv("PATHEXT"), os.Getenv("SystemRoot"))
+		}
 		cmd = newTerminalCommand(shell, loginShellArgs(shell, cfg().Strings("args"))...)
 	}
 
@@ -1260,6 +1263,27 @@ func buildTerminalCommand(mode, app string, args []string, cwd string) (*termina
 func isBatchFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	return ext == ".cmd" || ext == ".bat"
+}
+
+// windowsShellPath is shell as an absolute path where it can be found. On
+// Windows go-pty looks for a bare program name only in the working folder,
+// never on PATH, so a bare name is looked up in path, and Windows PowerShell
+// falls back to its System32 copy. Any other name not found is returned
+// unchanged, so the start error names it.
+func windowsShellPath(shell, path, pathext, systemRoot string) string {
+	if shell == "" || strings.ContainsAny(shell, `/\:`) {
+		return shell
+	}
+	if bin, ok := lookPathIn([]string{"PATH=" + path, "PATHEXT=" + pathext}, shell); ok {
+		return bin
+	}
+	if name := strings.ToLower(shell); name == "powershell" || name == "powershell.exe" {
+		if systemRoot == "" {
+			systemRoot = `C:\Windows`
+		}
+		return filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	}
+	return shell
 }
 
 // windowsCmdExe is the cmd.exe that runs batch files.

@@ -47,7 +47,7 @@ Then load the extension from `%LOCALAPPDATA%\agent-pane\extensions\chrome` in `c
 
 What differs on Windows:
 
-- **Shell.** With no shell set in Options, a pane tab starts PowerShell 7 (`pwsh.exe`) when it is on `PATH`, else Windows PowerShell. Any shell can be set in Options, such as Git Bash or `cmd.exe`.
+- **Shell.** With no shell set in Options, a pane tab starts PowerShell 7 (`pwsh.exe`) when it is on `PATH`, else Windows PowerShell. Any shell can be set in Options, by full path or by a name on `PATH`, such as Git Bash or `cmd.exe`.
 - **Agents.** The launcher finds agents on `PATH` with `PATHEXT`, so npm's `claude.cmd` is found, and starts them directly rather than through a login shell. That `PATH`, also the one pane tabs get, is the machine and user `Path` from the registry followed by the browser's own, so a program installed while the browser runs is found without restarting it. A `.cmd` or `.bat` agent runs through `cmd.exe`, and arguments for it cannot hold a `"`, a `%` or a line break. An agent installed only as a `.ps1` script is not found.
 - **Page reads.** `agent-pane page` is not available on Windows yet and says so; **Send tab** still works. `agent-pane status` reports through the console.
 - **Durable (preview)** pane tabs reach the bundled core over its named pipe. On Windows the core ends every process a terminal started when the terminal closes.
