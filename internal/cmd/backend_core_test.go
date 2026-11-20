@@ -743,6 +743,42 @@ func TestDurableSessionOutlivesALostSubscription(t *testing.T) {
 	eventually(t, "the session to be reaped", func() bool { return len(h.sessions.List()) == 0 })
 }
 
+func TestCloseWaitsForAReapedDurableSession(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+
+	// Holding the registry's lock keeps the reaped session's record
+	// removal in flight after the session has left the list.
+	unlock, err := lockFile(context.Background(), h.sessions.registry.path+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.finish(core.runs[0].Labels[coreSessionLabel], "t1")
+	eventually(t, "the session to be reaped", func() bool { return len(h.sessions.List()) == 0 })
+
+	closed := make(chan struct{})
+	go func() {
+		h.sessions.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a reaped session was still being torn down")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlock()
+	<-closed
+	records, err := h.sessions.registry.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("records after Close %v", records)
+	}
+}
+
 func TestDurableStatusAndTitleReachTheExtension(t *testing.T) {
 	useBackend(t, terminalBackendDurable)
 	core := newFakeCore()

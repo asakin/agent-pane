@@ -129,9 +129,11 @@ type SessionManager struct {
 	// terminalBackend setting picks it; nil where there is none.
 	durable terminalBackend
 	// closing is set by Close, after which Create refuses new sessions;
-	// guarded by mu. creating counts the Creates still running.
+	// guarded by mu. creating counts the Creates still running, and ending
+	// the sessions removed before Close that are still being torn down.
 	closing  bool
 	creating sync.WaitGroup
+	ending   sync.WaitGroup
 	// pageReads counts page reads in flight across all sessions.
 	pageReads atomic.Int32
 
@@ -618,7 +620,9 @@ func (m *SessionManager) Destroy(id string) error {
 	if ok && !session.isStarted() {
 		ok = false
 	}
+	ending := func() {}
 	if ok {
+		ending = m.endingLocked()
 		delete(m.sessions, id)
 		m.forgetIdlePaneLocked(session.pane)
 	}
@@ -626,9 +630,20 @@ func (m *SessionManager) Destroy(id string) error {
 	if !ok {
 		return fmt.Errorf("invalid tty ID")
 	}
+	defer ending()
 	m.dropTokens(id)
 	session.finalize()
 	return nil
+}
+
+// endingLocked counts a session teardown that starts now, unless Close has
+// begun, and returns what marks it done. Caller holds mu.
+func (m *SessionManager) endingLocked() func() {
+	if m.closing {
+		return func() {}
+	}
+	m.ending.Add(1)
+	return m.ending.Done
 }
 
 // Close lets go of the host's sessions as it exits. Durable (preview)
@@ -636,12 +651,14 @@ func (m *SessionManager) Destroy(id string) error {
 // back; their grants end with this host. Any start the core may have made
 // without saying so is ended. Built-in terminals end with the host's
 // process. Sessions still starting finish starting first, and no new ones
-// start after.
+// start after. Sessions already ending finish ending, their records
+// forgotten, before Close returns.
 func (m *SessionManager) Close() {
 	m.mu.Lock()
 	m.closing = true
 	m.mu.Unlock()
 	m.creating.Wait()
+	m.ending.Wait()
 	m.mu.RLock()
 	var ids []string
 	for id, s := range m.sessions {
@@ -670,7 +687,9 @@ func (m *SessionManager) reap(id string) {
 func (m *SessionManager) remove(id string) {
 	m.mu.Lock()
 	session, ok := m.sessions[id]
+	ending := func() {}
 	if ok {
+		ending = m.endingLocked()
 		delete(m.sessions, id)
 		m.forgetIdlePaneLocked(session.pane)
 	}
@@ -678,6 +697,7 @@ func (m *SessionManager) remove(id string) {
 	if !ok {
 		return
 	}
+	defer ending()
 	m.dropTokens(id)
 	session.finalize()
 }
