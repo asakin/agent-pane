@@ -44,8 +44,9 @@ in `rfcs/` (`0001-herdr-core-backend.md`, `0002-windows-support.md`, and any
 added since) are the examples. Read the README and every RFC in `rfcs/` before
 writing, and match them: the header lines, the section headings and order, the
 use of subsections inside Reference-level explanation, tables where they
-compare options or list checks, the depth of detail, and the plain, factual
-voice. Use the terms of the README glossary, as `AGENTS.md` asks. Headings
+compare options or list checks, and the plain, factual voice. Match their
+format, not their length: an RFC is as long as its change needs, and a small
+change gets a short one. Use the terms of the README glossary, as `AGENTS.md` asks. Headings
 name what the section contains, never a slogan, and sentences state the fact
 directly.
 
