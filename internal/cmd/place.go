@@ -616,8 +616,8 @@ func (p *placer) installSkillCopy(from, to string) error {
 const skillStagingPrefix = ".agent-pane-skill-"
 
 // recoverSkillStaging clears the folders a run cut short left beside to. A
-// copy moved aside goes back to to when to is missing, so it is kept until a
-// new copy is in. Only folders named as installSkillCopy names them that hold
+// copy moved aside goes back to to when to is missing, and is removed only
+// when to is there, so it is kept until a new copy is in. Only folders named as installSkillCopy names them that hold
 // the marker, or nothing, are ours; anything else is left alone.
 func recoverSkillStaging(to string) {
 	parent := filepath.Dir(to)
@@ -635,9 +635,12 @@ func recoverSkillStaging(to string) {
 		case isSkillStaging(e.Name(), "old"):
 			moved := filepath.Join(dir, filepath.Base(to))
 			if info, err := os.Lstat(moved); err == nil && info.IsDir() && isRegularFile(filepath.Join(moved, skillMarker)) {
-				if _, err := os.Lstat(to); errors.Is(err, fs.ErrNotExist) {
+				// When to cannot be looked up, the moved copy stays for a
+				// later run.
+				switch _, err := os.Lstat(to); {
+				case errors.Is(err, fs.ErrNotExist):
 					os.Rename(moved, to)
-				} else {
+				case err == nil:
 					os.RemoveAll(moved)
 				}
 			}
