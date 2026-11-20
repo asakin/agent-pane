@@ -24,7 +24,7 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 ### Changed
 
-- On macOS and Linux the bundled herdr-core starts outside the browser (through the LaunchAgent, or a systemd user scope), so pane tabs no longer inherit the browser's process properties, such as macOS's quarantine mark.
+- The bundled herdr-core starts outside the browser where it can, so pane tabs do not inherit the browser's process properties, such as macOS's quarantine mark: on macOS through the LaunchAgent, and on Linux in a systemd user scope when the user's systemd is reachable. Without the LaunchAgent or a reachable systemd, it starts from the browser as before.
 
 ### Known issues
 
