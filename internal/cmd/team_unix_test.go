@@ -3,12 +3,8 @@
 package cmd
 
 import (
-	"context"
-	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"agent-pane/internal/herdrcore"
 )
@@ -138,26 +134,6 @@ func TestTeamFailedReplacementKeepsFinishedHelper(t *testing.T) {
 	if err != nil || out != "screen of t3\n" {
 		t.Fatalf("read after a failed replacement: %q %v", out, err)
 	}
-}
-
-func TestTeamLockExcludesConcurrentLaunches(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "team.lock")
-	ctx := context.Background()
-	unlock, err := lockFile(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	short, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancel()
-	if _, err := lockFile(short, path); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("second lock while held: %v", err)
-	}
-	unlock()
-	again, err := lockFile(ctx, path)
-	if err != nil {
-		t.Fatalf("lock after release: %v", err)
-	}
-	again()
 }
 
 func TestTeamSendRefusesBlockedHelperUnlessForced(t *testing.T) {

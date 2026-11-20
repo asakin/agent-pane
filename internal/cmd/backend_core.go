@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -799,8 +800,13 @@ func coreEnv(env []string) map[string]string {
 		out[key] = val
 	}
 	home := out["HOME"]
+	if home == "" && runtime.GOOS == "windows" {
+		// HOME is normally unset on Windows; the profile folder is home.
+		home = out["USERPROFILE"]
+	}
 	if home == "" {
-		home = os.Getenv("HOME")
+		// HOME, or USERPROFILE on Windows.
+		home, _ = os.UserHomeDir()
 	}
 	if _, ok := out["XDG_CONFIG_HOME"]; !ok {
 		out["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")

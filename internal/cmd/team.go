@@ -70,7 +70,7 @@ var dialTeamCore = func(ctx context.Context) (teamCore, error) {
 // lockTeam takes the lock helper launches hold while they choose a name
 // and start the helper, and returns its release.
 var lockTeam = func(ctx context.Context) (func(), error) {
-	return lockFile(ctx, filepath.Join(filepath.Dir(herdrcore.Private(dataDir).Socket), "team.lock"))
+	return lockFile(ctx, filepath.Join(herdrcore.Private(dataDir).RunDir, "team.lock"))
 }
 
 // team is one command's view: the calling pane tab's core terminal and the

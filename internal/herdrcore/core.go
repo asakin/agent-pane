@@ -1,6 +1,6 @@
 // Package herdrcore is a client for the private, pinned herdr-core (hc) that
 // Agent Pane bundles. It speaks the core's JSON-RPC protocol on its unix
-// socket, in framed mode, so one connection carries calls and terminal
+// socket (a named pipe on Windows), in framed mode, so one connection carries calls and terminal
 // streams.
 //
 // The host runs terminals in the core when the Durable (preview) terminal
@@ -10,7 +10,6 @@ package herdrcore
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,15 +27,20 @@ const Session = "agent-pane"
 // Core is one private herdr-core install: the binary and the paths its
 // session lives in.
 type Core struct {
-	// Binary is the bundled hc, ~/.local/share/agent-pane/libexec/hc.
+	// Binary is the bundled hc, ~/.local/share/agent-pane/libexec/hc
+	// (libexec\hc.exe on Windows).
 	Binary string
 	// StateDir and ConfigDir are the core's XDG_STATE_HOME and
 	// XDG_CONFIG_HOME, so it never reads or writes a person's own
 	// ~/.config/herdr-core or state.
 	StateDir  string
 	ConfigDir string
-	// Socket is the core's HC_SOCKET, in a 0700 directory of its own. The
-	// core puts its holder sockets beside it.
+	// RunDir is a 0700 directory for the core's run files. On unix it
+	// holds the socket; Agent Pane keeps its own locks there too.
+	RunDir string
+	// Socket is the core's HC_SOCKET: on unix a socket in RunDir, on
+	// Windows a named pipe (see socketPath). The core puts its holder
+	// sockets beside it.
 	Socket string
 }
 
@@ -45,11 +49,13 @@ type Core struct {
 // dataDir/core.
 func Private(dataDir string) Core {
 	dir := filepath.Join(dataDir, "core")
+	run := filepath.Join(dir, "run")
 	return Core{
-		Binary:    filepath.Join(dataDir, "libexec", "hc"),
+		Binary:    filepath.Join(dataDir, "libexec", binaryName),
 		StateDir:  filepath.Join(dir, "state"),
 		ConfigDir: filepath.Join(dir, "config"),
-		Socket:    filepath.Join(dir, "run", "core.sock"),
+		RunDir:    run,
+		Socket:    socketPath(dataDir, run),
 	}
 }
 
@@ -81,7 +87,7 @@ func (c Core) Start(ctx context.Context) error {
 
 // StartEnv is Start with base in place of this process's environment.
 func (c Core) StartEnv(ctx context.Context, base []string) error {
-	for _, dir := range []string{c.StateDir, c.ConfigDir, filepath.Dir(c.Socket)} {
+	for _, dir := range []string{c.StateDir, c.ConfigDir, c.RunDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
@@ -90,9 +96,12 @@ func (c Core) StartEnv(ctx context.Context, base []string) error {
 			return err
 		}
 	}
-	cmd := exec.CommandContext(ctx, c.Binary, "server", "start")
-	cmd.Env = c.Env(base)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := runStart(func() *exec.Cmd {
+		cmd := exec.CommandContext(ctx, c.Binary, "server", "start")
+		cmd.Env = c.Env(base)
+		return cmd
+	})
+	if err != nil {
 		return fmt.Errorf("start herdr-core: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -100,8 +109,7 @@ func (c Core) StartEnv(ctx context.Context, base []string) error {
 
 // Dial connects to the running core and completes the handshake.
 func (c Core) Dial(ctx context.Context) (*Client, error) {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", c.Socket)
+	conn, err := dial(ctx, c.Socket)
 	if err != nil {
 		return nil, fmt.Errorf("connect to herdr-core: %w", err)
 	}

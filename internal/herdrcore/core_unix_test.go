@@ -14,6 +14,7 @@ func TestPrivatePaths(t *testing.T) {
 		Binary:    "/home/u/.local/share/agent-pane/libexec/hc",
 		StateDir:  "/home/u/.local/share/agent-pane/core/state",
 		ConfigDir: "/home/u/.local/share/agent-pane/core/config",
+		RunDir:    "/home/u/.local/share/agent-pane/core/run",
 		Socket:    "/home/u/.local/share/agent-pane/core/run/core.sock",
 	}
 	if c != want {
