@@ -50,7 +50,6 @@ func TestPlaceWindowsInstallsAndIsIdempotent(t *testing.T) {
 		`agent-pane: updated HKCU\Software\Google\Chrome\NativeMessagingHosts\com.agentpane.native`,
 		"agent-pane: updated the user Path",
 		`agent-pane: updated %USERPROFILE%\AGENTS.md`,
-		"doctor report",
 		"agent-pane: installed agent-pane " + winTestVersion,
 	} {
 		if !strings.Contains(out, want) {
@@ -147,6 +146,7 @@ func TestPlaceWindowsUpdate(t *testing.T) {
 	putFile(t, filepath.Join(l.dataDir, "libexec", "conpty", "stale.dll"), "stale")
 	putFile(t, filepath.Join(src, "agent-pane.exe"), "agent-pane.exe 0.4.0")
 	putFile(t, filepath.Join(src, "libexec", "conpty", "conpty.dll"), "conpty.dll 0.4.0")
+	putFile(t, filepath.Join(src, "herdr-core.lock"), strings.Replace(winTestLock(), sha(winTestConpty), sha("conpty.dll 0.4.0"), 1))
 
 	out, _ := placeOnce(t, l, src, reg)
 	for _, want := range []string{

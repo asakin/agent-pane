@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -136,7 +137,45 @@ func testPlacer(t *testing.T, l installLayout, src string, reg userRegistry) (*p
 	return p, &out, &errOut
 }
 
-// windowsDoctor stands in for running the placed binary's doctor.
+// windowsTestEnv is a doctorEnv for a healthy Windows install of l whose
+// registry is reg.
+func windowsTestEnv(l installLayout, reg userRegistry) doctorEnv {
+	return doctorEnv{
+		goos: "windows", goarch: "amd64", version: winTestVersion,
+		pathext:     ".COM;.EXE;.BAT;.CMD",
+		coreVersion: func(string) (string, error) { return "hc " + testCoreVersionWin, nil },
+		registry:    reg,
+		getenv: func(name string) string {
+			if name == "LOCALAPPDATA" {
+				return l.localAppData
+			}
+			return ""
+		},
+	}
+}
+
+// windowsDoctor stands in for running the placed binary's doctor: it runs the
+// checks and fails when one fails, as doctor does.
 func windowsDoctor(l installLayout, reg userRegistry) (string, error) {
-	return "doctor report\n", nil
+	var report bytes.Buffer
+	results := runChecks(l, windowsTestEnv(l, reg))
+	printChecks(&report, results)
+	for _, r := range results {
+		if r.status == checkFail {
+			return report.String(), errors.New("doctor found problems")
+		}
+	}
+	return report.String(), nil
+}
+
+// statuses gives each item its worst result.
+func statuses(results []checkResult) map[string]checkStatus {
+	rank := map[checkStatus]int{"": 0, checkOK: 1, checkWarn: 2, checkFail: 3}
+	worst := map[string]checkStatus{}
+	for _, r := range results {
+		if rank[r.status] > rank[worst[r.item]] {
+			worst[r.item] = r.status
+		}
+	}
+	return worst
 }

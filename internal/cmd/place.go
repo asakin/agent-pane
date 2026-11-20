@@ -139,8 +139,9 @@ func (p *placer) run() error {
 	return p.finish()
 }
 
-// finish runs doctor on the placed binary. A run that changed nothing and
-// passes prints nothing; otherwise doctor's report is shown.
+// finish runs doctor on the placed binary. Its report is shown only when a
+// check fails, so a run that changed nothing prints nothing; the release
+// smoke test relies on that.
 func (p *placer) finish() error {
 	report, err := p.runInstalled("doctor")
 	if err != nil {
@@ -150,7 +151,6 @@ func (p *placer) finish() error {
 	if !p.changed {
 		return nil
 	}
-	io.WriteString(p.out, report)
 	version, err := p.runInstalled("--version")
 	if err != nil {
 		return fmt.Errorf("%s --version: %v", p.l.binary, err)

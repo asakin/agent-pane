@@ -33,8 +33,8 @@ func testCoreLock() string {
 	return "# comment\nversion " + testCoreVersion + "\ngeneration 1\n" +
 		"linux_amd64 https://example.invalid/core.tar.gz 00 " + hex.EncodeToString(sum[:]) + "\n" +
 		"darwin_arm64 https://example.invalid/core.tar.gz 00 " + hex.EncodeToString(sum[:]) + "\n" +
-		"windows_amd64 https://example.invalid/core.zip 00 00\n" +
-		"windows_amd64.file conpty/conpty.dll 00\n"
+		"windows_amd64 https://example.invalid/core.zip 00 " + hex.EncodeToString(sum[:]) + "\n" +
+		"windows_amd64.file conpty/conpty.dll " + hex.EncodeToString(sum[:]) + "\n"
 }
 
 // testEnv is a doctorEnv for a healthy install on goos.
@@ -99,18 +99,6 @@ func healthyInstall(t *testing.T, goos, extensionVersion string) installLayout {
 		writeFile(t, filepath.Join(l.dataDir, "extensions", "chrome", name), release["extensions/chrome/"+name], 0o644)
 	}
 	return l
-}
-
-// statuses gives each item its worst result.
-func statuses(results []checkResult) map[string]checkStatus {
-	rank := map[checkStatus]int{"": 0, checkOK: 1, checkWarn: 2, checkFail: 3}
-	worst := map[string]checkStatus{}
-	for _, r := range results {
-		if rank[r.status] > rank[worst[r.item]] {
-			worst[r.item] = r.status
-		}
-	}
-	return worst
 }
 
 func TestDoctorHealthyInstall(t *testing.T) {
