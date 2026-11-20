@@ -15,7 +15,7 @@ Your coding agents, in Chrome's side panel.
 
 Agent Pane puts a real terminal in Chrome's side panel and starts the coding agents you already use in it: Claude Code, Codex, Pi, OpenCode, Goose, or anything else on your `PATH`. Unlike a vendor's chat app, it is your agents, your tools and your files, running on your machine, in the same window as the page you are working on. When you ask an agent about the page beside it, it can read that page, with your permission.
 
-Runs on macOS and Linux with Chrome and other Chromium browsers (Brave, Edge, Vivaldi, Chromium).
+Runs on macOS, Linux and Windows (x86_64) with Chrome and other Chromium browsers (Brave, Edge, Vivaldi, Chromium). On Windows, Vivaldi and Helium are not registered yet, and agents cannot read the page yet; see [Windows](#windows).
 
 > **Experimental.** Agents run shell commands on your machine with your user account. Read [Security](#security) before using it.
 
@@ -34,6 +34,36 @@ Then add the extension to Chrome. Until the Chrome Web Store listing exists, loa
 3. Open the side panel from the Agent Pane extension icon
 
 The installer is published with each release and installs that release only: it downloads the release's archive for this machine, checks it against the release's `checksums.txt`, and runs the archive's `place.sh`. That script puts the program in `~/.local/bin`, adds `~/.local/bin` to `PATH`, writes the native-messaging manifest for each Chromium browser it finds, installs the [agent skill](#agent-skill), and on macOS starts the LaunchAgent that launches shells independently of Chrome. It also places a private, pinned copy of [herdr-core](https://github.com/herdrdev/herdr-core) at `~/.local/share/agent-pane/libexec/hc`, with its license and notices in `~/.local/share/agent-pane/licenses/herdr-core/`. It is never put on `PATH` or at `~/.local/bin/hc`, so a Herdr install of your own is not touched. Agent Pane runs pane tabs in it only when Options sets **Terminal backend** to Durable (preview); Built-in, the default, does not use it. It keeps a copy of the release in `~/.local/share/agent-pane/release` and ends by running `agent-pane doctor`. Nothing comes from the repository's `main` branch.
+
+### Windows
+
+Install from PowerShell (Windows PowerShell 5.1 or PowerShell 7):
+
+```powershell
+irm https://github.com/asakin/agent-pane/releases/latest/download/install.ps1 | iex
+```
+
+Then load the extension from `%LOCALAPPDATA%\agent-pane\extensions\chrome` in `chrome://extensions` or `edge://extensions`, as above. `install.ps1` downloads the release's Windows zip, checks it against `checksums.txt`, and runs `agent-pane.exe place` from it. That puts everything under `%LOCALAPPDATA%\agent-pane\` with no administrator rights: the program in `bin\agent-pane.exe` (added to your user `Path`; open a new terminal to see it), the native-messaging manifest `com.agentpane.native.json` named by a `HKCU\Software\...\NativeMessagingHosts\com.agentpane.native` registry key for each of Chrome, Edge, Chromium and Brave that you have used, the extension, agents, skill, and the private herdr-core in `libexec\hc.exe` with its ConPTY files. Your config is in `%USERPROFILE%\.config\agent-pane\`. Running the command again updates, and `agent-pane doctor` and `agent-pane doctor --fix` work as on the other platforms.
+
+What differs on Windows:
+
+- **Shell.** With no shell set in Options, a pane tab starts PowerShell 7 (`pwsh.exe`) when it is on `PATH`, else Windows PowerShell. Any shell can be set in Options, such as Git Bash or `cmd.exe`.
+- **Agents.** The launcher finds agents on `PATH` with `PATHEXT`, so npm's `claude.cmd` is found, and starts them directly rather than through a login shell. An agent installed only as a `.ps1` script is not found.
+- **Page reads.** `agent-pane page` is not available on Windows yet and says so; **Send tab** still works. `agent-pane status` reports through the console.
+- **Durable (preview)** pane tabs reach the bundled core over its named pipe. On Windows the core ends every process a terminal started when the terminal closes.
+- **Quitting the browser** ends Built-in pane tabs, as on Linux.
+
+To uninstall, close the browser and run:
+
+```powershell
+foreach ($k in 'Google\Chrome','Microsoft\Edge','Chromium','BraveSoftware\Brave-Browser') { Remove-Item "HKCU:\Software\$k\NativeMessagingHosts\com.agentpane.native" -ErrorAction SilentlyContinue }
+$bin = "$env:LOCALAPPDATA\agent-pane\bin"
+$path = [Environment]::GetEnvironmentVariable('Path', 'User')
+[Environment]::SetEnvironmentVariable('Path', (($path -split ';') | Where-Object { $_ -and $_ -ne $bin }) -join ';', 'User')
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\agent-pane", "$env:USERPROFILE\.claude\skills\agent-pane", "$env:USERPROFILE\.agents\skills\agent-pane"
+```
+
+Your config in `%USERPROFILE%\.config\agent-pane\` and the Agent Pane block in `%USERPROFILE%\AGENTS.md` and `CLAUDE.md` are left for you to remove.
 
 ## Updating
 
@@ -91,7 +121,7 @@ Editing follows VS Code's terminal. On macOS:
 | Cmd+A, Cmd+K | Select all, clear the screen |
 | Page Up/Down, Cmd+Home/End | Scroll by page, to the top or bottom |
 
-On Linux, Ctrl+Backspace and Ctrl+Delete delete by word and Alt+Left/Right move by word. Copy and paste use the browser's normal shortcuts.
+On Linux and Windows, Ctrl+Backspace and Ctrl+Delete delete by word and Alt+Left/Right move by word. Copy and paste use the browser's normal shortcuts.
 
 ## How it works
 
@@ -116,7 +146,7 @@ A page read goes the other way: the program in the pane tab asks the host over a
 
 ## Security
 
-The extension asks for `nativeMessaging`, `scripting`, `tabs`, `sidePanel`, `storage` and access to all sites, the last two being what page reading needs. Everything on your machine runs as your user: a shell in a pane tab can do what you can do, and any other program running as you can read Chrome's profile, run `agent-pane`, or edit the installed files. Agent Pane is not a sandbox. Page content goes only to the terminal that asked for it: over its inherited descriptor, or over its page socket, which checks that the connecting process was started in that terminal. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+The extension asks for `nativeMessaging`, `scripting`, `tabs`, `sidePanel`, `storage` and access to all sites, the last two being what page reading needs. Everything on your machine runs as your user: a shell in a pane tab can do what you can do, and any other program running as you can read Chrome's profile, run `agent-pane`, or edit the installed files. Agent Pane is not a sandbox. Page content goes only to the terminal that asked for it: over its inherited descriptor, or over its page socket, which checks that the connecting process was started in that terminal. On Windows there is no page endpoint yet, so nothing can read the page. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## Where it is going
 
@@ -143,7 +173,7 @@ Changes to the Go program, `agents/` or `skills/` need `scripts/dev-install.sh` 
 
 ### Checks
 
-Every pull request and every push to `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml): extension and Go checks on Ubuntu, Go vet and race tests on macOS, the installer tests on both, and `goreleaser check`. To run the suite manually, open **Actions** → **ci** → **Run workflow**. To run the same checks locally:
+Every pull request and every push to `main` runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml): extension and Go checks on Ubuntu, Go vet and race tests on macOS and Windows, the installer tests on Ubuntu and macOS, the `install.ps1` tests on Windows, and `goreleaser check` with a snapshot build. To run the suite manually, open **Actions** → **ci** → **Run workflow**. To run the same checks locally:
 
 ## Contributing
 
