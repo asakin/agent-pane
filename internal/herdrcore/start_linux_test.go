@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-// fakeSystemdRun puts a systemd-run on PATH that logs its arguments to the
-// returned file and then either runs the command after "--" or, with fail
-// set, refuses the way systemd-run does with no user manager.
+// fakeSystemdRun puts a systemd-run on PATH that logs the arguments of its
+// last run to the returned file and then either runs the command after "--"
+// or, with fail set, refuses the way systemd-run does with no user manager.
 func fakeSystemdRun(t *testing.T, fail bool) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -75,5 +75,19 @@ func TestStartWithoutSystemdRun(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if got := startOut(t); got != "started in agent-pane" {
 		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestStartInAScopeKeepsTheCommandsFailure(t *testing.T) {
+	fakeSystemdRun(t, false)
+	runs := filepath.Join(t.TempDir(), "runs")
+	out, err := runStart(func() *exec.Cmd {
+		return exec.Command("/bin/sh", "-c", "echo run >> "+runs+"; echo hc failed; exit 2")
+	})
+	if err == nil || strings.TrimSpace(string(out)) != "hc failed" {
+		t.Fatalf("runStart = %q, %v; want hc's own failure", out, err)
+	}
+	if b, _ := os.ReadFile(runs); string(b) != "run\n" {
+		t.Fatalf("hc runs = %q, want one", b)
 	}
 }
