@@ -115,7 +115,7 @@ jobs:
   # A broken release config fails here, not when a tag is pushed.
   goreleaser:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -125,3 +125,39 @@ jobs:
           distribution: goreleaser
           version: "~> v2"
           args: check
+      # A snapshot build of every archive, as release.yml builds them.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          cache: "npm"
+          cache-dependency-path: "extension/package-lock.json"
+      - name: Build extension
+        run: npm ci && npm run build
+        working-directory: extension
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Stamp the installers like release.yml
+        run: |
+          mkdir -p .release
+          sed 's/^VERSION=""$/VERSION="v0.0.0"/' install.sh >.release/install.sh
+          grep -qx 'VERSION="v0.0.0"' .release/install.sh
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+      - name: Check the Windows archive
+        run: |
+          zip=$(ls dist/agent-pane-*-windows_amd64.zip)
+          unzip -Z1 "$zip" | sort >windows.txt
+          for f in agent-pane.exe README.md LICENSE instructions.md herdr-core.lock \
+            extensions/chrome/manifest.json agents/enabled.json skills/agent-pane/SKILL.md \
+            libexec/hc.exe libexec/conpty/conpty.dll libexec/conpty/x64/OpenConsole.exe \
+            licenses/herdr-core/LICENSE; do
+            grep -qx "$f" windows.txt || { echo "$zip has no $f"; exit 1; }
+          done
+          grep -q '^licenses/herdr-core/THIRD-PARTY-NOTICES/.' windows.txt || { echo "$zip has no notices"; exit 1; }
+          if grep -E '^(place\.sh|completions/)' windows.txt; then echo "$zip carries Unix files"; exit 1; fi
+          grep -q "  $(basename "$zip")\$" dist/checksums.txt
