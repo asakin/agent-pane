@@ -54,7 +54,7 @@ func testEnv(goos string) doctorEnv {
 // release of the given extension version.
 func healthyInstall(t *testing.T, goos, extensionVersion string) installLayout {
 	t.Helper()
-	l := layoutFor(t.TempDir())
+	l := layoutFor(goos, t.TempDir(), "")
 	release := map[string]string{
 		"agent-pane":                              "binary",
 		"instructions.md":                         "<!-- agent-pane:start -->\n# Agent Pane\n<!-- agent-pane:end -->\n",
@@ -76,7 +76,7 @@ func healthyInstall(t *testing.T, goos, extensionVersion string) installLayout {
 	writeFile(t, filepath.Join(l.dataDir, "licenses", "herdr-core", "THIRD-PARTY-NOTICES"), release["licenses/herdr-core/THIRD-PARTY-NOTICES"], 0o644)
 	writeFile(t, l.binary, "binary", 0o755)
 	writeFile(t, l.host, "#!/bin/sh\nexec "+shQuote(l.binary)+" serve\n", 0o755)
-	browser := browserDirs(goos, l.home)[0]
+	browser := browserDirs(goos, l.home, "")[0]
 	manifest, _ := json.Marshal(map[string]any{
 		"name": nativeHostName, "type": "stdio", "path": l.host,
 		"allowed_origins": []string{extensionOrigin},
@@ -162,11 +162,11 @@ func TestDoctorFindsProblems(t *testing.T) {
 			writeFile(t, l.host, "#!/bin/sh\nexec /elsewhere serve\n", 0o755)
 		}},
 		{name: "manifest points elsewhere", item: "manifest", want: checkFail, damage: func(t *testing.T, l installLayout) {
-			b := browserDirs("linux", l.home)[0]
+			b := browserDirs("linux", l.home, "")[0]
 			writeFile(t, filepath.Join(b.hosts, nativeHostName+".json"), `{"name":"com.agentpane.native","type":"stdio","path":"/elsewhere","allowed_origins":["`+extensionOrigin+`"]}`, 0o644)
 		}},
 		{name: "browser without manifest", item: "manifest", want: checkFail, damage: func(t *testing.T, l installLayout) {
-			os.MkdirAll(browserDirs("linux", l.home)[1].parent, 0o755)
+			os.MkdirAll(browserDirs("linux", l.home, "")[1].parent, 0o755)
 		}},
 		{name: "no browser", item: "manifest", want: checkFail, damage: func(t *testing.T, l installLayout) {
 			os.RemoveAll(filepath.Join(l.home, ".config", "google-chrome"))
