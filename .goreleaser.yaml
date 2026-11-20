@@ -40,6 +40,10 @@ builds:
 notarize:
   macos:
     - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      # The darwin binaries come from the `unix` build. Without this the pipe
+      # looks for a build with the project's name and signs nothing.
+      ids:
+        - unix
       sign:
         certificate: "{{.Env.MACOS_SIGN_P12}}"
         password: "{{.Env.MACOS_SIGN_PASSWORD}}"
