@@ -150,3 +150,6 @@ func main() {
 } finally {
 	Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
+# The last cases leave $LASTEXITCODE non-zero on purpose, and a host such as
+# GitHub's pwsh step exits with it, so a passing run exits 0 itself.
+exit 0
