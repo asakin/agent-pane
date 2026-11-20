@@ -404,7 +404,7 @@
         "github:issues.labeled"
       ],
       "when": {
-        "event.label.name": "rfc",
+        "event.label.name": "tessl-rfc",
         "event.issue.state": "open",
         "event.sender.id": {
           "in": [
@@ -415,7 +415,7 @@
       "action": {
         "use": "write-rfc",
         "inputs": {
-          "GITHUB_ISSUE_LABEL": "rfc",
+          "GITHUB_ISSUE_LABEL": "tessl-rfc",
           "GITHUB_ISSUE_NUMBER": "{{ event.issue.number }}"
         }
       }
@@ -434,16 +434,45 @@
         "event.issue.state": "open",
         "event.issue.labels.*.name": {
           "any": {
-            "equals": "rfc"
+            "equals": "tessl-rfc"
           }
         }
       },
       "action": {
         "use": "write-rfc",
         "inputs": {
-          "GITHUB_ISSUE_LABEL": "rfc",
+          "GITHUB_ISSUE_LABEL": "tessl-rfc",
           "GITHUB_ISSUE_NUMBER": "{{ event.issue.number }}"
         }
+      }
+    },
+    "follow-ticket-changes-issue-unlabelled-rfc": {
+      "on": [
+        "github:issues.unlabeled"
+      ],
+      "when": {
+        "event.sender.id": {
+          "in": [
+            575070
+          ]
+        },
+        "event.label.name": "tessl-rfc"
+      },
+      "action": {
+        "use": "follow-ticket-changes",
+        "inputs": {
+          "TICKET_CHANGE": "taken-back",
+          "GITHUB_ISSUE_LABEL": "tessl-rfc",
+          "GITHUB_ISSUE_NUMBER": "{{ event.issue.number }}"
+        }
+      },
+      "concurrency": {
+        "keys": [
+          {
+            "key": "follow-ticket-changes:github-issue:{{ inputs.GITHUB_ISSUE_NUMBER }}",
+            "limit": 1
+          }
+        ]
       }
     }
   },

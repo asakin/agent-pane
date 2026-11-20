@@ -25,7 +25,7 @@ The **owner** is the issue's first assignee, or, when it has none, its author.
 
 - `.cloud-launch/inputs.json`: `GITHUB_ISSUE_NUMBER` is the issue.
   `GITHUB_ISSUE_LABEL`, when given, is the **trigger label**; without it, the
-  trigger label is `rfc`.
+  trigger label is `tessl-rfc`.
 - `.cloud-launch/trigger-events.json`: the events that started the round. If
   an event's issue (`payload.issue.number`) is not `GITHUB_ISSUE_NUMBER`, or is
   a pull request (`payload.issue.pull_request` exists), stop with no write and

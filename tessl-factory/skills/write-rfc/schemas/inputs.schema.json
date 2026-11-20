@@ -11,7 +11,7 @@
     "GITHUB_ISSUE_LABEL": {
       "type": "string",
       "minLength": 1,
-      "description": "The label that hands an issue to this skill. Default: rfc."
+      "description": "The label that hands an issue to this skill. Default: tessl-rfc."
     }
   }
 }
