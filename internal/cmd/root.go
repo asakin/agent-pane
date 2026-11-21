@@ -105,6 +105,7 @@ func NewCmdRoot(version string) *cobra.Command {
 		NewCmdRead(),
 		NewCmdDoctor(version),
 		NewCmdPlace(),
+		NewCmdSetup(),
 	)
 
 	return cmd
