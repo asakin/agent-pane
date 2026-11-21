@@ -1,7 +1,15 @@
 import type { Terminal } from "@xterm/xterm";
 
 // Match VS Code/Cursor's terminal editing sequences, plus modified Enter for agent CLIs.
-export function bindKeySequences(terminal: Terminal, isMac = /Mac/.test(navigator.platform)) {
+// Copy and paste follow the platform's terminals: Terminal and iTerm2 on macOS,
+// Windows Terminal on Windows, GNOME Terminal on Linux.
+export function bindKeySequences(
+    terminal: Terminal,
+    platform = navigator.platform,
+    writeClipboard = (text: string) => navigator.clipboard.writeText(text),
+) {
+    const isMac = /Mac/.test(platform);
+    const isWindows = /Win/.test(platform);
     const sequences: Record<string, string> = {
         "Shift+Enter": "\x1b[13;2u",
         "Alt+ArrowUp": "\x1b[1;5A",
@@ -37,6 +45,36 @@ export function bindKeySequences(terminal: Terminal, isMac = /Mac/.test(navigato
         "Alt+Meta+PageDown": () => terminal.scrollLines(1),
     } : {};
 
+    // Copy keys copy xterm's selection, and with none either reach the program
+    // (Windows Ctrl+C interrupts) or do nothing. Windows Terminal clears the
+    // selection after Ctrl+C, so a second press interrupts. The selection is
+    // cleared only once the copy succeeded, so a failed copy can be retried.
+    const copy = (clear: boolean) => () => {
+        const text = terminal.getSelection();
+        writeClipboard(text).then(() => {
+            if (clear && terminal.getSelection() === text) {
+                terminal.clearSelection();
+            }
+        }, () => undefined);
+    };
+    // The physical key (event.code) whose press copied. Until that key is
+    // released, its repeats and keyup stay a copy even after the selection is
+    // cleared, other keys or modifiers change in between, or Shift is released
+    // from Ctrl+Shift+C, so holding a copy key never interrupts.
+    let heldCopy: string | undefined;
+    const copyKeys: Record<string, { always: boolean, clear: boolean }> = isMac ? {
+        "Meta+c": { always: false, clear: false },
+    } : isWindows ? {
+        "Ctrl+c": { always: false, clear: true },
+        "Ctrl+Shift+c": { always: true, clear: false },
+    } : {
+        "Ctrl+Shift+c": { always: true, clear: false },
+    };
+    // Paste keys are left to the browser's paste event, which xterm turns into
+    // input (bracketed when the program asked for it). Without this xterm would
+    // send Ctrl+V as ^V on Windows.
+    const pasteKeys = new Set(isMac ? ["Meta+v"] : isWindows ? ["Ctrl+v", "Ctrl+Shift+v"] : ["Ctrl+Shift+v"]);
+
     terminal.attachCustomKeyEventHandler((event) => {
         // Let xterm's composition handling finish IME input before applying shortcuts.
         if (event.isComposing || event.keyCode === 229) {
@@ -46,8 +84,21 @@ export function bindKeySequences(terminal: Terminal, isMac = /Mac/.test(navigato
             ? event.code : event.key.length === 1 ? event.key.toLowerCase() : event.key;
         const combo = (event.ctrlKey ? "Ctrl+" : "") + (event.altKey ? "Alt+" : "")
             + (event.shiftKey ? "Shift+" : "") + (event.metaKey ? "Meta+" : "") + key;
+        if (pasteKeys.has(combo)) {
+            return false;
+        }
+        const copyKey = copyKeys[combo];
+        const held = heldCopy !== undefined && heldCopy === event.code
+            && (event.repeat || event.type !== "keydown");
+        const copying = copyKey && (copyKey.always || held || terminal.hasSelection());
+        if (event.type === "keydown" && !event.repeat && (copying || heldCopy === event.code)) {
+            heldCopy = copying ? event.code : undefined;
+        } else if (event.type === "keyup" && heldCopy === event.code) {
+            heldCopy = undefined;
+        }
         const sequence = sequences[combo];
-        const action = actions[combo]
+        const action = (copying ? (terminal.hasSelection() ? copy(copyKey.clear) : () => undefined) : undefined)
+            ?? actions[combo]
             ?? (terminal.buffer.active.type === "normal" ? scrolling[combo] : undefined)
             ?? (combo === "Escape" && terminal.hasSelection() ? () => terminal.clearSelection() : undefined);
         if (sequence === undefined && !action) {
