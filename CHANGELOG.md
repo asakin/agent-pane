@@ -4,6 +4,8 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-21
+
 ### Added
 
 - Browser control setup: `agent-pane setup browser` and a **Browser control** section in Options report whether Node, npm and the Playwriter CLI are installed and show the setup steps for Playwriter and, optionally, Playwright MCP. The agent skill says when to read with `agent-pane page` and when to act with a browser-control tool. Agent Pane installs neither tool.
@@ -41,6 +43,7 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 - The macOS binaries in this release are not signed or notarized.
 
-[Unreleased]: https://github.com/asakin/agent-pane/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/asakin/agent-pane/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/asakin/agent-pane/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/asakin/agent-pane/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/asakin/agent-pane/compare/v0.3.0...v0.4.0
