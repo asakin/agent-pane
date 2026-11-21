@@ -1,10 +1,13 @@
 import type {
     AgentInfo,
+    RequestBrowserStatus,
     RequestConfigGet,
     RequestConfigSet,
     ResponseConfigGet,
+    ResponseBrowserStatus,
     ResponseConfigSet,
 } from "./rpc";
+import { type BrowserReport, browserReportFromResponse, browserStatusLabel } from "./browserControl";
 import { clampFontSize } from "./fontSize";
 import { normalizeTerminalBackend } from "./terminalBackend";
 import {
@@ -31,6 +34,8 @@ const alphabeticalEl = document.getElementById("agentMenuAlphabetical") as HTMLI
 const blockedInputEl = document.getElementById("blockedDomainInput") as HTMLInputElement;
 const blockedAddEl = document.getElementById("blockedDomainAdd") as HTMLButtonElement;
 const blockedListEl = document.getElementById("blockedDomains") as HTMLUListElement;
+const browserItemsEl = document.getElementById("browserItems") as HTMLUListElement;
+const browserRefreshEl = document.getElementById("browserRefresh") as HTMLButtonElement;
 
 let loadedConfig: Record<string, unknown> = {};
 let knownAgents: AgentInfo[] = [];
@@ -195,6 +200,77 @@ function addBlockedDomain() {
     void editBlockedDomains({ add: parsed.domain }, `Blocked ${parsed.domain} and its subdomains.`);
 }
 
+function renderBrowserMessage(text: string) {
+    const row = document.createElement("li");
+    row.textContent = text;
+    browserItemsEl.replaceChildren(row);
+}
+
+function renderBrowserReport(report: BrowserReport) {
+    browserItemsEl.replaceChildren();
+    for (const item of report.items) {
+        const row = document.createElement("li");
+        row.className = `at-browser__item at-browser__item--${item.status}`;
+        const head = document.createElement("div");
+        head.className = "at-browser__head";
+        const name = document.createElement("strong");
+        name.textContent = item.optional ? `${item.name} (optional)` : item.name;
+        const state = document.createElement("span");
+        state.className = "at-browser__state";
+        state.textContent = browserStatusLabel(item.status);
+        head.append(name, state);
+        row.appendChild(head);
+        if (item.detail) {
+            const detail = document.createElement("p");
+            detail.className = "at-field__help";
+            detail.textContent = item.detail;
+            row.appendChild(detail);
+        }
+        for (const command of item.commands ?? []) {
+            const code = document.createElement("code");
+            code.className = "at-browser__command";
+            code.textContent = command;
+            row.appendChild(code);
+        }
+        if (item.url) {
+            const url = item.url;
+            const open = document.createElement("button");
+            open.type = "button";
+            open.className = "at-btn";
+            open.textContent = item.urlLabel ?? "Open";
+            open.title = url;
+            open.addEventListener("click", () => void browser.tabs.create({ url }));
+            row.appendChild(open);
+        }
+        browserItemsEl.appendChild(row);
+    }
+}
+
+// What is set up for browser control, from the same report as
+// `agent-pane setup browser`. Nothing here installs anything.
+async function loadBrowserStatus() {
+    browserRefreshEl.disabled = true;
+    renderBrowserMessage("Checking…");
+    let resp: ResponseBrowserStatus | undefined;
+    try {
+        resp = await browser.runtime.sendMessage<RequestBrowserStatus, ResponseBrowserStatus>({
+            jsonrpc: "2.0",
+            id: crypto.randomUUID(),
+            method: "browser.status",
+            params: undefined,
+        });
+    } catch {
+        resp = undefined;
+    }
+    const answer = browserReportFromResponse(resp);
+    if ("error" in answer) {
+        renderBrowserMessage(answer.error);
+    } else {
+        renderBrowserReport(answer.report);
+    }
+    browserRefreshEl.disabled = false;
+}
+
 function parseArgs(raw: string): string[] {
     return raw
         .trim()
@@ -278,6 +354,7 @@ async function save(event: Event) {
 }
 
 form.addEventListener("submit", (e) => void save(e));
+browserRefreshEl.addEventListener("click", () => void loadBrowserStatus());
 blockedAddEl.addEventListener("click", addBlockedDomain);
 blockedInputEl.addEventListener("keydown", (e) => {
     // Enter adds the entry instead of submitting the form.
@@ -288,3 +365,4 @@ blockedInputEl.addEventListener("keydown", (e) => {
 });
 
 void load();
+void loadBrowserStatus();

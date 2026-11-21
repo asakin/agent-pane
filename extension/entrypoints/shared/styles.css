@@ -727,6 +727,52 @@ body.at-options {
     word-break: break-all;
 }
 
+.at-options__subtitle {
+    margin: 24px 0 8px;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.at-browser__items {
+    list-style: none;
+    margin: 8px 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    font-size: 13px;
+}
+
+.at-browser__head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.at-browser__state {
+    font-size: 12px;
+    opacity: 0.75;
+}
+
+.at-browser__item--found .at-browser__state {
+    color: #227846;
+    opacity: 1;
+}
+
+.at-browser__command {
+    display: block;
+    margin: 0 0 6px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: rgba(127, 127, 127, 0.12);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    word-break: break-all;
+    user-select: all;
+}
+
 .at-field {
     margin-bottom: 14px;
 }
