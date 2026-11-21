@@ -1152,6 +1152,10 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 		}, nil
 	})
 
+	messagingHost.HandleRequest("browser.status", func(input []byte) (any, error) {
+		return browserStatus(), nil
+	})
+
 	messagingHost.HandleRequest("config.set", func(input []byte) (any, error) {
 		var params struct {
 			Config map[string]any `json:"config"`

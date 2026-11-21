@@ -78,6 +78,9 @@ export type RequestGetXtermConfig = JSONRPCRequestBase<"xterm.getConfig", {
 
 export type RequestConfigGet = JSONRPCRequestBase<"config.get", undefined>;
 
+/** What is set up for browser control: `agent-pane setup browser`'s report. */
+export type RequestBrowserStatus = JSONRPCRequestBase<"browser.status", undefined>;
+
 export type RequestConfigSet = JSONRPCRequestBase<"config.set", {
     config: Record<string, unknown>;
 }>;
@@ -165,4 +168,25 @@ export type ResponseConfigGet = JSONRPCResponseBase<{
 
 export type ResponseConfigSet = JSONRPCResponseBase<{
     config: Record<string, unknown>;
+}>;
+/**
+ * One line of the browser-control report. A program Agent Pane looked for is
+ * "found", "missing" or "outdated"; "action" is a step only the person can
+ * take, such as adding a Chrome extension.
+ */
+export type BrowserItem = {
+    id: string;
+    name: string;
+    optional?: boolean;
+    status: "found" | "missing" | "outdated" | "action";
+    detail: string;
+    commands?: string[];
+    url?: string;
+    urlLabel?: string;
+};
+
+export type ResponseBrowserStatus = JSONRPCResponseBase<{
+    note: string;
+    items: BrowserItem[];
+    nextSteps: string[];
 }>;

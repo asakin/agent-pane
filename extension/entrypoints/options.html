@@ -70,6 +70,15 @@
             <button type="submit" class="at-btn at-btn--primary">Save</button>
         </div>
     </form>
+    <section class="at-browser" aria-labelledby="browserControlTitle">
+        <h2 class="at-options__subtitle" id="browserControlTitle">Browser control</h2>
+        <p class="at-field__help" id="browserNote">Agents can click, type and navigate in your Chrome with a browser-control tool. Agent Pane does not control the browser; these tools do, with their own Chrome extensions and their own warnings. Using one is your choice and your responsibility. Agent Pane's page-read approvals and blocked domains apply to <code>agent-pane page</code> only: an agent with one of these tools can act on any tab you connect to it.</p>
+        <p class="at-field__help">Nothing here installs anything. Run a command in a pane tab, or ask the agent to; only you can add a Chrome extension. <code>agent-pane setup browser</code> prints the same report in a terminal.</p>
+        <ul id="browserItems" class="at-browser__items"></ul>
+        <div class="at-options__actions">
+            <button type="button" id="browserRefresh" class="at-btn">Check again</button>
+        </div>
+    </section>
     <p class="at-options__note" id="config-path"></p>
 </body>
 

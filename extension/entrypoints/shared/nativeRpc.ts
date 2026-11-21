@@ -2,10 +2,15 @@ import type { JSONRPCResponse } from "./rpc";
 
 export const NATIVE_RPC_TIMEOUT_MS = 5000;
 export const CHOOSE_FOLDER_TIMEOUT_MS = 120_000;
+/** browser.status runs each tool's --version, for up to five seconds. */
+export const BROWSER_STATUS_TIMEOUT_MS = 15_000;
 
 export function nativeTimeoutMs(method: string): number {
     if (method === "dialog.chooseFolder") {
         return CHOOSE_FOLDER_TIMEOUT_MS;
+    }
+    if (method === "browser.status") {
+        return BROWSER_STATUS_TIMEOUT_MS;
     }
     return NATIVE_RPC_TIMEOUT_MS;
 }

@@ -4,6 +4,15 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+### Added
+
+- Browser control setup: `agent-pane setup browser` and a **Browser control** section in Options report whether Node, npm and the Playwriter CLI are installed and show the setup steps for Playwriter and, optionally, Playwright MCP. The agent skill says when to read with `agent-pane page` and when to act with a browser-control tool. Agent Pane installs neither tool.
+- `agent-pane --skill` prints the installed Agent Pane skill, and the side panel's **Teach agent** button, beside Send tab, asks the agent in the selected pane tab to run it and follow what it prints.
+
+### Fixed
+
+- Copy and paste in a pane tab follow the platform's terminals: Cmd+C and Cmd+V on macOS; Ctrl+C (with a selection), Ctrl+V and Ctrl+Shift+C/V on Windows; Ctrl+Shift+C/V on Linux. Ctrl+Shift+C no longer opens the browser's element inspector, and Ctrl+V pastes on Windows instead of sending ^V.
+
 ## [0.4.1] - 2026-11-20
 
 ### Fixed
