@@ -909,7 +909,7 @@ body.at-options {
     }
 }
 
-/* Footer row: status bar, then Send tab. */
+/* Footer row: status bar, then Send tab and Teach agent. */
 .at-footer {
     flex: 0 0 auto;
     display: flex;
@@ -961,7 +961,12 @@ body.at-options {
     opacity: 0.7;
 }
 
-.at-send__primary:hover,
+.at-send__primary:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.at-send__primary:not(:disabled):hover,
 .at-send__chevron:hover {
     background: rgba(0, 0, 0, 0.06);
 

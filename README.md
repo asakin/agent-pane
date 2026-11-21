@@ -110,6 +110,8 @@ Run the install command again, then click reload on the Agent Pane card in `chro
 
 The installer also installs a skill that tells coding agents they are inside Agent Pane and what `agent-pane page` offers. It goes into `~/.local/share/agent-pane/skills/agent-pane/`, with copies in `~/.claude/skills/agent-pane/` (Claude Code) and `~/.agents/skills/agent-pane/` (Codex, Pi, OpenCode, Goose, Cursor). Running the installer again refreshes those copies; a folder you created there yourself is left alone. To remove the skill, delete the folders.
 
+`agent-pane --skill` prints the installed skill. The side panel's **Teach agent** button, beside Send tab, types `Run agent-pane --skill and follow what it prints for the rest of this session.` into the selected pane tab and presses Enter, for an agent that did not load the skill on its own.
+
 Every terminal Agent Pane starts has `AGENT_PANE=1` set, so scripts and agents can tell where they are. The skill lists the other variables.
 
 ### Keyboard
