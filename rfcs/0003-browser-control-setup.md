@@ -1,6 +1,6 @@
 # RFC 0003: Browser control setup
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Issue:** #74
 - **Author:** Tessl, for @asakin
 
