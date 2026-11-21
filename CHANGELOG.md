@@ -4,6 +4,10 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+### Fixed
+
+- Copy and paste in a pane tab follow the platform's terminals: Cmd+C and Cmd+V on macOS; Ctrl+C (with a selection), Ctrl+V and Ctrl+Shift+C/V on Windows; Ctrl+Shift+C/V on Linux. Ctrl+Shift+C no longer opens the browser's element inspector, and Ctrl+V pastes on Windows instead of sending ^V.
+
 ## [0.4.1] - 2026-11-20
 
 ### Fixed

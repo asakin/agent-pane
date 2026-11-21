@@ -124,7 +124,17 @@ Editing follows VS Code's terminal. On macOS:
 | Cmd+A, Cmd+K | Select all, clear the screen |
 | Page Up/Down, Cmd+Home/End | Scroll by page, to the top or bottom |
 
-On Linux and Windows, Ctrl+Backspace and Ctrl+Delete delete by word and Alt+Left/Right move by word. Copy and paste use the browser's normal shortcuts.
+On Linux and Windows, Ctrl+Backspace and Ctrl+Delete delete by word and Alt+Left/Right move by word.
+
+Copy, paste and interrupt follow the platform's terminals (Terminal and iTerm2, Windows Terminal, GNOME Terminal):
+
+| Platform | Copy | Paste | Interrupt |
+| --- | --- | --- | --- |
+| macOS | Cmd+C | Cmd+V | Ctrl+C |
+| Windows | Ctrl+C with text selected, Ctrl+Shift+C | Ctrl+V, Ctrl+Shift+V | Ctrl+C with nothing selected |
+| Linux | Ctrl+Shift+C | Ctrl+Shift+V | Ctrl+C |
+
+On Windows, copying with Ctrl+C clears the selection, so pressing it again interrupts. VS Code's terminal differs on Linux, where Ctrl+C copies when text is selected and Ctrl+V pastes; here, as in GNOME Terminal, they reach the program. Copy works on text selected in the terminal; when a program such as an agent's full-screen view takes the mouse, hold Option (macOS) or Shift while dragging to select.
 
 ## How it works
 
