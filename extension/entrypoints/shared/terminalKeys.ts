@@ -57,11 +57,11 @@ export function bindKeySequences(
             }
         }, () => undefined);
     };
-    // The copy key whose press copied; its repeats and keyup stay a copy even
-    // after the selection is cleared, so holding Ctrl+C never interrupts.
-    // Modifier presses in between do not end the hold.
+    // The physical key (event.code) whose press copied. Until that key is
+    // released, its repeats and keyup stay a copy even after the selection is
+    // cleared, other keys or modifiers change in between, or Shift is released
+    // from Ctrl+Shift+C, so holding a copy key never interrupts.
     let heldCopy: string | undefined;
-    const modifiers = new Set(["Control", "Shift", "Alt", "Meta"]);
     const copyKeys: Record<string, { always: boolean, clear: boolean }> = isMac ? {
         "Meta+c": { always: false, clear: false },
     } : isWindows ? {
@@ -88,10 +88,13 @@ export function bindKeySequences(
             return false;
         }
         const copyKey = copyKeys[combo];
-        const held = heldCopy === combo && (event.repeat || event.type !== "keydown");
+        const held = heldCopy !== undefined && heldCopy === event.code
+            && (event.repeat || event.type !== "keydown");
         const copying = copyKey && (copyKey.always || held || terminal.hasSelection());
-        if (event.type === "keydown" && !event.repeat && !modifiers.has(event.key)) {
-            heldCopy = copying ? combo : undefined;
+        if (event.type === "keydown" && !event.repeat && (copying || heldCopy === event.code)) {
+            heldCopy = copying ? event.code : undefined;
+        } else if (event.type === "keyup" && heldCopy === event.code) {
+            heldCopy = undefined;
         }
         const sequence = sequences[combo];
         const action = (copying ? (terminal.hasSelection() ? copy(copyKey.clear) : () => undefined) : undefined)

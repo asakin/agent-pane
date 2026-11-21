@@ -27,8 +27,8 @@ function harness(platform, bufferType = "normal", selected = false, writeClipboa
         key(key, modifiers = {}, type = "keydown") {
             let prevented = false;
             const passThrough = handler({
-                key, type, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false,
-                ...modifiers, preventDefault() { prevented = true; },
+                key, type, code: key.length === 1 ? `Key${key.toUpperCase()}` : key,
+                ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, ...modifiers, preventDefault() { prevented = true; },
             });
             return { passThrough, prevented };
         },
@@ -178,6 +178,27 @@ test("Windows: pressing Shift while holding Ctrl+C after a copy never interrupts
     assert.deepEqual(h.key("c", { ctrlKey: true, repeat: true }), { passThrough: false, prevented: true });
     assert.deepEqual(h.key("c", { ctrlKey: true }, "keyup"), { passThrough: false, prevented: true });
     assert.deepEqual(h.sent, []);
+    assert.deepEqual(h.key("c", { ctrlKey: true }), { passThrough: true, prevented: false });
+});
+
+test("Windows: releasing Shift while holding Ctrl+Shift+C never interrupts", () => {
+    const h = harness(WINDOWS);
+    h.key("C", { ctrlKey: true, shiftKey: true });
+    h.key("Shift", { ctrlKey: true, code: "ShiftLeft" }, "keyup");
+    assert.deepEqual(h.key("c", { ctrlKey: true, repeat: true }), { passThrough: false, prevented: true });
+    assert.deepEqual(h.key("c", { ctrlKey: true }, "keyup"), { passThrough: false, prevented: true });
+    assert.deepEqual(h.sent, []);
+    assert.deepEqual(h.key("c", { ctrlKey: true }), { passThrough: true, prevented: false });
+});
+
+test("Windows: another key pressed while holding Ctrl+C after a copy does not end the hold", async () => {
+    const h = harness(WINDOWS, "normal", true);
+    h.key("c", { ctrlKey: true });
+    await new Promise(setImmediate);
+    h.key("x", {});
+    h.key("x", {}, "keyup");
+    assert.deepEqual(h.key("c", { ctrlKey: true, repeat: true }), { passThrough: false, prevented: true });
+    assert.deepEqual(h.key("c", { ctrlKey: true }, "keyup"), { passThrough: false, prevented: true });
     assert.deepEqual(h.key("c", { ctrlKey: true }), { passThrough: true, prevented: false });
 });
 
