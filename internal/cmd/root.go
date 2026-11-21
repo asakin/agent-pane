@@ -88,8 +88,9 @@ func NewCmdRoot(version string) *cobra.Command {
 		Version:      version,
 		Args:         cobra.ArbitraryArgs,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// Printing the skill needs no configuration.
-			if !cmd.HasParent() && skill {
+			// The root command only prints the skill or help, which need
+			// no configuration.
+			if !cmd.HasParent() {
 				return nil
 			}
 			return loadConfig()

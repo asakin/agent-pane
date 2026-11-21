@@ -662,15 +662,19 @@ async function main() {
             deliver: (bytes) => !!ptyAttach?.sendInput(bytes),
             wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         });
-        if (!sent) {
+        if (sent === "not-sent") {
             notice("Not sent: the pane tab changed or was still reconnecting", true);
+            return;
+        }
+        if (sent === "typed") {
+            notice(`Typed in ${terminalName(tty)} but Enter not pressed: the pane tab changed. Press Enter there, or clear its input before retrying`, true);
             return;
         }
         terminal.scrollToBottom();
         terminal.focus();
     }
 
-    teach = mountTeach(teachHost, () => void teachAgent());
+    teach = mountTeach(teachHost, teachAgent);
     teach.setEnabled(!!activeAgentTab());
     teachHost.hidden = false;
 
