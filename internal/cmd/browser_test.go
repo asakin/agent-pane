@@ -24,6 +24,21 @@ func writeVersionStub(t *testing.T, dir, name, out string) {
 	}
 }
 
+// writeFailingStub puts a program named name in dir that prints out and exits
+// 1, as a shim whose script is missing does.
+func writeFailingStub(t *testing.T, dir, name, out string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	body := "#!/bin/sh\necho '" + out + "'\nexit 1\n"
+	if runtime.GOOS == "windows" {
+		path += ".cmd"
+		body = "@echo off\r\necho " + out + "\r\nexit /b 1\r\n"
+	}
+	if err := os.WriteFile(path, []byte(body), 0755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func browserItemByID(t *testing.T, report browserReport, id string) browserItem {
 	t.Helper()
 	for _, item := range report.Items {
@@ -100,6 +115,43 @@ func TestBrowserReportSaysWhenNodeIsTooOldForPlaywrightMCP(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(report.NextSteps, "\n"), playwriterInstall) {
 		t.Fatalf("next steps leave out the Playwriter install: %q", report.NextSteps)
+	}
+}
+
+func TestBrowserReportSaysWhenAToolDoesNotRun(t *testing.T) {
+	bin := t.TempDir()
+	writeVersionStub(t, bin, "node", "v22.3.0")
+	writeVersionStub(t, bin, "npm", "10.8.1")
+	writeVersionStub(t, bin, "npx", "10.8.1")
+	writeFailingStub(t, bin, "playwriter", "Error: Cannot find module. Node.js v22.3.0")
+
+	report := browserReportFor(bin, ".COM;.EXE;.BAT;.CMD")
+
+	cli := browserItemByID(t, report, "playwriter-cli")
+	if cli.Status != "broken" || !strings.Contains(cli.Detail, "exited with code 1") || strings.Join(cli.Commands, "") != playwriterInstall {
+		t.Fatalf("playwriter item %+v", cli)
+	}
+	if !strings.Contains(strings.Join(report.NextSteps, "\n"), "Reinstall the Playwriter CLI") {
+		t.Fatalf("next steps leave out the Playwriter reinstall: %q", report.NextSteps)
+	}
+}
+
+func TestBrowserReportSaysWhenNodeDoesNotRun(t *testing.T) {
+	bin := t.TempDir()
+	writeFailingStub(t, bin, "node", "v22.3.0")
+	writeVersionStub(t, bin, "npm", "10.8.1")
+	writeVersionStub(t, bin, "npx", "10.8.1")
+
+	report := browserReportFor(bin, ".COM;.EXE;.BAT;.CMD")
+
+	if node := browserItemByID(t, report, "node"); node.Status != "broken" || node.URL != nodeDownloadURL {
+		t.Fatalf("node item %+v", node)
+	}
+	if mcp := browserItemByID(t, report, "playwright-mcp"); mcp.Status != "broken" {
+		t.Fatalf("playwright mcp item %+v", mcp)
+	}
+	if len(report.NextSteps) == 0 || !strings.HasPrefix(report.NextSteps[0], "Reinstall Node.js") {
+		t.Fatalf("first step should be Node: %q", report.NextSteps)
 	}
 }
 

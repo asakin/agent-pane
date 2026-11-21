@@ -310,17 +310,27 @@ var (
 // since the browser started is found, then the host's own.
 func loginPATH() string {
 	if runtime.GOOS == "windows" {
+		return currentLoginPATH()
+	}
+	loginPathOnce.Do(func() {
+		loginPathVal = currentLoginPATH()
+	})
+	return loginPathVal
+}
+
+// currentLoginPATH is loginPATH read again on every call, on Unix too, for a
+// report that must see a tool installed since the host started even when its
+// installer added a directory to the login shell's PATH.
+func currentLoginPATH() string {
+	if runtime.GOOS == "windows" {
 		machine, user := registryPATH()
 		return windowsPATH(machine, user, os.Getenv("PATH"))
 	}
-	loginPathOnce.Do(func() {
-		shell := os.Getenv("SHELL")
-		if shell == "" {
-			shell = getDefaultShell()
-		}
-		loginPathVal = readLoginPATH(shell)
-	})
-	return loginPathVal
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = getDefaultShell()
+	}
+	return readLoginPATH(shell)
 }
 
 func loginPathArgs(shell string) []string {

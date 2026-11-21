@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -38,9 +41,10 @@ const (
 	browserVersionProbeLimit = 5 * time.Second
 )
 
-// browserItem is one line of the report. Status is "found", "missing" or
-// "outdated" for a program Agent Pane looked for, and "action" for a step only
-// the person can take, such as adding a Chrome extension.
+// browserItem is one line of the report. Status is "found", "missing",
+// "broken" (found, but it did not run) or "outdated" for a program Agent Pane
+// looked for, and "action" for a step only the person can take, such as adding
+// a Chrome extension.
 type browserItem struct {
 	ID       string   `json:"id"`
 	Name     string   `json:"name"`
@@ -61,16 +65,25 @@ type browserReport struct {
 }
 
 // browserProgram is a program found on PATH and what its --version printed.
+// Failed says why --version did not run to a clean exit, so a broken install
+// is not shown as a working one.
 type browserProgram struct {
 	Found   bool
 	Path    string
 	Version string
+	Failed  string
+}
+
+// runs reports whether p was found and its --version ran.
+func (p browserProgram) runs() bool {
+	return p.Found && p.Failed == ""
 }
 
 // browserStatus reports the browser-control tools on the PATH the launcher
-// uses to find agents.
+// uses to find agents, read again so Check again sees a tool installed since
+// the host started.
 func browserStatus() browserReport {
-	return browserReportFor(loginPATH(), os.Getenv("PATHEXT"))
+	return browserReportFor(currentLoginPATH(), os.Getenv("PATHEXT"))
 }
 
 func browserReportFor(path, pathext string) browserReport {
@@ -95,16 +108,19 @@ func probeProgram(name, path, pathext string) browserProgram {
 	if !ok {
 		return browserProgram{}
 	}
-	return browserProgram{Found: true, Path: bin, Version: programVersion(bin, path)}
+	version, failed := programVersion(bin, path)
+	return browserProgram{Found: true, Path: bin, Version: version, Failed: failed}
 }
 
 var versionRe = regexp.MustCompile(`v?\d+\.\d+[0-9A-Za-z.+-]*`)
 
 // programVersion is the first version number bin --version prints, or "" when
-// it prints none in time. npm's npm, npx and global commands are .cmd shims on
-// Windows, run through cmd.exe as buildTerminalCommand runs a batch-file
-// agent.
-func programVersion(bin, path string) string {
+// it prints none, and why it failed when it did not start, exit 0 or finish in
+// time. A failure's output is not read for a version: a shim whose script is
+// missing makes node print its own version in the error. npm's npm, npx and
+// global commands are .cmd shims on Windows, run through cmd.exe as
+// buildTerminalCommand runs a batch-file agent.
+func programVersion(bin, path string) (version, failed string) {
 	ctx, cancel := context.WithTimeout(context.Background(), browserVersionProbeLimit)
 	defer cancel()
 	var cmd *exec.Cmd
@@ -112,7 +128,7 @@ func programVersion(bin, path string) string {
 		shell := windowsCmdExe()
 		line, err := batchCommandLine(shell, []string{bin, "--version"})
 		if err != nil {
-			return ""
+			return "", err.Error()
 		}
 		cmd = exec.CommandContext(ctx, shell)
 		setExecCmdLine(cmd, line)
@@ -124,11 +140,25 @@ func programVersion(bin, path string) string {
 	cmd.Stdin = nil
 	// A child left holding the output open does not hold the report up.
 	cmd.WaitDelay = time.Second
-	out, err := cmd.Output()
-	if err != nil && len(out) == 0 {
-		return ""
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	end, err := startProbe(cmd)
+	if err != nil {
+		return "", "it did not start: " + err.Error()
 	}
-	return versionRe.FindString(string(out))
+	err = cmd.Wait()
+	end()
+	switch {
+	case ctx.Err() != nil:
+		return "", fmt.Sprintf("it did not finish within %s", browserVersionProbeLimit)
+	case err != nil:
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return "", fmt.Sprintf("it exited with code %d", exit.ExitCode())
+		}
+		return "", err.Error()
+	}
+	return versionRe.FindString(out.String()), ""
 }
 
 // nodeMajor is the major version in a version such as "v22.3.0", or 0.
@@ -147,6 +177,15 @@ func buildBrowserReport(node, npm, playwriter, npx browserProgram) browserReport
 
 	nodeItem := browserItem{ID: "node", Name: "Node and npm"}
 	switch {
+	case node.Found && !node.runs(), npm.Found && !npm.runs():
+		broken := node
+		if node.runs() {
+			broken = npm
+		}
+		nodeItem.Status = "broken"
+		nodeItem.Detail = fmt.Sprintf("%s did not run (%s): %s", filepath.Base(broken.Path), broken.Path, broken.Failed)
+		nodeItem.URL = nodeDownloadURL
+		nodeItem.URLLabel = "Get Node.js"
 	case node.Found && npm.Found:
 		nodeItem.Status = "found"
 		nodeItem.Detail = fmt.Sprintf("node %s, npm %s", versionOrUnknown(node.Version), versionOrUnknown(npm.Version))
@@ -161,16 +200,27 @@ func buildBrowserReport(node, npm, playwriter, npx browserProgram) browserReport
 		nodeItem.URL = nodeDownloadURL
 		nodeItem.URLLabel = "Get Node.js"
 	}
-	if nodeItem.Status != "found" {
+	switch nodeItem.Status {
+	case "broken":
+		steps = append(steps, "Reinstall Node.js, which includes npm, from "+nodeDownloadURL+", then run `agent-pane setup browser` again.")
+	case "missing":
 		steps = append(steps, "Install Node.js, which includes npm, from "+nodeDownloadURL+", then run `agent-pane setup browser` again.")
 	}
 	items = append(items, nodeItem)
 
 	cli := browserItem{ID: "playwriter-cli", Name: "Playwriter CLI"}
-	if playwriter.Found {
+	switch {
+	case playwriter.runs():
 		cli.Status = "found"
 		cli.Detail = "Installed, " + versionOrUnknown(playwriter.Version)
-	} else {
+	case playwriter.Found:
+		cli.Status = "broken"
+		cli.Detail = fmt.Sprintf("Found at %s, but it did not run: %s. Reinstall it.", playwriter.Path, playwriter.Failed)
+		cli.Commands = []string{playwriterInstall}
+		if nodeItem.Status == "found" {
+			steps = append(steps, "Reinstall the Playwriter CLI in a pane tab: `"+playwriterInstall+"`.")
+		}
+	default:
 		cli.Status = "missing"
 		cli.Detail = "Not installed"
 		cli.Commands = []string{playwriterInstall}
@@ -204,6 +254,9 @@ func buildBrowserReport(node, npm, playwriter, npx browserProgram) browserReport
 	case !node.Found || !npx.Found:
 		mcp.Status = "missing"
 		mcp.Detail = "Needs Node.js " + strconv.Itoa(playwrightMCPNodeMajor) + " or newer and npx, which were not found. " + mcp.Detail
+	case !node.runs() || !npx.runs():
+		mcp.Status = "broken"
+		mcp.Detail = "Needs Node.js " + strconv.Itoa(playwrightMCPNodeMajor) + " or newer and npx, which were found but did not run. " + mcp.Detail
 	case nodeMajor(node.Version) > 0 && nodeMajor(node.Version) < playwrightMCPNodeMajor:
 		mcp.Status = "outdated"
 		mcp.Detail = fmt.Sprintf("Needs Node.js %d or newer; found node %s. ", playwrightMCPNodeMajor, node.Version) + mcp.Detail
@@ -268,6 +321,8 @@ func browserStatusLabel(status string) string {
 		return "found"
 	case "missing":
 		return "not found"
+	case "broken":
+		return "found, but it does not run"
 	case "outdated":
 		return "needs a newer Node.js"
 	default:

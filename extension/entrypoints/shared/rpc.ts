@@ -171,14 +171,15 @@ export type ResponseConfigSet = JSONRPCResponseBase<{
 }>;
 /**
  * One line of the browser-control report. A program Agent Pane looked for is
- * "found", "missing" or "outdated"; "action" is a step only the person can
- * take, such as adding a Chrome extension.
+ * "found", "missing", "broken" (found, but it did not run) or "outdated";
+ * "action" is a step only the person can take, such as adding a Chrome
+ * extension.
  */
 export type BrowserItem = {
     id: string;
     name: string;
     optional?: boolean;
-    status: "found" | "missing" | "outdated" | "action";
+    status: "found" | "missing" | "broken" | "outdated" | "action";
     detail: string;
     commands?: string[];
     url?: string;
