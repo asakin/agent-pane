@@ -4,6 +4,10 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+### Added
+
+- `agent-pane --skill` prints the installed Agent Pane skill, and the side panel's **Teach agent** button, beside Send tab, asks the agent in the selected pane tab to run it and follow what it prints.
+
 ## [0.4.1] - 2026-11-20
 
 ### Fixed
