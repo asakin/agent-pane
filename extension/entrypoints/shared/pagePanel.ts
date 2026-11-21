@@ -79,46 +79,66 @@ export const TEACH_ENTER_DELAY_MS = 100;
 
 /**
  * Mounts the Teach agent button. It starts disabled; setEnabled turns it on
- * while a pane tab is open.
+ * while a pane tab is open. It also stays disabled until the onTeach it
+ * started settles, so two clicks never interleave their prompt and Enter.
  */
-export function mountTeach(host: HTMLElement, onTeach: () => void) {
+export function mountTeach(host: HTMLElement, onTeach: () => Promise<void>) {
     host.className = "at-send at-teach";
     const button = document.createElement("button");
     button.type = "button";
     button.className = "at-send__primary";
     button.textContent = "Teach agent";
     button.title = `Type "${TEACH_PROMPT}" into this pane tab and press Enter.`;
-    button.disabled = true;
+    let enabled = false;
+    let busy = false;
+    const render = () => {
+        button.disabled = !enabled || busy;
+    };
+    render();
     button.addEventListener("click", () => {
-        if (!button.disabled) {
-            onTeach();
+        if (button.disabled) {
+            return;
         }
+        busy = true;
+        render();
+        void onTeach().finally(() => {
+            busy = false;
+            render();
+        });
     });
     host.replaceChildren(button);
     return {
-        setEnabled(enabled: boolean) {
-            button.disabled = !enabled;
+        setEnabled(next: boolean) {
+            enabled = next;
+            render();
         },
     };
 }
+
+/**
+ * How Teach agent ended: "sent" typed the prompt and pressed Enter,
+ * "not-sent" typed nothing, and "typed" typed the prompt but did not press
+ * Enter, so it is still waiting in that pane tab's input.
+ */
+export type TeachResult = "sent" | "not-sent" | "typed";
 
 /**
  * Teach agent's steps after the click: type the prompt, then press Enter on
  * its own, so a program that treats a burst of input as a paste still sees
  * Enter as a key press. Each step checks first that the pane tab it was
  * clicked for is still the attached one, so the prompt never lands in
- * another. Returns whether the prompt was typed and Enter pressed.
+ * another.
  */
 export async function sendTeachPrompt(steps: {
     isDestination(): boolean;
     deliver(bytes: string): boolean;
     wait(ms: number): Promise<void>;
-}): Promise<boolean> {
+}): Promise<TeachResult> {
     if (!steps.isDestination() || !steps.deliver(TEACH_PROMPT)) {
-        return false;
+        return "not-sent";
     }
     await steps.wait(TEACH_ENTER_DELAY_MS);
-    return steps.isDestination() && steps.deliver("\r");
+    return steps.isDestination() && steps.deliver("\r") ? "sent" : "typed";
 }
 
 /**

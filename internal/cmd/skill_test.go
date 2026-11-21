@@ -65,3 +65,20 @@ func TestSkillFlagFailsClearlyWhenNotInstalled(t *testing.T) {
 		t.Fatalf("printed %q", out)
 	}
 }
+
+func TestRootWithoutFlagsPrintsHelpWithoutConfiguration(t *testing.T) {
+	oldConfig := configDir
+	configDir = filepath.Join(t.TempDir(), "unused")
+	t.Cleanup(func() { configDir = oldConfig })
+
+	out, _, err := runRoot(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Usage:") {
+		t.Fatalf("printed %q, want help", out)
+	}
+	if _, err := os.Stat(configDir); !os.IsNotExist(err) {
+		t.Fatalf("plain agent-pane touched the config directory: %v", err)
+	}
+}
