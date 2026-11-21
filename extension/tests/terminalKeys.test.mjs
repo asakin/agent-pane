@@ -6,7 +6,7 @@ const MAC = "MacIntel";
 const WINDOWS = "Win32";
 const LINUX = "Linux x86_64";
 
-function harness(platform, bufferType = "normal", selected = false) {
+function harness(platform, bufferType = "normal", selected = false, writeClipboard = async () => undefined) {
     let handler;
     const sent = [];
     const actions = [];
@@ -16,10 +16,10 @@ function harness(platform, bufferType = "normal", selected = false) {
         buffer: { active: { type: bufferType } }, hasSelection: () => selected,
         getSelection: () => (selected ? "selected text" : ""),
         selectAll: () => actions.push("selectAll"), clear: () => actions.push("clear"),
-        clearSelection: () => actions.push("clearSelection"),
+        clearSelection: () => { selected = false; actions.push("clearSelection"); },
         scrollPages: n => actions.push(["pages", n]), scrollLines: n => actions.push(["lines", n]),
         scrollToTop: () => actions.push("top"), scrollToBottom: () => actions.push("bottom"),
-    }, platform, async text => { copied.push(text); });
+    }, platform, async text => { copied.push(text); await writeClipboard(text); });
     return {
         sent,
         actions,
@@ -65,7 +65,7 @@ test("Mac editing keys send Cursor's sequences exactly once per press", () => {
 test("Mac viewport shortcuts act locally without sending input", () => {
     const h = harness(MAC, "normal", true);
     for (const [key, modifiers] of [
-        ["a", { metaKey: true }], ["K", { metaKey: true }], ["Escape", {}],
+        ["a", { metaKey: true }], ["K", { metaKey: true }],
         ["PageUp", {}], ["PageDown", {}], ["Home", { metaKey: true }], ["End", { metaKey: true }],
         ["PageUp", { metaKey: true, altKey: true }], ["PageDown", { metaKey: true, altKey: true }],
     ]) {
@@ -73,8 +73,9 @@ test("Mac viewport shortcuts act locally without sending input", () => {
             assert.deepEqual(h.key(key, modifiers, type), { passThrough: false, prevented: true });
         }
     }
+    assert.deepEqual(h.key("Escape"), { passThrough: false, prevented: true });
     assert.deepEqual(h.sent, []);
-    assert.deepEqual(h.actions, ["selectAll", "clear", "clearSelection", ["pages", -1], ["pages", 1], "top", "bottom", ["lines", -1], ["lines", 1]]);
+    assert.deepEqual(h.actions, ["selectAll", "clear", ["pages", -1], ["pages", 1], "top", "bottom", ["lines", -1], ["lines", 1], "clearSelection"]);
 });
 
 test("alternate-screen apps retain page navigation; Escape reaches apps without a selection", () => {
@@ -144,20 +145,47 @@ test("Windows: Ctrl+C copies a selection and interrupts otherwise; Ctrl+V and Ct
     assert.deepEqual(press(WINDOWS, "V", { ctrlKey: true, shiftKey: true }, false), toPaste);
 });
 
-test("Windows: copying with Ctrl+C clears the selection, so the next Ctrl+C interrupts", () => {
+test("Windows: copying with Ctrl+C clears the selection, so the next Ctrl+C interrupts", async () => {
     const h = harness(WINDOWS, "normal", true);
-    h.key("c", { ctrlKey: true });
+    assert.deepEqual(h.key("c", { ctrlKey: true }), { passThrough: false, prevented: true });
+    await new Promise(setImmediate);
     assert.deepEqual(h.copied, ["selected text"]);
     assert.deepEqual(h.actions, ["clearSelection"]);
+    assert.deepEqual(h.key("c", { ctrlKey: true }, "keyup"), { passThrough: false, prevented: true });
+    assert.deepEqual(h.key("c", { ctrlKey: true }), { passThrough: true, prevented: false });
+    assert.deepEqual(h.copied, ["selected text"]);
 });
 
-test("Cmd+C and Ctrl+Shift+C keep the selection, as their terminals do", () => {
+test("Windows: holding Ctrl+C after a copy never interrupts", async () => {
+    const h = harness(WINDOWS, "normal", true);
+    h.key("c", { ctrlKey: true });
+    await new Promise(setImmediate);
+    assert.deepEqual(h.actions, ["clearSelection"]);
+    for (let i = 0; i < 3; i++) {
+        assert.deepEqual(h.key("c", { ctrlKey: true, repeat: true }), { passThrough: false, prevented: true });
+    }
+    assert.deepEqual(h.key("c", { ctrlKey: true }, "keyup"), { passThrough: false, prevented: true });
+    assert.deepEqual(h.copied, ["selected text"]);
+    assert.deepEqual(h.key("c", { ctrlKey: true }), { passThrough: true, prevented: false });
+});
+
+test("Windows: a failed Ctrl+C copy keeps the selection, so pressing again retries the copy", async () => {
+    const h = harness(WINDOWS, "normal", true, async () => { throw new Error("denied"); });
+    h.key("c", { ctrlKey: true });
+    await new Promise(setImmediate);
+    assert.deepEqual(h.actions, []);
+    assert.deepEqual(h.key("c", { ctrlKey: true }), { passThrough: false, prevented: true });
+    assert.deepEqual(h.copied, ["selected text", "selected text"]);
+});
+
+test("Cmd+C and Ctrl+Shift+C keep the selection, as their terminals do", async () => {
     for (const [platform, key, modifiers] of [
         [MAC, "c", { metaKey: true }], [WINDOWS, "C", { ctrlKey: true, shiftKey: true }],
         [LINUX, "C", { ctrlKey: true, shiftKey: true }],
     ]) {
         const h = harness(platform, "normal", true);
         h.key(key, modifiers);
+        await new Promise(setImmediate);
         assert.deepEqual(h.actions, [], platform);
     }
 });

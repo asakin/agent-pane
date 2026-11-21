@@ -47,13 +47,19 @@ export function bindKeySequences(
 
     // Copy keys copy xterm's selection, and with none either reach the program
     // (Windows Ctrl+C interrupts) or do nothing. Windows Terminal clears the
-    // selection after Ctrl+C, so a second press interrupts.
+    // selection after Ctrl+C, so a second press interrupts. The selection is
+    // cleared only once the copy succeeded, so a failed copy can be retried.
     const copy = (clear: boolean) => () => {
-        writeClipboard(terminal.getSelection()).catch(() => undefined);
-        if (clear) {
-            terminal.clearSelection();
-        }
+        const text = terminal.getSelection();
+        writeClipboard(text).then(() => {
+            if (clear && terminal.getSelection() === text) {
+                terminal.clearSelection();
+            }
+        }, () => undefined);
     };
+    // The copy key whose press copied; its repeats and keyup stay a copy even
+    // after the selection is cleared, so holding Ctrl+C never interrupts.
+    let heldCopy: string | undefined;
     const copyKeys: Record<string, { always: boolean, clear: boolean }> = isMac ? {
         "Meta+c": { always: false, clear: false },
     } : isWindows ? {
@@ -80,7 +86,11 @@ export function bindKeySequences(
             return false;
         }
         const copyKey = copyKeys[combo];
-        const copying = copyKey && (copyKey.always || terminal.hasSelection());
+        const held = heldCopy === combo && (event.repeat || event.type !== "keydown");
+        const copying = copyKey && (copyKey.always || held || terminal.hasSelection());
+        if (event.type === "keydown" && !event.repeat) {
+            heldCopy = copying ? combo : undefined;
+        }
         const sequence = sequences[combo];
         const action = (copying ? (terminal.hasSelection() ? copy(copyKey.clear) : () => undefined) : undefined)
             ?? actions[combo]
