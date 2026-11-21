@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isHostNotification, isHostRequest } from "../entrypoints/shared/hostConnection.ts";
 import { checkHost, MIN_HOST_PROTOCOL, MIN_HOST_VERSION } from "../entrypoints/shared/hostVersion.ts";
-import { CHOOSE_FOLDER_TIMEOUT_MS, detachOnWindowClose, errorFromResponse, METHOD_NOT_FOUND, NATIVE_RPC_TIMEOUT_MS, nativeTimeoutMs, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
+import { BROWSER_STATUS_TIMEOUT_MS, CHOOSE_FOLDER_TIMEOUT_MS, detachOnWindowClose, errorFromResponse, METHOD_NOT_FOUND, NATIVE_RPC_TIMEOUT_MS, nativeTimeoutMs, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
 
 function fakePort() {
     const listeners = new Set();
@@ -49,6 +49,11 @@ test("the folder picker is allowed to wait", () => {
     assert.equal(nativeTimeoutMs("dialog.chooseFolder"), CHOOSE_FOLDER_TIMEOUT_MS);
     assert.ok(CHOOSE_FOLDER_TIMEOUT_MS > NATIVE_RPC_TIMEOUT_MS);
     assert.equal(nativeTimeoutMs("tty.create"), NATIVE_RPC_TIMEOUT_MS);
+});
+
+test("browser.status may wait for its version probes", () => {
+    assert.equal(nativeTimeoutMs("browser.status"), BROWSER_STATUS_TIMEOUT_MS);
+    assert.ok(BROWSER_STATUS_TIMEOUT_MS > NATIVE_RPC_TIMEOUT_MS);
 });
 
 test("a matching response settles the call and drops the listener", async () => {

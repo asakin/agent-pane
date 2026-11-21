@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -225,4 +226,64 @@ func TestConfigReloadsDoNotRace(t *testing.T) {
 		}
 	}
 	<-done
+}
+
+// The browser.status RPC answers with the browser-control report Options
+// shows.
+func TestBrowserStatusRPC(t *testing.T) {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	host := NewMessagingHost(slog.New(slog.NewTextHandler(io.Discard, nil)), nil, "test")
+	host.SetInput(inR)
+	host.SetOutput(outW)
+	go host.Listen()
+	t.Cleanup(func() {
+		inW.Close()
+		outR.Close()
+	})
+
+	req := []byte(`{"jsonrpc":"2.0","id":"1","method":"browser.status"}`)
+	go func() {
+		_ = binary.Write(inW, binary.LittleEndian, uint32(len(req)))
+		_, _ = inW.Write(req)
+	}()
+	var n uint32
+	if err := binary.Read(outR, binary.LittleEndian, &n); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(outR, buf); err != nil {
+		t.Fatal(err)
+	}
+	var resp struct {
+		ID     string `json:"id"`
+		Result struct {
+			Note  string `json:"note"`
+			Items []struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+				URL    string `json:"url"`
+			} `json:"items"`
+			NextSteps []string `json:"nextSteps"`
+		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(buf, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("browser.status: %s", resp.Error.Message)
+	}
+	ids := []string{}
+	for _, item := range resp.Result.Items {
+		ids = append(ids, item.ID)
+	}
+	if got := strings.Join(ids, " "); got != "node playwriter-cli playwriter-extension playwright-mcp playwright-extension" {
+		t.Fatalf("items %s in %s", got, buf)
+	}
+	if resp.Result.Note == "" || len(resp.Result.NextSteps) == 0 || resp.Result.Items[2].URL != playwriterExtensionURL {
+		t.Fatalf("browser.status answer %s", buf)
+	}
 }
