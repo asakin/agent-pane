@@ -80,6 +80,7 @@ func userCacheDir(goos string, getenv func(string) string) string {
 }
 
 func NewCmdRoot(version string) *cobra.Command {
+	var skill bool
 	cmd := &cobra.Command{
 		Use:          "agent-pane",
 		SilenceUsage: true,
@@ -87,11 +88,23 @@ func NewCmdRoot(version string) *cobra.Command {
 		Version:      version,
 		Args:         cobra.ArbitraryArgs,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// The root command only prints the skill or help, which need
+			// no configuration.
+			if !cmd.HasParent() {
+				return nil
+			}
 			return loadConfig()
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if skill {
+				return printSkill(cmd.OutOrStdout())
+			}
+			return cmd.Help()
 		},
 	}
 
 	cmd.Flags().SetInterspersed(true)
+	cmd.Flags().BoolVar(&skill, "skill", false, "print the Agent Pane skill, which tells a coding agent how to use Agent Pane")
 
 	cmd.AddCommand(
 		NewCmdServe(version),
