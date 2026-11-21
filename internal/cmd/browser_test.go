@@ -163,6 +163,18 @@ func TestNodeMajor(t *testing.T) {
 	}
 }
 
+func TestHeadBufferKeepsOnlyTheFirstBytes(t *testing.T) {
+	b := &headBuffer{limit: 8}
+	for _, chunk := range []string{"v22.3", ".0 and", " more output"} {
+		if n, err := b.Write([]byte(chunk)); n != len(chunk) || err != nil {
+			t.Fatalf("Write(%q) = %d, %v, want %d, nil", chunk, n, err, len(chunk))
+		}
+	}
+	if got := b.String(); got != "v22.3.0 " {
+		t.Fatalf("kept %q, want %q", got, "v22.3.0 ")
+	}
+}
+
 func TestSetupBrowserPrintsTheReport(t *testing.T) {
 	var out bytes.Buffer
 	if err := writeBrowserReport(&out, browserReportFor(t.TempDir(), "")); err != nil {

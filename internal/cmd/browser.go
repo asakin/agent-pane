@@ -39,6 +39,9 @@ const (
 	playwrightMCPNodeMajor   = 20
 	webStoreLabel            = "Open in Chrome Web Store"
 	browserVersionProbeLimit = 5 * time.Second
+	// A version line is short: probe output past this is dropped, so a tool
+	// that keeps printing cannot grow the host's memory until the deadline.
+	browserVersionOutputLimit = 4 << 10
 )
 
 // browserItem is one line of the report. Status is "found", "missing",
@@ -140,8 +143,8 @@ func programVersion(bin, path string) (version, failed string) {
 	cmd.Stdin = nil
 	// A child left holding the output open does not hold the report up.
 	cmd.WaitDelay = time.Second
-	var out bytes.Buffer
-	cmd.Stdout = &out
+	out := &headBuffer{limit: browserVersionOutputLimit}
+	cmd.Stdout = out
 	end, err := startProbe(cmd)
 	if err != nil {
 		return "", "it did not start: " + err.Error()
@@ -159,6 +162,21 @@ func programVersion(bin, path string) (version, failed string) {
 		return "", err.Error()
 	}
 	return versionRe.FindString(out.String()), ""
+}
+
+// headBuffer keeps the first limit bytes written to it and drops the rest. It
+// reports every write as complete, so the program writing is not stopped by a
+// broken pipe and still exits as it would.
+type headBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (b *headBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - b.Len(); room > 0 {
+		b.Buffer.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
 }
 
 // nodeMajor is the major version in a version such as "v22.3.0", or 0.
