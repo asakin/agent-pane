@@ -78,7 +78,7 @@ The act path does not pass through Agent Pane. Playwriter controls a tab only af
 
 | Part | Change |
 | --- | --- |
-| `internal/cmd/browser.go` (new) | `browserStatus()`: finds `node`, `npm`, `playwriter` and `npx` with `findExecutable` on `loginPATH()` (`internal/cmd/agents.go`), runs each with `--version` under a short timeout, and returns the report with the note and next steps |
+| `internal/cmd/browser.go` (new) | `browserStatus()`: finds `node`, `npm`, `playwriter` and `npx` with `findExecutable` on `loginPATH()` (`internal/cmd/agents.go`), runs each with `--version` under a short timeout (a `.cmd` or `.bat` through `batchCommandLine`, see Platforms and testing), and returns the report with the note and next steps |
 | `internal/cmd/root.go` | A `setup` command with a `browser` subcommand in `NewCmdRoot`, printing `browserStatus()` |
 | `internal/cmd/serve.go` | A `browser.status` handler returning `browserStatus()` |
 | `extension/entrypoints/shared/rpc.ts`, `background.ts` | The `browser.status` types and forwarding, as `AGENTS.md` describes for a new RPC |
@@ -102,7 +102,7 @@ Agent Pane redistributes none of them, so no notices are added to the release ar
 
 ### Platforms and testing
 
-The command and RPC behave the same on Windows, macOS and Linux, through `findExecutable`'s `PATHEXT` handling. Go tests use a fake `PATH` with stub `node`, `npm`, `playwriter` and `npx` programs, including missing and too-old cases, so no test downloads anything; `extension/tests/nativeRpc.test.mjs` and `internal/cmd/agents_test.go` cover the RPC.
+The command and RPC behave the same on Windows, macOS and Linux. On Windows, `findExecutable`'s `PATHEXT` handling finds the programs, and npm's `npm`, `npx` and global `playwriter` are `.cmd` shims there, so `browserStatus()` runs a found batch file the way `buildTerminalCommand` runs a batch-file agent: through `windowsCmdExe()` with the command line from `batchCommandLine` (`internal/cmd/serve.go`), not with arguments quoted for programs. Go tests use a fake `PATH` with stub `node`, `npm`, `playwriter` and `npx` programs (`.cmd` stubs on Windows), including missing and too-old cases, so no test downloads anything; `extension/tests/nativeRpc.test.mjs` and `internal/cmd/agents_test.go` cover the RPC.
 
 ## Drawbacks
 
