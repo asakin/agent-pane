@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -169,6 +170,22 @@ func TestHeadBufferKeepsOnlyTheFirstBytes(t *testing.T) {
 		if n, err := b.Write([]byte(chunk)); n != len(chunk) || err != nil {
 			t.Fatalf("Write(%q) = %d, %v, want %d, nil", chunk, n, err, len(chunk))
 		}
+	}
+	if got := b.String(); got != "v22.3.0 " {
+		t.Fatalf("kept %q, want %q", got, "v22.3.0 ")
+	}
+}
+
+// os/exec copies a program's stdout with io.Copy, which prefers the
+// destination's ReadFrom: the limit must hold on that path too.
+func TestHeadBufferKeepsTheLimitThroughIoCopy(t *testing.T) {
+	if _, ok := any(&headBuffer{}).(io.ReaderFrom); ok {
+		t.Fatal("headBuffer has a ReadFrom, which io.Copy would use instead of the capped Write")
+	}
+	b := &headBuffer{limit: 8}
+	src := io.LimitReader(strings.NewReader(strings.Repeat("v22.3.0 ", 1<<12)), 8<<12)
+	if n, err := io.Copy(b, src); n != 8<<12 || err != nil {
+		t.Fatalf("io.Copy = %d, %v, want %d, nil", n, err, 8<<12)
 	}
 	if got := b.String(); got != "v22.3.0 " {
 		t.Fatalf("kept %q, want %q", got, "v22.3.0 ")

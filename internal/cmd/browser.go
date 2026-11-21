@@ -166,18 +166,22 @@ func programVersion(bin, path string) (version, failed string) {
 
 // headBuffer keeps the first limit bytes written to it and drops the rest. It
 // reports every write as complete, so the program writing is not stopped by a
-// broken pipe and still exits as it would.
+// broken pipe and still exits as it would. The buffer is a named field, not
+// embedded: an embedded bytes.Buffer would give headBuffer its unbounded
+// ReadFrom, which the io.Copy in os/exec uses instead of Write.
 type headBuffer struct {
-	bytes.Buffer
+	buf   bytes.Buffer
 	limit int
 }
 
 func (b *headBuffer) Write(p []byte) (int, error) {
-	if room := b.limit - b.Len(); room > 0 {
-		b.Buffer.Write(p[:min(len(p), room)])
+	if room := b.limit - b.buf.Len(); room > 0 {
+		b.buf.Write(p[:min(len(p), room)])
 	}
 	return len(p), nil
 }
+
+func (b *headBuffer) String() string { return b.buf.String() }
 
 // nodeMajor is the major version in a version such as "v22.3.0", or 0.
 func nodeMajor(version string) int {
