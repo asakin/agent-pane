@@ -59,7 +59,9 @@ export function bindKeySequences(
     };
     // The copy key whose press copied; its repeats and keyup stay a copy even
     // after the selection is cleared, so holding Ctrl+C never interrupts.
+    // Modifier presses in between do not end the hold.
     let heldCopy: string | undefined;
+    const modifiers = new Set(["Control", "Shift", "Alt", "Meta"]);
     const copyKeys: Record<string, { always: boolean, clear: boolean }> = isMac ? {
         "Meta+c": { always: false, clear: false },
     } : isWindows ? {
@@ -88,7 +90,7 @@ export function bindKeySequences(
         const copyKey = copyKeys[combo];
         const held = heldCopy === combo && (event.repeat || event.type !== "keydown");
         const copying = copyKey && (copyKey.always || held || terminal.hasSelection());
-        if (event.type === "keydown" && !event.repeat) {
+        if (event.type === "keydown" && !event.repeat && !modifiers.has(event.key)) {
             heldCopy = copying ? combo : undefined;
         }
         const sequence = sequences[combo];

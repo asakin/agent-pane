@@ -169,6 +169,18 @@ test("Windows: holding Ctrl+C after a copy never interrupts", async () => {
     assert.deepEqual(h.key("c", { ctrlKey: true }), { passThrough: true, prevented: false });
 });
 
+test("Windows: pressing Shift while holding Ctrl+C after a copy never interrupts", async () => {
+    const h = harness(WINDOWS, "normal", true);
+    h.key("c", { ctrlKey: true });
+    await new Promise(setImmediate);
+    h.key("Shift", { ctrlKey: true, shiftKey: true });
+    h.key("Shift", { ctrlKey: true }, "keyup");
+    assert.deepEqual(h.key("c", { ctrlKey: true, repeat: true }), { passThrough: false, prevented: true });
+    assert.deepEqual(h.key("c", { ctrlKey: true }, "keyup"), { passThrough: false, prevented: true });
+    assert.deepEqual(h.sent, []);
+    assert.deepEqual(h.key("c", { ctrlKey: true }), { passThrough: true, prevented: false });
+});
+
 test("Windows: a failed Ctrl+C copy keeps the selection, so pressing again retries the copy", async () => {
     const h = harness(WINDOWS, "normal", true, async () => { throw new Error("denied"); });
     h.key("c", { ctrlKey: true });
