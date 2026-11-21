@@ -35,6 +35,13 @@ test("only https links are offered", () => {
     assert.equal(got.report.items[1].status, "action");
 });
 
+test("a tool that was found but does not run keeps its state", () => {
+    const got = browserReportFromResponse(answer({
+        items: [{ id: "playwriter-cli", name: "Playwriter CLI", status: "broken", detail: "it exited with code 1", commands: ["npm i -g playwriter"] }],
+    }));
+    assert.equal(got.report.items[0].status, "broken");
+});
+
 test("a host without browser.status asks for an update", () => {
     assert.deepEqual(
         browserReportFromResponse({ jsonrpc: "2.0", id: "1", error: { code: -32601, message: "Method not found" } }),
@@ -50,6 +57,7 @@ test("a host without browser.status asks for an update", () => {
 test("each state has a label", () => {
     assert.equal(browserStatusLabel("found"), "Found");
     assert.equal(browserStatusLabel("missing"), "Not found");
+    assert.equal(browserStatusLabel("broken"), "Found, but does not run");
     assert.equal(browserStatusLabel("outdated"), "Needs a newer Node.js");
     assert.equal(browserStatusLabel("action"), "Set up yourself");
 });

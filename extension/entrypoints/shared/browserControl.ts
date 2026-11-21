@@ -7,9 +7,11 @@ export type BrowserReport = {
     nextSteps: string[];
 };
 
-export const BROWSER_HOST_OUTDATED = "The Agent Pane program on this computer is older than this extension and cannot report browser control. Run the install command, then reopen Options.";
+// The running host keeps its old binary until its connection ends, which
+// reopening Options does not do; quitting Chrome does.
+export const BROWSER_HOST_OUTDATED = "The Agent Pane program on this computer is older than this extension and cannot report browser control. Run the install command, then quit and reopen Chrome so the updated program starts.";
 
-const STATUSES = new Set(["found", "missing", "outdated", "action"]);
+const STATUSES = new Set(["found", "missing", "broken", "outdated", "action"]);
 
 // Only https links are opened, so a report cannot open another kind of page.
 function httpsUrl(value: unknown): string | undefined {
@@ -69,6 +71,8 @@ export function browserStatusLabel(status: BrowserItem["status"]): string {
             return "Found";
         case "missing":
             return "Not found";
+        case "broken":
+            return "Found, but does not run";
         case "outdated":
             return "Needs a newer Node.js";
         default:
