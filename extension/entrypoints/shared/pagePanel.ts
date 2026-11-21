@@ -1,10 +1,10 @@
 /**
  * Side panel controls for page reading: the Send tab button and its format
  * menu, the approval prompt for an agent's read, and the short notice shown
- * after each read.
+ * after each read. Also the Teach agent button beside Send tab.
  */
-import { type ApprovalChoice, type ApproveMessage, SEND_FORMATS, createApprovalQueue } from "./pageAccess";
-import type { PageFormat } from "./pageContent";
+import { type ApprovalChoice, type ApproveMessage, SEND_FORMATS, createApprovalQueue } from "./pageAccess.ts";
+import type { PageFormat } from "./pageContent.ts";
 
 export type SendTabRequest = {
     type: "agent-pane.send-tab";
@@ -69,6 +69,56 @@ export function mountSendTab(host: HTMLElement, onSend: (format: PageFormat) => 
         document.addEventListener("pointerdown", outside, true);
         (menu.firstElementChild as HTMLElement | null)?.focus();
     });
+}
+
+/** What Teach agent types into the selected pane tab before pressing Enter. */
+export const TEACH_PROMPT = "Run agent-pane --skill and follow what it prints for the rest of this session.";
+
+/** How long Teach agent waits between typing the prompt and pressing Enter. */
+export const TEACH_ENTER_DELAY_MS = 100;
+
+/**
+ * Mounts the Teach agent button. It starts disabled; setEnabled turns it on
+ * while a pane tab is open.
+ */
+export function mountTeach(host: HTMLElement, onTeach: () => void) {
+    host.className = "at-send at-teach";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "at-send__primary";
+    button.textContent = "Teach agent";
+    button.title = `Type "${TEACH_PROMPT}" into this pane tab and press Enter.`;
+    button.disabled = true;
+    button.addEventListener("click", () => {
+        if (!button.disabled) {
+            onTeach();
+        }
+    });
+    host.replaceChildren(button);
+    return {
+        setEnabled(enabled: boolean) {
+            button.disabled = !enabled;
+        },
+    };
+}
+
+/**
+ * Teach agent's steps after the click: type the prompt, then press Enter on
+ * its own, so a program that treats a burst of input as a paste still sees
+ * Enter as a key press. Each step checks first that the pane tab it was
+ * clicked for is still the attached one, so the prompt never lands in
+ * another. Returns whether the prompt was typed and Enter pressed.
+ */
+export async function sendTeachPrompt(steps: {
+    isDestination(): boolean;
+    deliver(bytes: string): boolean;
+    wait(ms: number): Promise<void>;
+}): Promise<boolean> {
+    if (!steps.isDestination() || !steps.deliver(TEACH_PROMPT)) {
+        return false;
+    }
+    await steps.wait(TEACH_ENTER_DELAY_MS);
+    return steps.isDestination() && steps.deliver("\r");
 }
 
 /**

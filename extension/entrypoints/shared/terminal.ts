@@ -43,7 +43,7 @@ import {
 import type { PageFormat } from "./pageContent";
 import { assertTabNotBlocked, isApproveMessage, isCancelMessage, isReadNotice, pasteBytes, readTabDocument, sendTabContent } from "./pageAccess";
 import { blockedDomainsFromConfig } from "./blockedDomains";
-import { createApprovalPrompts, createReadNotice, mountSendTab } from "./pagePanel";
+import { createApprovalPrompts, createReadNotice, mountSendTab, mountTeach, sendTeachPrompt } from "./pagePanel";
 import { isOwnExtensionPage } from "./sender";
 import { describeUrl } from "./tabLock";
 import { type PaneStatus, isStatusMessage, parseStatus } from "./paneStatus";
@@ -387,9 +387,10 @@ async function main() {
     const strip = document.getElementById("tab-strip");
     const statusBar = document.getElementById("status-bar");
     const sendTabHost = document.getElementById("send-tab");
+    const teachHost = document.getElementById("teach-agent");
     const approveHost = document.getElementById("page-approve");
     const noticeHost = document.getElementById("page-notice");
-    if (!strip || !statusBar || !sendTabHost || !approveHost || !noticeHost) {
+    if (!strip || !statusBar || !sendTabHost || !teachHost || !approveHost || !noticeHost) {
         showSetup("Tab strip missing from side panel");
         return;
     }
@@ -513,6 +514,7 @@ async function main() {
     // or lookup is in flight.
     let shownAgentId: string | undefined;
     let statusGen = 0;
+    let teach: ReturnType<typeof mountTeach> | undefined;
 
     const activeAgentTab = (): WindowTab | undefined =>
         state?.tabs.find((tab) => tab.id === state!.activeId);
@@ -539,6 +541,7 @@ async function main() {
         shownChromeTabId = chromeTab?.id;
         shownAgentId = agentTab?.id;
         renderStatusBar(statusBar!, agentTab, chromeTab);
+        teach?.setEnabled(!!agentTab);
     }
 
     async function updateLocks(next: WindowTabState) {
@@ -644,6 +647,32 @@ async function main() {
 
     mountSendTab(sendTabHost, (format) => void sendTab(format));
     sendTabHost.hidden = false;
+
+    // Teach agent types a fixed prompt into the selected pane tab and
+    // presses Enter, with the same destination checks as Send tab.
+    async function teachAgent() {
+        const tty = activeAgentTab()?.id;
+        if (!tty) {
+            return;
+        }
+        const gen = switchGen;
+        const sent = await sendTeachPrompt({
+            isDestination: () => !!state && state.activeId === tty && activeTtyId === tty
+                && gen === switchGen && ws?.readyState === WebSocket.OPEN && !!ptyAttach,
+            deliver: (bytes) => !!ptyAttach?.sendInput(bytes),
+            wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        });
+        if (!sent) {
+            notice("Not sent: the pane tab changed or was still reconnecting", true);
+            return;
+        }
+        terminal.scrollToBottom();
+        terminal.focus();
+    }
+
+    teach = mountTeach(teachHost, () => void teachAgent());
+    teach.setEnabled(!!activeAgentTab());
+    teachHost.hidden = false;
 
     browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!isOwnExtensionPage(sender, browser.runtime.id, browser.runtime.getURL("/"))) {
