@@ -576,6 +576,10 @@ func TestDurableBackendMapsTTYCalls(t *testing.T) {
 	if run.Labels[coreSessionLabel] != publicID("session", ep.ID) || run.Labels[corePaneLabel] != publicID("tab", ep.Pane) {
 		t.Fatalf("labels %v", run.Labels)
 	}
+	// One Herdr space for every pane tab, one Herdr tab each.
+	if run.Labels[herdrSpaceLabel] != herdrSpaceID || run.Labels[herdrTabLabel] != "tb"+strings.TrimPrefix(publicID("tab", ep.Pane), "tab-") {
+		t.Fatalf("herdr labels %v", run.Labels)
+	}
 	for _, v := range run.Labels {
 		if v == ep.Pane || v == ep.ID {
 			t.Fatal("a secret host id is in the core's labels")

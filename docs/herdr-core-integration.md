@@ -153,6 +153,8 @@ Candidate labels:
 
 Herdr app uses labels such as `herdr.space=<id>` and `herdr.tab=<id>` for its own UI. Do not use those unless intentionally interoperating with the Herdr app.
 
+Durable pane tabs do interoperate: each is started with `herdr.space` set to one fixed id shared by all pane tabs and `herdr.tab` set to `tb` plus the hex of its `agent-pane.pane` id (`internal/cmd/backend_core.go`). A Herdr app whose core has Agent Pane's core added as a machine (`hc machine add --via <a command that runs the bundled hc connect on Agent Pane's socket>`) then shows the pane tabs as one space with a tab per pane tab, and can select, show and type into them. Herdr adds its own labels to those terminals (`herdr.seen`) and writes its `herdr-app` layout document to Agent Pane's core. Helper terminals (`agent-pane run`) carry neither label. Without such a Herdr app the labels do nothing.
+
 ## Product opportunities
 
 Herdr core enables Agent Pane features beyond a backend swap:

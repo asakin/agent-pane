@@ -773,12 +773,22 @@ const (
 	// coreWindowLabel is <browserId>:<windowId>, the Chrome window the
 	// pane tab was last shown in; it is removed when that window closes.
 	coreWindowLabel = "agent-pane.window"
+
+	// The Herdr app's own labels: a Herdr app that has Agent Pane's core
+	// added as a machine places every terminal carrying them in that space
+	// and tab, and can then select it. All pane tabs share one space; each
+	// is a tab of its own. Without such an app they do nothing.
+	herdrSpaceLabel = "herdr.space"
+	herdrTabLabel   = "herdr.tab"
+	herdrSpaceID    = "sp43cde931eb4bbd3c54fa9fff785ab222"
 )
 
 func coreLabels(env map[string]string) map[string]string {
 	labels := map[string]string{coreSessionLabel: env[envSessionID]}
 	if pane := env[envTabID]; pane != "" {
 		labels[corePaneLabel] = pane
+		labels[herdrSpaceLabel] = herdrSpaceID
+		labels[herdrTabLabel] = "tb" + strings.TrimPrefix(pane, "tab-")
 	}
 	if agent := env[envAgent]; agent != "" {
 		labels[coreAgentLabel] = agent

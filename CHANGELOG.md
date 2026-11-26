@@ -4,6 +4,10 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+### Added
+
+- Durable pane tabs carry the Herdr app's `herdr.space` and `herdr.tab` labels. A Herdr app that has Agent Pane's core added as a machine shows them as one space with a tab per pane tab, and can select and show them.
+
 ## [0.4.2] - 2026-11-21
 
 ### Added
