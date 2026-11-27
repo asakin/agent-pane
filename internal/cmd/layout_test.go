@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -321,6 +322,133 @@ func TestLayoutEditedByAnotherClient(t *testing.T) {
 		if item.Space == nil || item.Space.Space != own.ID {
 			t.Fatalf("tty.list item %+v space %+v", item, item.Space)
 		}
+	}
+}
+
+// A registry that cannot be read leaves the document as it is: other hosts'
+// tabs cannot be told from ended ones without it.
+func TestAnUnreadableRegistryDropsNoOtherHostsTabs(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newLayoutHarness(t, core, "b1")
+	a := h.create(t, shell("7@r1"))
+	if err := h.sessions.registry.put(paneRecord{ID: "x", Pane: "other", Session: "session-x", Browser: "b2"}); err != nil {
+		t.Fatal(err)
+	}
+	doc := core.layout(t)
+	doc.Spaces = append(doc.Spaces, layoutSpace{ID: "sp-b2", Tabs: []layoutTab{{ID: publicID("tab", "other")}}, AgentPane: layoutSpaceMeta{Window: "b2:1@r9"}})
+	core.putDoc(layoutDocName, doc)
+	if err := os.WriteFile(h.sessions.registry.path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, msg := h.call(t, "tty.layout", map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID, "lockedTab": 3}}}); msg == "" {
+		t.Fatal("tty.layout wrote without the records")
+	}
+	if got := spaceFor(t, core.layout(t), "b2:1@r9"); !sameIDs(tabIDs(got), []string{publicID("tab", "other")}) {
+		t.Fatalf("other host's space %+v", got)
+	}
+	// The report waits in the model for the next write that can read the
+	// records.
+	if err := h.sessions.registry.put(paneRecord{ID: "x", Pane: "other", Session: "session-x", Browser: "b2"}); err != nil {
+		t.Fatal(err)
+	}
+	h.sessions.syncLayout(nil)
+	doc = core.layout(t)
+	if mine := spaceFor(t, doc, "b1:7@r1"); mine.Tabs[0].AgentPane.LockedTab == nil || *mine.Tabs[0].AgentPane.LockedTab != 3 {
+		t.Fatalf("own space %+v", mine)
+	}
+	if len(spaceFor(t, doc, "b2:1@r9").Tabs) != 1 {
+		t.Fatalf("layout %+v", doc)
+	}
+}
+
+// A report the host could not write, because the document could not be
+// read, is written by the next write.
+func TestALayoutReportSurvivesAFailedDocumentRead(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newLayoutHarness(t, core, "b1")
+	a := h.create(t, shell("7@r1"))
+	b := h.create(t, shell("7@r1"))
+	core.docGet = func(string) error { return errors.New("core is busy") }
+	if _, msg := h.call(t, "tty.layout", map[string]any{"window": "7@r1", "active": b.ID, "tabs": []map[string]any{{"id": b.ID}, {"id": a.ID}}}); msg == "" {
+		t.Fatal("tty.layout wrote a document it could not read")
+	}
+	core.docGet = nil
+	h.sessions.syncLayout(nil)
+	sp := spaceFor(t, core.layout(t), "b1:7@r1")
+	if !sameIDs(tabIDs(sp), []string{tabOf(b), tabOf(a)}) || sp.AgentPane.Active != tabOf(b) {
+		t.Fatalf("space %+v", sp)
+	}
+}
+
+// A write that is running carries the changes made meanwhile: their callers
+// do not wait for it.
+func TestALayoutChangeDoesNotWaitForAWriteInFlight(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newLayoutHarness(t, core, "b1")
+	a := h.create(t, shell("7@r1"))
+	b := h.create(t, shell("7@r1"))
+	stalled, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	core.docGet = func(string) error {
+		once.Do(func() {
+			close(stalled)
+			<-release
+		})
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.sessions.syncLayout(nil)
+	}()
+	<-stalled
+	report := make(chan string, 1)
+	go func() {
+		_, msg := h.call(t, "tty.layout", map[string]any{"window": "7@r1", "active": b.ID, "tabs": []map[string]any{{"id": b.ID}, {"id": a.ID}}})
+		report <- msg
+	}()
+	select {
+	case msg := <-report:
+		if msg != "" {
+			t.Fatal(msg)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("tty.layout waited for the write in flight")
+	}
+	if places := h.sessions.layoutPlaces(); places[tabOf(b)].Position != 0 {
+		t.Fatalf("places %+v", places)
+	}
+	close(release)
+	<-done
+	if sp := spaceFor(t, core.layout(t), "b1:7@r1"); !sameIDs(tabIDs(sp), []string{tabOf(b), tabOf(a)}) {
+		t.Fatalf("space %+v", sp)
+	}
+}
+
+// Another client may put another host's tab into one of this host's
+// spaces. The host keeps it, after its own.
+func TestAMixedSpaceKeepsTheOtherHostsTabs(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	noRediscoverWait(t)
+	core := newFakeCore()
+	first := newLayoutHarness(t, core, "b1")
+	a := first.create(t, shell("7@r1"))
+	if err := first.sessions.registry.put(paneRecord{ID: "x", Pane: "other", Session: "session-x", Browser: "b2"}); err != nil {
+		t.Fatal(err)
+	}
+	doc := core.layout(t)
+	doc.Spaces[0].Tabs = append(doc.Spaces[0].Tabs, layoutTab{ID: publicID("tab", "other"), Name: "Other"})
+	doc.Spaces[0].AgentPane.Window = "b2:1@r9"
+	core.putDoc(layoutDocName, doc)
+
+	h := restartHost(t, first, core, "b1")
+	h.listFacts(t)
+	sp := core.layout(t).Spaces
+	if len(sp) != 1 || !sameIDs(tabIDs(sp[0]), []string{tabOf(a), publicID("tab", "other")}) {
+		t.Fatalf("layout %+v", sp)
 	}
 }
 

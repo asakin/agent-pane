@@ -110,18 +110,26 @@ export function windowRun(window: string | undefined): string {
  * it carries only into a window of the same run; approvals never do.
  */
 export function openSpace(space: OfferedSpace, runId: string): { tabs: SpaceTab[]; activeId: string } {
-    const sameRun = !!runId && windowRun(space.window) === runId;
-    const tabs = space.tabs.map((s): SpaceTab => {
-        const locked = listedSpace(s)?.lockedTab;
-        return {
-            id: s.id,
-            app: typeof s.agent === "string" ? s.agent : "",
-            ...(typeof s.pane === "string" && s.pane ? { pane: s.pane } : {}),
-            ...(sameRun && Number.isInteger(locked) ? { lockedTabId: locked } : {}),
-        };
-    });
+    const tabs = space.tabs.map((s) => listedTab(s, runId));
     const active = space.tabs.find((s) => listedSpace(s)?.active === true) ?? space.tabs[0];
     return { tabs, activeId: active?.id ?? "" };
+}
+
+/**
+ * A pane tab for a running session the panel did not start. Its lock
+ * carries when the window its space was last shown in is of this browser
+ * run; approvals never do.
+ */
+export function listedTab(s: ListedTTY, runId: string): SpaceTab {
+    const sp = listedSpace(s);
+    const locked = sp?.lockedTab;
+    const sameRun = !!runId && windowRun(sp?.window) === runId;
+    return {
+        id: s.id,
+        app: typeof s.agent === "string" ? s.agent : "",
+        ...(typeof s.pane === "string" && s.pane ? { pane: s.pane } : {}),
+        ...(sameRun && Number.isInteger(locked) ? { lockedTabId: locked } : {}),
+    };
 }
 
 export type SpaceTab = { id: string; app: string; pane?: string; lockedTabId?: number };
@@ -152,6 +160,39 @@ export function layoutParams(
             : { id: tab.id }),
         active: activeId,
         ...(space ? { space } : {}),
+    };
+}
+
+export type LayoutReport<S> = { window: string; state: S; space?: string };
+
+/**
+ * Sends a window's layout reports one at a time, each after the host
+ * answered the one before, so the host applies them in the order they were
+ * made. Reports made while one is in flight collapse into the newest, which
+ * keeps the space an older one took.
+ */
+export function serialReporter<S>(send: (report: LayoutReport<S>) => Promise<void>): (report: LayoutReport<S>) => void {
+    let pending: LayoutReport<S> | undefined;
+    let busy = false;
+    const drain = async () => {
+        busy = true;
+        while (pending) {
+            const next = pending;
+            pending = undefined;
+            try {
+                await send(next);
+            } catch {
+                // The next report carries everything since.
+            }
+        }
+        busy = false;
+    };
+    return (report) => {
+        const space = report.space ?? pending?.space;
+        pending = { ...report, ...(space ? { space } : {}) };
+        if (!busy) {
+            void drain();
+        }
     };
 }
 

@@ -63,9 +63,11 @@ type fakeCore struct {
 	pid      int
 	done     chan struct{}
 	// docs are the core's documents by name; docSet, when set, runs before
-	// each doc.set is checked, as another writer could.
+	// each doc.set is checked, as another writer could. docGet, when set,
+	// runs before each doc.get and fails it with what it returns.
 	docs   map[string]herdrcore.Doc
 	docSet func(name string)
+	docGet func(name string) error
 }
 
 func newFakeCore() *fakeCore {
@@ -210,6 +212,11 @@ func (f *fakeCore) Remove(_ context.Context, terminal string) error {
 func (f *fakeCore) Done() <-chan struct{} { return f.done }
 
 func (f *fakeCore) DocGet(_ context.Context, name string) (herdrcore.Doc, error) {
+	if hook := f.docGet; hook != nil {
+		if err := hook(name); err != nil {
+			return herdrcore.Doc{}, err
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d, ok := f.docs[name]

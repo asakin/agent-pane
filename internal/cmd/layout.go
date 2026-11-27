@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"agent-pane/internal/herdrcore"
@@ -209,13 +210,19 @@ func (m *SessionManager) writeLayout(change func(spaces []layoutSpace) []layoutS
 	return m.writeLayoutNow(change)
 }
 
+// layoutPendingMax bounds the changes kept for a document not read yet.
+const layoutPendingMax = 256
+
+// writeLayoutNow applies change to the host's model, then writes the
+// document. The model changes first, so a write that fails loses nothing:
+// the next one carries it. One write runs at a time; a caller that finds one
+// running leaves its change for that write to carry and returns at once, so
+// no request waits behind another's document I/O.
 func (m *SessionManager) writeLayoutNow(change func(spaces []layoutSpace) []layoutSpace) error {
 	core, ok := m.durable.(*coreBackend)
 	if !ok {
 		return nil
 	}
-	m.layoutMu.Lock()
-	defer m.layoutMu.Unlock()
 	m.mu.RLock()
 	closing, browser := m.closing, m.browser
 	m.mu.RUnlock()
@@ -223,38 +230,80 @@ func (m *SessionManager) writeLayoutNow(change func(spaces []layoutSpace) []layo
 		return nil
 	}
 	live := m.layoutSessions()
+	m.layoutMu.Lock()
 	if !m.layoutLoaded && len(live) == 0 {
 		// Nothing to record, and the core need not start for it.
+		m.layoutMu.Unlock()
 		return nil
 	}
+	if change != nil {
+		if m.layoutLoaded {
+			m.layout = change(m.layout)
+		} else if len(m.layoutPending) < layoutPendingMax {
+			// The host's spaces come from the document, read first.
+			m.layoutPending = append(m.layoutPending, change)
+		}
+	}
+	m.layoutDirty = true
+	if m.layoutWriting {
+		m.layoutMu.Unlock()
+		return nil
+	}
+	m.layoutWriting = true
+	m.layoutMu.Unlock()
+	for {
+		err := m.writeLayoutOnce(core, browser)
+		m.layoutMu.Lock()
+		if err != nil {
+			m.layoutDirty = true
+		}
+		if err != nil || !m.layoutDirty {
+			m.layoutWriting = false
+			m.layoutMu.Unlock()
+			return err
+		}
+		m.layoutMu.Unlock()
+	}
+}
+
+// writeLayoutOnce writes the host's model into the document as it is now.
+func (m *SessionManager) writeLayoutOnce(core *coreBackend, browser string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), coreCallTimeout)
 	defer cancel()
 	conn, err := core.connect(ctx)
 	if err != nil {
 		return err
 	}
-	applied := false
 	for range layoutWriteAttempts {
+		m.layoutMu.Lock()
+		m.layoutDirty = false
+		m.layoutMu.Unlock()
 		doc, err := conn.DocGet(ctx, layoutDocName)
 		if err != nil {
 			return err
 		}
 		// Read after the document: a host records a pane tab before it
 		// writes its tab, so every tab read here has its record.
-		recorded := m.recordedTabs()
+		recorded, err := m.recordedTabs()
+		if err != nil {
+			// Without the records, other hosts' tabs cannot be told from
+			// ended ones: write nothing rather than drop them.
+			return err
+		}
+		live := m.layoutSessions()
 		read := parseLayout(doc.Value)
+		m.layoutMu.Lock()
 		if !m.layoutLoaded {
 			m.layout = ownSpaces(read, browser, live)
-			m.layoutLoaded = true
-		}
-		if !applied {
-			if change != nil {
+			for _, change := range m.layoutPending {
 				m.layout = change(m.layout)
 			}
-			applied = true
+			m.layoutPending = nil
+			m.layoutLoaded = true
 		}
 		m.layout = reconcileSpaces(m.layout, live)
 		next := mergeLayout(read, m.layout, live, recorded)
+		m.layoutMu.Unlock()
 		if sameLayout(doc.Value, next) {
 			return nil
 		}
@@ -268,16 +317,16 @@ func (m *SessionManager) writeLayoutNow(change func(spaces []layoutSpace) []layo
 }
 
 // recordedTabs are the public pane ids panes.json names, any browser's.
-func (m *SessionManager) recordedTabs() map[string]bool {
-	recorded := map[string]bool{}
+func (m *SessionManager) recordedTabs() (map[string]bool, error) {
 	records, err := m.registry.load()
 	if err != nil {
-		return recorded
+		return nil, fmt.Errorf("failed to read the pane tab records: %w", err)
 	}
+	recorded := map[string]bool{}
 	for _, rec := range records {
 		recorded[publicID("tab", rec.Pane)] = true
 	}
-	return recorded
+	return recorded, nil
 }
 
 // ownSpaces picks the host's spaces from a document it read at start: those
@@ -379,7 +428,8 @@ func slicesIndex[T any](s []T, f func(T) bool) int {
 
 // mergeLayout is the document to write: the spaces of other hosts as read,
 // without tabs no record names or that are this host's, and this host's
-// spaces from its own model, where the document had them.
+// spaces from its own model, where the document had them. Another host's
+// tabs in one of this host's spaces stay, after this host's own.
 func mergeLayout(read layoutDoc, own []layoutSpace, live map[string]layoutSession, recorded map[string]bool) layoutDoc {
 	ownByID := map[string]int{}
 	for i, sp := range own {
@@ -388,17 +438,19 @@ func mergeLayout(read layoutDoc, own []layoutSpace, live map[string]layoutSessio
 	used := map[int]bool{}
 	next := layoutDoc{Spaces: []layoutSpace{}}
 	for _, sp := range read.Spaces {
-		if i, ok := ownByID[sp.ID]; ok {
-			next.Spaces = append(next.Spaces, own[i])
-			used[i] = true
-			continue
-		}
 		tabs := []layoutTab{}
 		for _, tab := range sp.Tabs {
 			if _, mine := live[tab.ID]; mine || !recorded[tab.ID] {
 				continue
 			}
 			tabs = append(tabs, tab)
+		}
+		if i, ok := ownByID[sp.ID]; ok {
+			mine := own[i]
+			mine.Tabs = append(slices.Clip(mine.Tabs), tabs...)
+			next.Spaces = append(next.Spaces, mine)
+			used[i] = true
+			continue
 		}
 		if len(tabs) == 0 {
 			continue
