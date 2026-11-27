@@ -156,14 +156,22 @@ type SessionManager struct {
 	// read from the document once (layoutLoaded) and kept here after, so a
 	// change another client writes does not replace it. Reports made before
 	// that read wait in layoutPending, each window's newest. layoutWriting says a write runs, and
-	// layoutDirty that the model changed since it read it. All are guarded
-	// by layoutMu, which is never held across document I/O.
-	layoutMu      sync.Mutex
-	layout        []layoutSpace
-	layoutLoaded  bool
-	layoutPending []layoutChange
-	layoutWriting bool
-	layoutDirty   bool
+	// layoutDirty that the model changed since it read it; layoutWriter is
+	// closed when the last write started ends. layoutRetry tries a failed
+	// write again after layoutRetryDelay. layoutWait and layoutRetryFirst,
+	// when set, replace layoutWaitBudget and layoutRetryFirst. All are
+	// guarded by layoutMu, which is never held across document I/O.
+	layoutMu         sync.Mutex
+	layout           []layoutSpace
+	layoutLoaded     bool
+	layoutPending    []layoutChange
+	layoutWriting    bool
+	layoutDirty      bool
+	layoutWriter     chan struct{}
+	layoutRetry      *time.Timer
+	layoutRetryDelay time.Duration
+	layoutWait       time.Duration
+	layoutRetryFirst time.Duration
 }
 
 func (m *SessionManager) takePageRead() bool {
@@ -681,6 +689,12 @@ func (m *SessionManager) Close() {
 	m.mu.Lock()
 	m.closing = true
 	m.mu.Unlock()
+	m.layoutMu.Lock()
+	if m.layoutRetry != nil {
+		m.layoutRetry.Stop()
+		m.layoutRetry = nil
+	}
+	m.layoutMu.Unlock()
 	m.creating.Wait()
 	m.ending.Wait()
 	m.mu.RLock()
