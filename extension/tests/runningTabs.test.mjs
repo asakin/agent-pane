@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseHTML } from "linkedom";
-import { byPosition, groupSpaces, mountRunningTabs, newRunId, openSpace, runningName, spaceName, splitRunning, windowName, windowRun } from "../entrypoints/shared/runningTabs.ts";
+import { byPosition, groupSpaces, listedTab, mountRunningTabs, newRunId, openSpace, runningName, serialReporter, spaceName, splitRunning, windowName, windowRun } from "../entrypoints/shared/runningTabs.ts";
 
 const durable = (id, window, extra = {}) => ({ id, durable: true, ...(window ? { window } : {}), ...extra });
 
@@ -155,4 +155,31 @@ test("a space one window took leaves the other windows' lists", () => {
     ];
     const { offer } = splitRunning(sessions, "5@new", new Set(), new Set(["3@new"]));
     assert.deepEqual(offer.map((s) => s.id), ["c"]);
+});
+
+test("a pane tab taken back in the same run keeps its lock", () => {
+    const space = (window, lockedTab) => ({ id: "sp-1", window, position: 0, lockedTab });
+    assert.deepEqual(listedTab(durable("a", "7@r1", { agent: "pi", space: space("7@r1", 12) }), "r1"), { id: "a", app: "pi", lockedTabId: 12 });
+    assert.deepEqual(listedTab(durable("a", "7@r0", { agent: "pi", space: space("7@r0", 12) }), "r1"), { id: "a", app: "pi" });
+    assert.deepEqual(listedTab(durable("a", "7@r1", { agent: "pi" }), "r1"), { id: "a", app: "pi" });
+});
+
+test("layout reports go to the host one at a time, newest last, keeping a taken space", async () => {
+    const sent = [];
+    const answers = [];
+    const report = serialReporter((r) => {
+        sent.push(r);
+        return new Promise((resolve) => answers.push(resolve));
+    });
+    report({ window: "w", state: 1 });
+    report({ window: "w", state: 2, space: "sp-1" });
+    report({ window: "w", state: 3 });
+    assert.deepEqual(sent, [{ window: "w", state: 1 }]);
+    answers.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent.slice(1), [{ window: "w", state: 3, space: "sp-1" }]);
+    answers.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+    report({ window: "w", state: 4 });
+    assert.deepEqual(sent.slice(2), [{ window: "w", state: 4 }]);
 });

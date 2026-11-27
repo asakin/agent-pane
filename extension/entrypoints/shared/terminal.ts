@@ -47,7 +47,7 @@ import { createApprovalPrompts, createReadNotice, mountSendTab, mountTeach, send
 import { isOwnExtensionPage } from "./sender";
 import { describeUrl } from "./tabLock";
 import { type PaneStatus, isStatusMessage, parseStatus } from "./paneStatus";
-import { byPosition, mountRunningTabs, type OfferedSpace, openSpace, splitRunning } from "./runningTabs";
+import { byPosition, listedTab, mountRunningTabs, type OfferedSpace, openSpace, serialReporter, splitRunning } from "./runningTabs";
 
 const terminalFontFamily = "JetBrainsMono Nerd Font Mono";
 
@@ -115,11 +115,6 @@ async function otherWindowNames(windowId: number, runId: string): Promise<Set<st
         // Without the list, nothing is assumed held by another window.
     }
     return names;
-}
-
-/** A pane tab for a running session the panel did not start. */
-function tabFromListed(s: ListedTTY): WindowTab {
-    return { id: s.id, app: typeof s.agent === "string" ? s.agent : "", ...(typeof s.pane === "string" && s.pane ? { pane: s.pane } : {}) };
 }
 
 function useBlockCursor(terminal: Terminal) {
@@ -411,9 +406,10 @@ async function main() {
     // Each change of order, active pane tab or lock also goes to the host,
     // which keeps it in the layout document that outlives Chrome. With
     // space, this window took that space from the Running pane tabs list.
+    const report = serialReporter<WindowTabState>((r) => reportLayout(r.window, r.state, r.space));
     async function saveState(next: WindowTabState, space?: string) {
         await saveWindowState(windowId, next);
-        void reportLayout(myWindow, next, space);
+        report({ window: myWindow, state: next, ...(space ? { space } : {}) });
     }
 
     strip.hidden = false;
@@ -467,7 +463,7 @@ async function main() {
         const ordered = byPosition(restore);
         const [first] = ordered;
         if (first) {
-            const tabs = [...(state?.tabs ?? []), ...ordered.map(tabFromListed)];
+            const tabs = [...(state?.tabs ?? []), ...ordered.map((s) => listedTab(s, runId))];
             const active = ordered.find((s) => s.space?.active === true) ?? first;
             state = { tabs, activeId: state?.activeId ?? active.id };
             await saveState(state);
@@ -779,7 +775,7 @@ async function main() {
             }
             return;
         }
-        state = { tabs: [...state.tabs, tabFromListed(s)], activeId: state.activeId };
+        state = { tabs: [...state.tabs, listedTab(s, runId)], activeId: state.activeId };
         await saveState(state);
         refreshStrip();
         await switchTo(s.id);
