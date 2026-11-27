@@ -239,9 +239,6 @@ func pageClient(fdEnv string, req pageRequest) (string, error) {
 	}
 	defer mine.Close()
 	r := &heldPeerReader{File: mine, peer: pair[1]}
-	if os.Getenv("DIAG_OLD_CLIENT") != "" {
-		r.closePeer()
-	}
 	defer r.closePeer()
 
 	req.ID = strconv.Itoa(os.Getpid())
@@ -250,6 +247,9 @@ func pageClient(fdEnv string, req pageRequest) (string, error) {
 		return "", err
 	}
 	err = syscall.Sendmsg(fd, body, syscall.UnixRights(pair[1]), nil, 0)
+	if os.Getenv("DIAG_OLD_CLIENT") != "" {
+		r.closePeer()
+	}
 	if err != nil {
 		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EDESTADDRREQ) {
 			return "", errors.New(errTerminalClosed)
