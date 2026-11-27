@@ -212,7 +212,10 @@ func (f *fakeCore) Remove(_ context.Context, terminal string) error {
 func (f *fakeCore) Done() <-chan struct{} { return f.done }
 
 func (f *fakeCore) DocGet(_ context.Context, name string) (herdrcore.Doc, error) {
-	if hook := f.docGet; hook != nil {
+	f.mu.Lock()
+	hook := f.docGet
+	f.mu.Unlock()
+	if hook != nil {
 		if err := hook(name); err != nil {
 			return herdrcore.Doc{}, err
 		}
@@ -227,7 +230,10 @@ func (f *fakeCore) DocGet(_ context.Context, name string) (herdrcore.Doc, error)
 }
 
 func (f *fakeCore) DocSet(_ context.Context, name string, value any, version uint64) (uint64, error) {
-	if hook := f.docSet; hook != nil {
+	f.mu.Lock()
+	hook := f.docSet
+	f.mu.Unlock()
+	if hook != nil {
 		hook(name)
 	}
 	data, err := json.Marshal(value)

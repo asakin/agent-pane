@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"agent-pane/internal/herdrcore"
 )
@@ -210,6 +212,20 @@ func (m *SessionManager) writeLayout(change *layoutChange) error {
 	return m.writeLayoutNow(change)
 }
 
+// layoutWaitBudget is how long a caller that starts a write waits for it,
+// unless the SessionManager's layoutWait says otherwise. Past it the write
+// goes on alone, so a slow core never makes a terminal call that already
+// succeeded miss the extension's RPC deadline.
+const layoutWaitBudget = time.Second
+
+// layoutRetryFirst (or the SessionManager's layoutRetryFirst) and
+// layoutRetryMax bound the wait before a write that failed is tried again,
+// doubling each time it fails.
+const (
+	layoutRetryFirst = time.Second
+	layoutRetryMax   = 30 * time.Second
+)
+
 // layoutPendingMax bounds the windows whose reports wait for a document not
 // read yet.
 const layoutPendingMax = 256
@@ -234,9 +250,11 @@ func (m *SessionManager) queueLayoutChange(c layoutChange) error {
 
 // writeLayoutNow applies change to the host's model, then writes the
 // document. The model changes first, so a write that fails loses nothing:
-// the next one carries it. One write runs at a time; a caller that finds one
-// running leaves its change for that write to carry and returns at once, so
-// no request waits behind another's document I/O.
+// it is tried again (retryLayoutLocked), and the next one carries it. One
+// write runs at a time; a caller that finds one running leaves its change
+// for that write to carry and returns at once, and a caller that starts one
+// waits for it at most layoutWaitBudget, so no request waits long on
+// document I/O.
 func (m *SessionManager) writeLayoutNow(change *layoutChange) error {
 	core, ok := m.durable.(*coreBackend)
 	if !ok {
@@ -270,12 +288,40 @@ func (m *SessionManager) writeLayoutNow(change *layoutChange) error {
 		return nil
 	}
 	m.layoutWriting = true
+	done := make(chan struct{})
+	m.layoutWriter = done
+	wait := cmp.Or(m.layoutWait, layoutWaitBudget)
 	m.layoutMu.Unlock()
+	result := make(chan error, 1)
+	go func() {
+		defer close(done)
+		result <- m.drainLayout(core, browser)
+	}()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case err := <-result:
+		return err
+	case <-timer.C:
+		go func() {
+			if err := <-result; err != nil {
+				m.logger.Warn("failed to write the pane tab layout", "error", err)
+			}
+		}()
+		return nil
+	}
+}
+
+// drainLayout writes the model until a write finds it unchanged, or fails.
+func (m *SessionManager) drainLayout(core *coreBackend, browser string) error {
 	for {
 		err := m.writeLayoutOnce(core, browser)
 		m.layoutMu.Lock()
 		if err != nil {
 			m.layoutDirty = true
+			m.retryLayoutLocked()
+		} else {
+			m.layoutRetryDelay = 0
 		}
 		if err != nil || !m.layoutDirty {
 			m.layoutWriting = false
@@ -284,6 +330,22 @@ func (m *SessionManager) writeLayoutNow(change *layoutChange) error {
 		}
 		m.layoutMu.Unlock()
 	}
+}
+
+// retryLayoutLocked tries a failed write again later, so a change the model
+// holds reaches the document without waiting for another change. Guarded by
+// layoutMu.
+func (m *SessionManager) retryLayoutLocked() {
+	if m.layoutRetry != nil {
+		return
+	}
+	m.layoutRetryDelay = min(max(2*m.layoutRetryDelay, cmp.Or(m.layoutRetryFirst, layoutRetryFirst)), layoutRetryMax)
+	m.layoutRetry = time.AfterFunc(m.layoutRetryDelay, func() {
+		m.layoutMu.Lock()
+		m.layoutRetry = nil
+		m.layoutMu.Unlock()
+		m.syncLayout(nil)
+	})
 }
 
 // writeLayoutOnce writes the host's model into the document as it is now.

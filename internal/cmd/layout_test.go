@@ -255,15 +255,17 @@ func TestALayoutWriteThatLosesARaceReadsAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	raced := false
-	core.docSet = func(string) {
-		if raced {
-			return
+	core.set(func(f *fakeCore) {
+		f.docSet = func(string) {
+			if raced {
+				return
+			}
+			raced = true
+			doc := core.layout(t)
+			doc.Spaces = append(doc.Spaces, layoutSpace{ID: "sp-b2", Tabs: []layoutTab{{ID: publicID("tab", "other"), Name: "Other"}}, AgentPane: layoutSpaceMeta{Window: "b2:1@r9"}})
+			core.putDoc(layoutDocName, doc)
 		}
-		raced = true
-		doc := core.layout(t)
-		doc.Spaces = append(doc.Spaces, layoutSpace{ID: "sp-b2", Tabs: []layoutTab{{ID: publicID("tab", "other"), Name: "Other"}}, AgentPane: layoutSpaceMeta{Window: "b2:1@r9"}})
-		core.putDoc(layoutDocName, doc)
-	}
+	})
 	h.create(t, shell("1@r1"))
 	doc := core.layout(t)
 	if !raced || len(doc.Spaces) != 2 || len(spaceFor(t, doc, "b1:1@r1").Tabs) != 2 || spaceFor(t, doc, "b2:1@r9").Tabs[0].Name != "Other" {
@@ -370,11 +372,11 @@ func TestALayoutReportSurvivesAFailedDocumentRead(t *testing.T) {
 	h := newLayoutHarness(t, core, "b1")
 	a := h.create(t, shell("7@r1"))
 	b := h.create(t, shell("7@r1"))
-	core.docGet = func(string) error { return errors.New("core is busy") }
+	core.set(func(f *fakeCore) { f.docGet = func(string) error { return errors.New("core is busy") } })
 	if _, msg := h.call(t, "tty.layout", map[string]any{"window": "7@r1", "active": b.ID, "tabs": []map[string]any{{"id": b.ID}, {"id": a.ID}}}); msg == "" {
 		t.Fatal("tty.layout wrote a document it could not read")
 	}
-	core.docGet = nil
+	core.set(func(f *fakeCore) { f.docGet = nil })
 	h.sessions.syncLayout(nil)
 	sp := spaceFor(t, core.layout(t), "b1:7@r1")
 	if !sameIDs(tabIDs(sp), []string{tabOf(b), tabOf(a)}) || sp.AgentPane.Active != tabOf(b) {
@@ -392,13 +394,15 @@ func TestALayoutChangeDoesNotWaitForAWriteInFlight(t *testing.T) {
 	b := h.create(t, shell("7@r1"))
 	stalled, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	core.docGet = func(string) error {
-		once.Do(func() {
-			close(stalled)
-			<-release
-		})
-		return nil
-	}
+	core.set(func(f *fakeCore) {
+		f.docGet = func(string) error {
+			once.Do(func() {
+				close(stalled)
+				<-release
+			})
+			return nil
+		}
+	})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -433,7 +437,7 @@ func TestALayoutChangeDoesNotWaitForAWriteInFlight(t *testing.T) {
 func TestLayoutReportsBeforeTheFirstReadKeepTheNewest(t *testing.T) {
 	useBackend(t, terminalBackendDurable)
 	core := newFakeCore()
-	core.docGet = func(string) error { return errors.New("core is busy") }
+	core.set(func(f *fakeCore) { f.docGet = func(string) error { return errors.New("core is busy") } })
 	h := newLayoutHarness(t, core, "b1")
 	a := h.create(t, shell("7@r1"))
 	b := h.create(t, shell("7@r1"))
@@ -450,7 +454,7 @@ func TestLayoutReportsBeforeTheFirstReadKeepTheNewest(t *testing.T) {
 		report(map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID}, {"id": b.ID}}})
 	}
 	report(map[string]any{"window": "7@r1", "active": b.ID, "tabs": []map[string]any{{"id": b.ID, "lockedTab": 5}, {"id": a.ID}}})
-	core.docGet = nil
+	core.set(func(f *fakeCore) { f.docGet = nil })
 	h.sessions.syncLayout(nil)
 	doc := core.layout(t)
 	sp := spaceFor(t, doc, "b1:7@r1")
@@ -474,13 +478,15 @@ func TestAPaneTabStartedDuringAWriteKeepsItsReport(t *testing.T) {
 	a := h.create(t, shell("7@r1"))
 	stalled, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	core.docGet = func(string) error {
-		once.Do(func() {
-			close(stalled)
-			<-release
-		})
-		return nil
-	}
+	core.set(func(f *fakeCore) {
+		f.docGet = func(string) error {
+			once.Do(func() {
+				close(stalled)
+				<-release
+			})
+			return nil
+		}
+	})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -497,6 +503,83 @@ func TestAPaneTabStartedDuringAWriteKeepsItsReport(t *testing.T) {
 	}
 	if l := sp.Tabs[0].AgentPane.LockedTab; l == nil || *l != 8 {
 		t.Fatalf("locks %+v", sp.Tabs)
+	}
+}
+
+// waitLayoutWriter waits for the last layout write started to end.
+func (m *SessionManager) waitLayoutWriter() {
+	m.layoutMu.Lock()
+	w := m.layoutWriter
+	m.layoutMu.Unlock()
+	if w != nil {
+		<-w
+	}
+}
+
+func shortLayoutTimers(m *SessionManager) {
+	m.layoutMu.Lock()
+	m.layoutWait, m.layoutRetryFirst = 50*time.Millisecond, 10*time.Millisecond
+	m.layoutMu.Unlock()
+}
+
+// A terminal call that starts a layout write does not wait on a slow core
+// past layoutWaitBudget: the write goes on and lands later.
+func TestACreateDoesNotWaitOnASlowLayoutWrite(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newLayoutHarness(t, core, "b1")
+	shortLayoutTimers(h.sessions)
+	a := h.create(t, shell("7@r1"))
+	stalled, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	core.set(func(f *fakeCore) {
+		f.docGet = func(string) error {
+			once.Do(func() {
+				close(stalled)
+				<-release
+			})
+			return nil
+		}
+	})
+	created := make(chan endpointResult, 1)
+	go func() { created <- h.create(t, shell("7@r1")) }()
+	<-stalled
+	var b endpointResult
+	select {
+	case b = <-created:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tty.create waited for the layout write")
+	}
+	close(release)
+	h.sessions.waitLayoutWriter()
+	if sp := spaceFor(t, core.layout(t), "b1:7@r1"); !sameIDs(tabIDs(sp), []string{tabOf(a), tabOf(b)}) {
+		t.Fatalf("space %+v", sp)
+	}
+}
+
+// A write that failed is tried again without another change.
+func TestAFailedLayoutWriteIsTriedAgain(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newLayoutHarness(t, core, "b1")
+	shortLayoutTimers(h.sessions)
+	a := h.create(t, shell("7@r1"))
+	b := h.create(t, shell("7@r1"))
+	core.set(func(f *fakeCore) { f.docGet = func(string) error { return errors.New("core is busy") } })
+	if _, msg := h.call(t, "tty.layout", map[string]any{"window": "7@r1", "active": b.ID, "tabs": []map[string]any{{"id": b.ID}, {"id": a.ID}}}); msg == "" {
+		t.Fatal("tty.layout wrote a document it could not read")
+	}
+	core.set(func(f *fakeCore) { f.docGet = nil })
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		sp := spaceFor(t, core.layout(t), "b1:7@r1")
+		if sameIDs(tabIDs(sp), []string{tabOf(b), tabOf(a)}) && sp.AgentPane.Active == tabOf(b) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("space %+v", sp)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
