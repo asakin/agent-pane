@@ -62,6 +62,10 @@ type fakeCore struct {
 	finished []string
 	pid      int
 	done     chan struct{}
+	// docs are the core's documents by name; docSet, when set, runs before
+	// each doc.set is checked, as another writer could.
+	docs   map[string]herdrcore.Doc
+	docSet func(name string)
 }
 
 func newFakeCore() *fakeCore {
@@ -204,6 +208,63 @@ func (f *fakeCore) Remove(_ context.Context, terminal string) error {
 }
 
 func (f *fakeCore) Done() <-chan struct{} { return f.done }
+
+func (f *fakeCore) DocGet(_ context.Context, name string) (herdrcore.Doc, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d, ok := f.docs[name]
+	if !ok {
+		return herdrcore.Doc{Value: json.RawMessage("null")}, nil
+	}
+	return d, nil
+}
+
+func (f *fakeCore) DocSet(_ context.Context, name string, value any, version uint64) (uint64, error) {
+	if hook := f.docSet; hook != nil {
+		hook(name)
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return 0, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.docs == nil {
+		f.docs = map[string]herdrcore.Doc{}
+	}
+	if f.docs[name].Version != version {
+		return 0, &herdrcore.Error{Code: -32000, Message: "conflict", Kind: "conflict"}
+	}
+	d := herdrcore.Doc{Value: data, Version: version + 1}
+	f.docs[name] = d
+	return d.Version, nil
+}
+
+// putDoc writes a document as another client of the core would.
+func (f *fakeCore) putDoc(name string, value any) {
+	data, _ := json.Marshal(value)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.docs == nil {
+		f.docs = map[string]herdrcore.Doc{}
+	}
+	f.docs[name] = herdrcore.Doc{Value: data, Version: f.docs[name].Version + 1}
+}
+
+// layout is the layout document as the core holds it.
+func (f *fakeCore) layout(t *testing.T) layoutDoc {
+	t.Helper()
+	f.mu.Lock()
+	raw := f.docs[layoutDocName].Value
+	f.mu.Unlock()
+	var doc layoutDoc
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return doc
+}
 
 // finish reports the session's terminal finished, as the core does when its
 // program exits.

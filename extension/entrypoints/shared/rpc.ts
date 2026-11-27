@@ -60,6 +60,18 @@ export type ResponseDetachTTY = JSONRPCResponseBase<{
 
 export type RequestListTTY = JSONRPCRequestBase<"tty.list", undefined>
 
+/**
+ * What a window's side panel shows: its pane tabs in order, the active one
+ * and each one's lock. The host records it in the layout document, so the
+ * arrangement outlives Chrome. With space, the window took that space.
+ */
+export type RequestLayoutTTY = JSONRPCRequestBase<"tty.layout", {
+    window: string;
+    tabs: { id: string; lockedTab?: number }[];
+    active: string;
+    space?: string;
+}>
+
 export type RequestDestroyTTY = JSONRPCRequestBase<"tty.destroy", {
     id: string;
     /** Set when the pane tab is closing: revokes its grants. */
@@ -143,6 +155,21 @@ export type ListedTTY = {
     window?: string;
     /** Set when it runs in the Durable (preview) backend and outlives the side panel. */
     durable?: boolean;
+    /** Where a Durable pane tab sits in the layout document. */
+    space?: ListedSpace;
+};
+
+/** A Durable pane tab's place in the layout document. */
+export type ListedSpace = {
+    id: string;
+    name?: string;
+    /** The Chrome window the space was last shown in (windowName), when it was this browser's. */
+    window?: string;
+    position: number;
+    /** Set on the tab the space showed last. */
+    active?: boolean;
+    /** The Chrome tab it was locked to, in the browser run the space's window names. */
+    lockedTab?: number;
 };
 
 export type ResponseListTTY = JSONRPCResponseBase<{

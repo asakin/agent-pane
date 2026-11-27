@@ -52,6 +52,10 @@ type coreAPI interface {
 	Kill(ctx context.Context, terminal string) (herdrcore.Terminal, error)
 	Label(ctx context.Context, terminal string, labels map[string]string) (herdrcore.Terminal, error)
 	Remove(ctx context.Context, terminal string) error
+	// DocGet and DocSet read and write a document of the core, such as the
+	// layout document (layout.go).
+	DocGet(ctx context.Context, name string) (herdrcore.Doc, error)
+	DocSet(ctx context.Context, name string, value any, version uint64) (uint64, error)
 	Done() <-chan struct{}
 }
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isHostNotification, isHostRequest } from "../entrypoints/shared/hostConnection.ts";
 import { checkHost, MIN_HOST_PROTOCOL, MIN_HOST_VERSION } from "../entrypoints/shared/hostVersion.ts";
+import { layoutParams } from "../entrypoints/shared/runningTabs.ts";
 import { BROWSER_STATUS_TIMEOUT_MS, CHOOSE_FOLDER_TIMEOUT_MS, detachOnWindowClose, errorFromResponse, METHOD_NOT_FOUND, NATIVE_RPC_TIMEOUT_MS, nativeTimeoutMs, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
 
 function fakePort() {
@@ -172,4 +173,20 @@ test("closing a window detaches its pane tabs, and an older host ends them", asy
         : { result: {} });
     await detachOnWindowClose(old, "s1");
     assert.deepEqual(old.sent.map((m) => [m.method, m.params]), [["tty.detach", { id: "s1" }], ["tty.destroy", { id: "s1" }]]);
+});
+
+test("tty.layout reports a window's pane tabs in order, the active one and live locks", () => {
+    const tabs = [
+        { id: "s2", app: "pi", lockedTabId: 40 },
+        { id: "s1", app: "" },
+        { id: "s3", app: "", lockedTabId: 41, lockedTabClosed: true },
+    ];
+    assert.deepEqual(layoutParams("7@run", tabs, "s1"), {
+        window: "7@run",
+        tabs: [{ id: "s2", lockedTab: 40 }, { id: "s1" }, { id: "s3" }],
+        active: "s1",
+    });
+    // A window that took a space names it.
+    assert.equal(layoutParams("7@run", tabs, "s1", "sp-1").space, "sp-1");
+    assert.equal(nativeTimeoutMs("tty.layout"), NATIVE_RPC_TIMEOUT_MS);
 });

@@ -4,6 +4,10 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+### Added
+
+- Durable (preview) pane tabs keep their arrangement when Chrome quits, crashes or is killed: each Chrome window's pane tabs, their order, names, the active one and their locks are kept in a layout document in Agent Pane's private core ([RFC 0004](docs/rfcs/0004-pane-tab-layout-document.md)). After Chrome starts again, the **N running** list in every window offers each window's pane tabs as a group, and **Open all** opens them at once, in order, with the same one active. Approvals do not carry over, and a lock does only while the same Chrome run continues.
+
 ### Changed
 
 - When the side panel can't reach the Agent Pane program, it explains that the program runs the terminals, shows the install command for this platform (`install.ps1` on Windows, `install.sh` elsewhere) with a Copy button, and links to the latest release. The update screen shows the Windows command on Windows too.

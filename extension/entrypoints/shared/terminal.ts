@@ -47,7 +47,7 @@ import { createApprovalPrompts, createReadNotice, mountSendTab, mountTeach, send
 import { isOwnExtensionPage } from "./sender";
 import { describeUrl } from "./tabLock";
 import { type PaneStatus, isStatusMessage, parseStatus } from "./paneStatus";
-import { mountRunningTabs, splitRunning } from "./runningTabs";
+import { byPosition, mountRunningTabs, type OfferedSpace, openSpace, splitRunning } from "./runningTabs";
 
 const terminalFontFamily = "JetBrainsMono Nerd Font Mono";
 
@@ -80,6 +80,7 @@ import {
     replaceTabId,
     tabPane,
     resolveWindowId,
+    reportLayout,
     saveWindowState,
     tabApp,
     tabCwd,
@@ -407,6 +408,14 @@ async function main() {
     const runId = await currentRunId();
     const myWindow = windowName(windowId, runId);
 
+    // Each change of order, active pane tab or lock also goes to the host,
+    // which keeps it in the layout document that outlives Chrome. With
+    // space, this window took that space from the Running pane tabs list.
+    async function saveState(next: WindowTabState, space?: string) {
+        await saveWindowState(windowId, next);
+        void reportLayout(myWindow, next, space);
+    }
+
     strip.hidden = false;
     strip.classList.add("at-tabs");
     strip.replaceChildren();
@@ -455,11 +464,13 @@ async function main() {
     if (listedAtStart) {
         const held = new Set(state?.tabs.map((tab) => tab.id) ?? []);
         const { restore } = splitRunning(listedAtStart, myWindow, held, new Set());
-        const [first] = restore;
+        const ordered = byPosition(restore);
+        const [first] = ordered;
         if (first) {
-            const tabs = [...(state?.tabs ?? []), ...restore.map(tabFromListed)];
-            state = { tabs, activeId: state?.activeId ?? first.id };
-            await saveWindowState(windowId, state);
+            const tabs = [...(state?.tabs ?? []), ...ordered.map(tabFromListed)];
+            const active = ordered.find((s) => s.space?.active === true) ?? first;
+            state = { tabs, activeId: state?.activeId ?? active.id };
+            await saveState(state);
         }
     }
 
@@ -549,7 +560,7 @@ async function main() {
             return;
         }
         state = next;
-        await saveWindowState(windowId, state);
+        await saveState(state);
     }
 
     statusBar.hidden = false;
@@ -749,6 +760,7 @@ async function main() {
     const running = mountRunningTabs(runningHost, {
         onRefresh: () => loadFacts(),
         onOpen: (s) => void openRunning(s),
+        onOpenSpace: (space) => void openRunningSpace(space),
         onEnd: (s) => void endRunning(s),
     });
 
@@ -768,9 +780,26 @@ async function main() {
             return;
         }
         state = { tabs: [...state.tabs, tabFromListed(s)], activeId: state.activeId };
-        await saveWindowState(windowId, state);
+        await saveState(state);
         refreshStrip();
         await switchTo(s.id);
+        void loadFacts();
+    }
+
+    // Takes a whole space shown in no window: its pane tabs open here in
+    // their order, with the one it showed last active.
+    async function openRunningSpace(space: OfferedSpace) {
+        if (!state) {
+            return;
+        }
+        const opened = openSpace(space, runId);
+        const fresh = opened.tabs.filter((tab) => !hasTab(tab.id));
+        if (fresh.length > 0) {
+            state = { tabs: [...state.tabs, ...fresh], activeId: state.activeId };
+            await saveState(state, space.id);
+            refreshStrip();
+        }
+        await switchTo(opened.activeId);
         void loadFacts();
     }
 
@@ -868,7 +897,7 @@ async function main() {
             state = replaceTabId(state, deadId, created.id, created.pane);
             statuses.delete(deadId);
             liveAt.delete(deadId);
-            await saveWindowState(windowId, state);
+            await saveState(state);
             refreshStrip();
             void loadFacts(created.id);
             endpoint = await attachTTY(state.activeId, myWindow);
@@ -940,7 +969,7 @@ async function main() {
         }
         const gen = ++switchGen;
         state = { ...state, activeId: id };
-        await saveWindowState(windowId, state);
+        await saveState(state);
         refreshStrip();
         try {
             await attachActive(gen);
@@ -983,7 +1012,7 @@ async function main() {
             tabs: [...state.tabs, { id: created.id, app: created.app, cwd: created.cwd, pane: created.pane }],
             activeId: created.id,
         };
-        await saveWindowState(windowId, state);
+        await saveState(state);
         refreshStrip();
         void loadFacts(created.id);
         try {
@@ -1013,7 +1042,7 @@ async function main() {
                 return;
             }
             state = next;
-            await saveWindowState(windowId, state);
+            await saveState(state);
             refreshStrip();
             return;
         }
@@ -1048,7 +1077,7 @@ async function main() {
                 return;
             }
             state = { tabs: [{ id: created.id, app: "", pane: created.pane }], activeId: created.id };
-            await saveWindowState(windowId, state);
+            await saveState(state);
             refreshStrip();
             void loadFacts(created.id);
             try {
@@ -1063,7 +1092,7 @@ async function main() {
 
         const gen = ++switchGen;
         state = { tabs: state.tabs.filter((tab) => tab.id !== id), activeId: neighbor.id };
-        await saveWindowState(windowId, state);
+        await saveState(state);
         refreshStrip();
         try {
             await attachActive(gen);
@@ -1132,7 +1161,7 @@ async function main() {
                 return;
             }
             state = { tabs: [{ id: created.id, app: "", pane: created.pane }], activeId: created.id };
-            await saveWindowState(windowId, state);
+            await saveState(state);
             refreshStrip();
             void loadFacts(created.id);
             await attachActive(gen);
