@@ -14,3 +14,7 @@
 # extension
 extension/node_modules/
 extension/dist/
+
+# local agent instructions
+AGENTS.local.md
+CLAUDE.local.md
