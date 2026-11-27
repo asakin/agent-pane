@@ -46,7 +46,7 @@
         ]
       },
       "environment": "factory-siglify-agent-pane-implement",
-      "instructions": "When the issue implements an RFC in docs/rfcs/ and this pull request completes it, set the RFC's Status to Implemented and add `- **Implemented in:** #<this pull request>` after the Status line, in a commit after the pull request is open."
+      "instructions": "When the issue implements an RFC in docs/rfcs/ and this pull request completes it, set the RFC's Status to Implemented and add `- **Implemented in:** #<this pull request>` after the Status line, in a commit after the pull request is open. This repository merges pull requests only with Rebase and merge. Bring a branch up to date by rebasing it onto main and force-pushing with lease; never merge main into it."
     },
     "merge-conflict-sweep": {
       "tags": [
