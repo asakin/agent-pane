@@ -283,7 +283,7 @@ func (m *SessionManager) writeLayoutNow(change *layoutChange) error {
 		}
 	}
 	m.layoutDirty = true
-	if m.layoutWriting {
+	if m.layoutWriting || m.layoutClosed {
 		m.layoutMu.Unlock()
 		return nil
 	}
@@ -312,7 +312,8 @@ func (m *SessionManager) writeLayoutNow(change *layoutChange) error {
 	}
 }
 
-// drainLayout writes the model until a write finds it unchanged, or fails.
+// drainLayout writes the model until a write finds it unchanged, fails, or
+// the host shuts down.
 func (m *SessionManager) drainLayout(core *coreBackend, browser string) error {
 	for {
 		err := m.writeLayoutOnce(core, browser)
@@ -323,7 +324,7 @@ func (m *SessionManager) drainLayout(core *coreBackend, browser string) error {
 		} else {
 			m.layoutRetryDelay = 0
 		}
-		if err != nil || !m.layoutDirty {
+		if err != nil || !m.layoutDirty || m.layoutClosed {
 			m.layoutWriting = false
 			m.layoutMu.Unlock()
 			return err
@@ -336,7 +337,7 @@ func (m *SessionManager) drainLayout(core *coreBackend, browser string) error {
 // holds reaches the document without waiting for another change. Guarded by
 // layoutMu.
 func (m *SessionManager) retryLayoutLocked() {
-	if m.layoutRetry != nil {
+	if m.layoutRetry != nil || m.layoutClosed {
 		return
 	}
 	m.layoutRetryDelay = min(max(2*m.layoutRetryDelay, cmp.Or(m.layoutRetryFirst, layoutRetryFirst)), layoutRetryMax)

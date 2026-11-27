@@ -168,6 +168,7 @@ type SessionManager struct {
 	layoutWriting    bool
 	layoutDirty      bool
 	layoutWriter     chan struct{}
+	layoutClosed     bool
 	layoutRetry      *time.Timer
 	layoutRetryDelay time.Duration
 	layoutWait       time.Duration
@@ -690,13 +691,23 @@ func (m *SessionManager) Close() {
 	m.closing = true
 	m.mu.Unlock()
 	m.layoutMu.Lock()
+	m.layoutClosed = true
 	if m.layoutRetry != nil {
 		m.layoutRetry.Stop()
 		m.layoutRetry = nil
 	}
+	var writer chan struct{}
+	if m.layoutWriting {
+		writer = m.layoutWriter
+	}
 	m.layoutMu.Unlock()
 	m.creating.Wait()
 	m.ending.Wait()
+	// A write still running reads the live sessions: let it end before they
+	// are let go, so it never records a pane tab as gone.
+	if writer != nil {
+		<-writer
+	}
 	m.mu.RLock()
 	var ids []string
 	for id, s := range m.sessions {

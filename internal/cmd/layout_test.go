@@ -583,6 +583,54 @@ func TestAFailedLayoutWriteIsTriedAgain(t *testing.T) {
 	}
 }
 
+// Close lets a layout write still running end before it lets go of the
+// sessions, so the write never records their pane tabs as gone.
+func TestCloseWaitsForALayoutWriteInFlight(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newLayoutHarness(t, core, "b1")
+	shortLayoutTimers(h.sessions)
+	a := h.create(t, shell("7@r1"))
+	b := h.create(t, shell("7@r1"))
+	c := h.create(t, shell("7@r1"))
+	stalled, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	core.set(func(f *fakeCore) {
+		f.docGet = func(string) error {
+			once.Do(func() {
+				close(stalled)
+				<-release
+			})
+			return nil
+		}
+	})
+	report := make(chan string, 1)
+	go func() {
+		_, msg := h.call(t, "tty.layout", map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": c.ID}, {"id": b.ID}, {"id": a.ID}}})
+		report <- msg
+	}()
+	<-stalled
+	if msg := <-report; msg != "" {
+		t.Fatal(msg)
+	}
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		h.sessions.Close()
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a layout write ran")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	<-closed
+	sp := spaceFor(t, core.layout(t), "b1:7@r1")
+	if !sameIDs(tabIDs(sp), []string{tabOf(c), tabOf(b), tabOf(a)}) || sp.AgentPane.Active != tabOf(a) {
+		t.Fatalf("space %+v", sp)
+	}
+}
+
 // Another client may put another host's tab into one of this host's
 // spaces. The host keeps it, after its own.
 func TestAMixedSpaceKeepsTheOtherHostsTabs(t *testing.T) {
