@@ -152,6 +152,13 @@ type SessionManager struct {
 	// detachedEarly holds the ids of sessions whose window closed before
 	// the host took them back; guarded by mu.
 	detachedEarly map[string]struct{}
+	// layout is this host's spaces of the layout document (layout.go),
+	// read from the document once (layoutLoaded) and kept here after, so a
+	// change another client writes does not replace it; guarded by
+	// layoutMu, which also orders the host's writes of the document.
+	layoutMu     sync.Mutex
+	layout       []layoutSpace
+	layoutLoaded bool
 }
 
 func (m *SessionManager) takePageRead() bool {
@@ -286,6 +293,9 @@ type ttyListItem struct {
 	// it is this browser's and still open as far as the host knows.
 	Window  string `json:"window,omitempty"`
 	Durable bool   `json:"durable,omitempty"`
+	// Space is where a Durable pane tab sits in the layout document: its
+	// space and position there.
+	Space *layoutPlace `json:"space,omitempty"`
 }
 
 // listItems is tty.list's answer: the live sessions.
@@ -295,6 +305,7 @@ func (m *SessionManager) listItems() []ttyListItem {
 	m.mu.RLock()
 	browser := m.browser
 	m.mu.RUnlock()
+	places := m.layoutPlaces()
 	items := make([]ttyListItem, 0, len(ids))
 	for _, id := range ids {
 		item := ttyListItem{ID: id}
@@ -305,6 +316,9 @@ func (m *SessionManager) listItems() []ttyListItem {
 			item.Agent, item.Label, item.Durable = s.agent, s.Label, durable
 			if s.pane != nil {
 				item.Pane = s.pane.id
+				if place, ok := places[publicID("tab", s.pane.id)]; ok && durable {
+					item.Space = &place
+				}
 			}
 			if b, w, ok := strings.Cut(s.window, ":"); ok && b == browser {
 				item.Window = w
@@ -532,6 +546,7 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 	session.mu.Unlock()
 	if session.isDurable() {
 		m.record(session)
+		m.syncLayout(nil)
 	}
 
 	// The session is reaped when its program exits or its terminal ends.
@@ -631,8 +646,12 @@ func (m *SessionManager) Destroy(id string) error {
 		return fmt.Errorf("invalid tty ID")
 	}
 	defer ending()
+	durable := session.isDurable()
 	m.dropTokens(id)
 	session.finalize()
+	if durable {
+		m.syncLayout(nil)
+	}
 	return nil
 }
 
@@ -698,8 +717,12 @@ func (m *SessionManager) remove(id string) {
 		return
 	}
 	defer ending()
+	durable := session.isStarted() && session.isDurable()
 	m.dropTokens(id)
 	session.finalize()
+	if durable {
+		m.syncLayout(nil)
+	}
 }
 
 func (s *Session) finalize() {
@@ -976,6 +999,9 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 		if params.Window != "" {
 			sessions.setWindow(session, sessions.windowLabel(params.Window))
 		}
+		if session.isDurable() {
+			sessions.syncLayout(nil)
+		}
 
 		return sessions.endpoint(session.ID)
 	})
@@ -995,6 +1021,17 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			return nil, fmt.Errorf("failed to unmarshal detach params: %w", err)
 		}
 		return map[string]any{"running": sessions.DetachWindow(params.ID, params.Pane)}, nil
+	})
+
+	messagingHost.HandleRequest("tty.layout", func(input []byte) (any, error) {
+		var params layoutReport
+		if err := json.Unmarshal(input, &params); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal layout params: %w", err)
+		}
+		if err := sessions.applyLayoutReport(params); err != nil {
+			return nil, err
+		}
+		return map[string]any{}, nil
 	})
 
 	messagingHost.HandleRequest("tty.destroy", func(input []byte) (any, error) {

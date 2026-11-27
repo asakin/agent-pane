@@ -296,13 +296,15 @@ body.at-options {
     opacity: 0.7;
 }
 
-.at-running__item {
+.at-running__item,
+.at-running__space {
     display: flex;
     align-items: center;
     gap: 4px;
 }
 
 .at-running__open,
+.at-running__open-space,
 .at-running__end {
     margin: 0;
     padding: 7px 8px;
@@ -316,7 +318,8 @@ body.at-options {
     cursor: pointer;
 }
 
-.at-running__open {
+.at-running__open,
+.at-running__open-space {
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
@@ -330,9 +333,16 @@ body.at-options {
     opacity: 0.75;
 }
 
+/* A space's row opens all of its pane tabs, listed after it. */
+.at-running__open-space {
+    font-weight: 600;
+}
+
 .at-running__open:hover,
+.at-running__open-space:hover,
 .at-running__end:hover,
 .at-running__open:focus-visible,
+.at-running__open-space:focus-visible,
 .at-running__end:focus-visible {
     background: rgba(0, 0, 0, 0.06);
     outline: none;

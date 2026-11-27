@@ -75,6 +75,11 @@ func (m *SessionManager) ensureRediscovered() bool {
 	m.mu.Lock()
 	m.detachedEarly = nil
 	m.mu.Unlock()
+	// The layout document gets back the pane tabs taken back, and loses
+	// the ones that ended while no host ran.
+	if err := m.writeLayoutNow(nil); err != nil {
+		m.logger.Warn("failed to write the pane tab layout", "error", err)
+	}
 	return true
 }
 
@@ -360,6 +365,7 @@ func (m *SessionManager) DetachWindow(id, pane string) bool {
 		}
 	}
 	m.setWindow(session, "")
+	m.syncLayout(nil)
 	return true
 }
 

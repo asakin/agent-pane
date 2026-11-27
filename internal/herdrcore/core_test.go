@@ -138,6 +138,48 @@ func TestRealCore(t *testing.T) {
 	if err := c.Remove(ctx, term.Address); err != nil {
 		t.Fatal(err)
 	}
+
+	testRealDoc(ctx, t, c)
+}
+
+// testRealDoc writes a document twice, loses a version race, and sees the
+// core's doc event for each write.
+func testRealDoc(ctx context.Context, t *testing.T, c *Client) {
+	t.Helper()
+	sub, err := c.Subscribe(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	d, err := c.DocGet(ctx, "agent-pane-test")
+	if err != nil || d.Version != 0 || string(d.Value) != "null" {
+		t.Fatalf("DocGet = %+v (%s), %v", d, d.Value, err)
+	}
+	v1, err := c.DocSet(ctx, "agent-pane-test", map[string]any{"spaces": []any{}}, 0)
+	if err != nil || v1 == 0 {
+		t.Fatalf("DocSet = %d, %v", v1, err)
+	}
+	if _, err := c.DocSet(ctx, "agent-pane-test", map[string]any{"stale": true}, 0); !IsKind(err, "conflict") {
+		t.Fatalf("stale DocSet err = %v, want conflict", err)
+	}
+	d, err = c.DocGet(ctx, "agent-pane-test")
+	if err != nil || d.Version != v1 || string(d.Value) != `{"spaces":[]}` {
+		t.Fatalf("DocGet = %+v (%s), %v", d, d.Value, err)
+	}
+	for {
+		e, err := sub.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Type != "doc" {
+			continue
+		}
+		t.Logf("doc event %+v data %s", e, e.Data)
+		if name, ok := e.DocName(); !ok || name != "agent-pane-test" {
+			t.Fatalf("doc event %+v (%s), want agent-pane-test", e, e.Data)
+		}
+		break
+	}
 }
 
 // waitFor reads a until its output contains want.

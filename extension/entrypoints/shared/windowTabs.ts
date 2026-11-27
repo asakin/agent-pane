@@ -3,10 +3,11 @@ import type {
     RequestAttachTTY,
     RequestCreateTTY,
     RequestDestroyTTY,
+    RequestLayoutTTY,
     ResponseAttachTTY,
     ResponseCreateTTY,
 } from "./rpc";
-import { newRunId as makeRunId } from "./runningTabs";
+import { layoutParams, newRunId as makeRunId } from "./runningTabs";
 import { type TabLock, closeMissingLocks, isTabLock } from "./tabLock";
 
 export type WindowTab = TabLock & {
@@ -111,6 +112,24 @@ async function chromeTabExists(tabId: number): Promise<boolean> {
 
 export async function saveWindowState(windowId: number, state: WindowTabState): Promise<void> {
     await browser.storage.session.set({ [windowStateKey(windowId)]: state });
+}
+
+/**
+ * Tells the host what the window shows, for the layout document that
+ * outlives Chrome. A host that cannot take it (an older one, or none) is
+ * not an error: the panel's own state is unchanged.
+ */
+export async function reportLayout(window: string, state: WindowTabState, space?: string): Promise<void> {
+    try {
+        await browser.runtime.sendMessage<RequestLayoutTTY>({
+            jsonrpc: "2.0",
+            id: crypto.randomUUID(),
+            method: "tty.layout",
+            params: layoutParams(window, state.tabs, state.activeId, space),
+        });
+    } catch {
+        // Host may be gone.
+    }
 }
 
 export async function clearWindowState(windowId: number): Promise<void> {

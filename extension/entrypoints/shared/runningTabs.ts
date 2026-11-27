@@ -1,4 +1,4 @@
-import type { ListedTTY } from "./rpc.ts";
+import type { ListedSpace, ListedTTY, RequestLayoutTTY } from "./rpc.ts";
 
 /**
  * Durable (preview) pane tabs outlive the side panel that showed them: a
@@ -42,6 +42,119 @@ export function splitRunning(
     return { restore, offer };
 }
 
+/**
+ * A space the Running pane tabs list offers: the pane tabs one Chrome window
+ * showed, in their order, as the host's layout document has them. Pane tabs
+ * with no space in the document are each offered alone.
+ */
+export type OfferedSpace = {
+    /** The space's id; absent for a pane tab with no space. */
+    id?: string;
+    name?: string;
+    /** The window it was last shown in, as windowName makes it. */
+    window?: string;
+    tabs: ListedTTY[];
+};
+
+function listedSpace(s: ListedTTY): ListedSpace | undefined {
+    const sp = s.space;
+    if (!sp || typeof sp !== "object" || typeof sp.id !== "string" || !sp.id || !Number.isInteger(sp.position)) {
+        return undefined;
+    }
+    return sp;
+}
+
+/** Orders sessions by their position in their spaces. */
+export function byPosition(sessions: ListedTTY[]): ListedTTY[] {
+    return [...sessions].sort((a, b) => (listedSpace(a)?.position ?? Infinity) - (listedSpace(b)?.position ?? Infinity));
+}
+
+/** Groups offered sessions into the spaces they belong to, each in order. */
+export function groupSpaces(offer: ListedTTY[]): OfferedSpace[] {
+    const spaces: OfferedSpace[] = [];
+    const byId = new Map<string, OfferedSpace>();
+    for (const s of offer) {
+        const sp = listedSpace(s);
+        if (!sp) {
+            spaces.push({ tabs: [s] });
+            continue;
+        }
+        let group = byId.get(sp.id);
+        if (!group) {
+            group = {
+                id: sp.id,
+                ...(typeof sp.name === "string" && sp.name ? { name: sp.name } : {}),
+                ...(typeof sp.window === "string" && sp.window ? { window: sp.window } : {}),
+                tabs: [],
+            };
+            byId.set(sp.id, group);
+            spaces.push(group);
+        }
+        group.tabs.push(s);
+    }
+    for (const group of spaces) {
+        group.tabs = byPosition(group.tabs);
+    }
+    return spaces;
+}
+
+/** The run id in a window name (`<windowId>@<runId>`), "" without one. */
+export function windowRun(window: string | undefined): string {
+    const at = typeof window === "string" ? window.lastIndexOf("@") : -1;
+    return at >= 0 ? window!.slice(at + 1) : "";
+}
+
+/**
+ * The pane tabs a window opens when it takes a space: in order, the one the
+ * space showed last active. A lock names a Chrome tab of one browser run, so
+ * it carries only into a window of the same run; approvals never do.
+ */
+export function openSpace(space: OfferedSpace, runId: string): { tabs: SpaceTab[]; activeId: string } {
+    const sameRun = !!runId && windowRun(space.window) === runId;
+    const tabs = space.tabs.map((s): SpaceTab => {
+        const locked = listedSpace(s)?.lockedTab;
+        return {
+            id: s.id,
+            app: typeof s.agent === "string" ? s.agent : "",
+            ...(typeof s.pane === "string" && s.pane ? { pane: s.pane } : {}),
+            ...(sameRun && Number.isInteger(locked) ? { lockedTabId: locked } : {}),
+        };
+    });
+    const active = space.tabs.find((s) => listedSpace(s)?.active === true) ?? space.tabs[0];
+    return { tabs, activeId: active?.id ?? "" };
+}
+
+export type SpaceTab = { id: string; app: string; pane?: string; lockedTabId?: number };
+
+/** What the Running pane tabs list calls a space. */
+export function spaceName(space: OfferedSpace): string {
+    if (space.name) {
+        return space.name;
+    }
+    const names = space.tabs.map(runningName);
+    return names.length <= 2 ? names.join(", ") : `${names[0]} and ${names.length - 1} more`;
+}
+
+/**
+ * tty.layout's params for what a window shows: its pane tabs in order, the
+ * active one and their locks. A lock on a Chrome tab that closed is not one.
+ */
+export function layoutParams(
+    window: string,
+    tabs: { id: string; lockedTabId?: number; lockedTabClosed?: boolean }[],
+    activeId: string,
+    space?: string,
+): NonNullable<RequestLayoutTTY["params"]> {
+    return {
+        window,
+        tabs: tabs.map((tab) => tab.lockedTabId !== undefined && !tab.lockedTabClosed
+            ? { id: tab.id, lockedTab: tab.lockedTabId }
+            : { id: tab.id }),
+        active: activeId,
+        ...(space ? { space } : {}),
+    };
+}
+
 /** A fresh browser-run id: 12 hex digits. */
 export function newRunId(): string {
     const bytes = new Uint8Array(6);
@@ -64,6 +177,8 @@ export function runningName(s: ListedTTY): string {
 export type RunningTabsHandlers = {
     /** Show the session as a pane tab in this window. */
     onOpen: (s: ListedTTY) => void;
+    /** Show every pane tab of a space in this window, in its order. */
+    onOpenSpace: (space: OfferedSpace) => void;
     /** End the session and close its pane tab. */
     onEnd: (s: ListedTTY) => void;
     /** Called before the list opens, to bring it up to date. */
@@ -128,40 +243,61 @@ export function mountRunningTabs(host: HTMLElement, handlers: RunningTabsHandler
         heading.className = "at-running__heading";
         heading.textContent = "Running pane tabs";
         const rows: HTMLElement[] = [heading];
-        for (const s of offered) {
-            const row = doc.createElement("div");
-            row.className = "at-running__item";
-            row.dataset.ttyId = s.id;
-
-            const open = doc.createElement("button");
-            open.type = "button";
-            open.className = "at-running__open";
-            open.setAttribute("role", "menuitem");
-            open.textContent = runningName(s);
-            open.title = "Open in this window";
-            open.addEventListener("click", () => {
-                closeMenu();
-                handlers.onOpen(s);
-            });
-
-            const end = doc.createElement("button");
-            end.type = "button";
-            end.className = "at-running__end";
-            end.textContent = "End";
-            end.title = "End this pane tab's program";
-            end.addEventListener("click", () => {
-                closeMenu();
-                handlers.onEnd(s);
-            });
-
-            row.append(open, end);
-            rows.push(row);
+        for (const space of groupSpaces(offered)) {
+            if (space.tabs.length > 1) {
+                const row = doc.createElement("div");
+                row.className = "at-running__space";
+                row.dataset.spaceId = space.id ?? "";
+                const open = doc.createElement("button");
+                open.type = "button";
+                open.className = "at-running__open-space";
+                open.setAttribute("role", "menuitem");
+                open.textContent = `Open all ${space.tabs.length}: ${spaceName(space)}`;
+                open.title = "Open these pane tabs in this window, in their order";
+                open.addEventListener("click", () => {
+                    closeMenu();
+                    handlers.onOpenSpace(space);
+                });
+                row.append(open);
+                rows.push(row);
+            }
+            rows.push(...space.tabs.map(itemRow));
         }
         const hint = doc.createElement("div");
         hint.className = "at-running__hint";
         hint.textContent = "Still running after their side panel closed";
         rows.push(hint);
         menu.replaceChildren(...rows);
+    };
+
+    const itemRow = (s: ListedTTY): HTMLElement => {
+        const row = doc.createElement("div");
+        row.className = "at-running__item";
+        row.dataset.ttyId = s.id;
+
+        const open = doc.createElement("button");
+        open.type = "button";
+        open.className = "at-running__open";
+        open.setAttribute("role", "menuitem");
+        open.textContent = runningName(s);
+        open.title = "Open in this window";
+        open.addEventListener("click", () => {
+            closeMenu();
+            handlers.onOpen(s);
+        });
+
+        const end = doc.createElement("button");
+        end.type = "button";
+        end.className = "at-running__end";
+        end.textContent = "End";
+        end.title = "End this pane tab's program";
+        end.addEventListener("click", () => {
+            closeMenu();
+            handlers.onEnd(s);
+        });
+
+        row.append(open, end);
+        return row;
     };
 
     const openMenu = async () => {
