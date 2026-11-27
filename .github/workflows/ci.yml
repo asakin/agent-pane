@@ -14,7 +14,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # A pull request that changes only documentation skips the other jobs.
+  # A pull request that changes only documentation or the Tessl factory's
+  # configuration skips the other jobs.
   # Skipped jobs count as passed for the required checks.
   changes:
     runs-on: ubuntu-latest
@@ -36,8 +37,10 @@ jobs:
             exit 0
           fi
           # Documentation: Markdown outside scripts/ and skills/ (those ship
-          # in the release), and rfcs/, docs/, media/ and LICENSE.
-          code=$(git diff --name-only "$BASE...$HEAD" | grep -v -E '^(rfcs/|docs/|media/|LICENSE$)' | grep -v -E '^([^/]+|\.github/[^/]+|tessl-factory/.+)\.md$' || true)
+          # in the release), and rfcs/, docs/, media/ and LICENSE. Factory
+          # configuration: tessl.json, verifiers/, tessl-factory/ and .tessl/,
+          # which only Tessl reads.
+          code=$(git diff --name-only "$BASE...$HEAD" | grep -v -E '^(rfcs/|docs/|media/|LICENSE$)' | grep -v -E '^([^/]+|\.github/[^/]+)\.md$' | grep -v -E '^(tessl\.json$|verifiers/|tessl-factory/|\.tessl/)' || true)
           if [ -n "$code" ]; then echo "code=true"; else echo "code=false"; fi >>"$GITHUB_OUTPUT"
 
   extension:
