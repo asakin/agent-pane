@@ -1,7 +1,7 @@
 # RFC 0004: A layout document for Durable pane tabs
 
-- **Status:** Proposed
-- **Issue:** None yet
+- **Status:** Accepted
+- **Issue:** #90
 - **Author:** Claude, for @asakin
 
 ## Summary
@@ -94,7 +94,11 @@ Any client of the core can call `doc.set`, so the host treats what it reads as u
 
 ### Restoring
 
-`tty.list` gains the space and position of each Durable pane tab. A space whose window is not open in this browser run is offered to the side panel as a whole. Taking it rewrites that space's `agentPane.window` to the new window.
+`tty.list` gains the space and position of each Durable pane tab. A space whose window is not open in this browser run is offered as a whole in the Running pane tabs list of every window. Taking it rewrites that space's `agentPane.window` to the new window, and the other windows stop offering it.
+
+Chrome quitting, crashing and being killed are the same case. The host writes the document on every change, not at shutdown, so a killed Chrome loses at most the write in flight. The browser-run id is made again when Chrome starts, so after any of the three no space's window is open and every space is offered.
+
+Approvals do not carry into a restored space: they are given for tabs of a window, and they end when the host stops or the window closes, as today. A lock carries while the same Chrome run continues, for example when a space is taken into another window. Chrome gives tabs new ids when it starts, so after a restart a restored pane tab is unlocked.
 
 ### Testing
 
@@ -119,13 +123,17 @@ The document logic is tested against the fake core in `internal/cmd`, and agains
 - tmux exposes sessions, windows and panes to any client through `list-sessions`, `list-windows` and `list-panes`, which is what lets other tools attach to an arrangement they did not create.
 - Chrome's own session restore brings back windows with their tabs in order, which is the behavior a person expects of the pane tabs beside them.
 
+## Questions settled at acceptance
+
+- **What a space is.** One per Chrome window. A space outlives its window in the document, and a person can take it into any window; spaces are offered for visibility, not kept apart by window.
+- **Source of truth.** The document is what the side panel restores from. `storage.session` is the panel's working copy while Chrome runs.
+- **The shared shape.** The Herdr app's layout shape, as shown above, with field names checked against the `herdr-app` document and `hc schema` of the pinned herdr-core.
+- **Other writers.** The document is read-only for every client but the host. The host does not apply order or name changes another client writes; its next write replaces them.
+- **The document's name.** `agent-pane`, matching the `agent-pane.*` labels and `HC_SESSION=agent-pane`.
+
 ## Unresolved questions
 
-- **What a space is.** One per Chrome window is the simplest mapping, but a window id does not survive a Chrome restart. Should a space instead be a named set a person keeps, shown in whichever window opens it?
-- **Source of truth.** Is the document what the side panel restores from, as proposed, or a published copy of state the extension keeps elsewhere?
-- **The shared shape.** Is the Herdr app's layout shape stable enough to adopt, and would herdr-core document it?
-- **Other writers.** Should a client such as a Herdr app be able to reorder or rename pane tabs by writing the document, or is it read-only for everyone but the host?
-- **The document's name.** `agent-pane` follows the Herdr app's `herdr-app`.
+- **A published shape.** Would herdr-core document the layout shape, so that Agent Pane does not depend on the Herdr app's code for it?
 
 ## Future possibilities
 
