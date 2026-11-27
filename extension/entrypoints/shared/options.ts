@@ -10,7 +10,7 @@ import type {
 import { type BrowserReport, browserReportFromResponse, browserStatusLabel } from "./browserControl";
 import { clampFontSize } from "./fontSize";
 import { normalizeTerminalBackend } from "./terminalBackend";
-import { THEME_DEFAULT, themeOptions } from "./themes";
+import { THEME_DEFAULT, allThemeOptions, darkThemeSetting } from "./themes";
 import {
     BLOCKED_DOMAINS_KEY,
     type BlockedDomainEdit,
@@ -26,6 +26,7 @@ const configPathEl = document.getElementById("config-path") as HTMLParagraphElem
 const commandEl = document.getElementById("command") as HTMLInputElement;
 const argsEl = document.getElementById("args") as HTMLInputElement;
 const themeEl = document.getElementById("theme") as HTMLSelectElement;
+const themeDarkEl = document.getElementById("themeDark") as HTMLSelectElement;
 const terminalBackendEl = document.getElementById("terminalBackend") as HTMLSelectElement;
 const fontSizeEl = document.getElementById("fontSize") as HTMLInputElement;
 const envEl = document.getElementById("env") as HTMLTextAreaElement;
@@ -284,7 +285,7 @@ async function load() {
     configPathEl.textContent = path;
 
     themeEl.replaceChildren();
-    for (const choice of themeOptions(themes ?? [], config.theme)) {
+    for (const choice of allThemeOptions(themes ?? [], config.theme)) {
         const opt = document.createElement("option");
         opt.value = choice.value;
         opt.textContent = choice.label;
@@ -294,6 +295,19 @@ async function load() {
     if (!themeEl.value) {
         themeEl.selectedIndex = 0;
     }
+
+    const darkTheme = darkThemeSetting(config);
+    const sameAsTheme = document.createElement("option");
+    sameAsTheme.value = "";
+    sameAsTheme.textContent = "Same as Theme";
+    themeDarkEl.replaceChildren(sameAsTheme);
+    for (const choice of allThemeOptions(themes ?? [], darkTheme)) {
+        const opt = document.createElement("option");
+        opt.value = choice.value;
+        opt.textContent = choice.label;
+        themeDarkEl.appendChild(opt);
+    }
+    themeDarkEl.value = darkTheme;
 
     commandEl.value = String(config.command ?? "");
     const args = Array.isArray(config.args) ? (config.args as string[]) : [];
@@ -322,6 +336,7 @@ async function save(event: Event) {
         command: commandEl.value.trim() || undefined,
         args: parseArgs(argsEl.value),
         theme: themeEl.value,
+        themeDark: themeDarkEl.value || null,
         env: textToEnv(envEl.value),
         cwd: cwdEl.value.trim() || null,
         xterm: {

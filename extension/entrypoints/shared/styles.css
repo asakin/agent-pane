@@ -66,6 +66,7 @@ body.at-options {
 .at-tabs {
     --at-launcher-width: 52px;
     --at-fontsize-width: 44px;
+    --at-settings-width: 28px;
     flex: 0 0 auto;
     display: flex;
     align-items: stretch;
@@ -83,11 +84,11 @@ body.at-options {
 }
 
 .at-tabs__list {
-    /* Shrink-wrap to tabs so launcher sits after the last tab; cap so launcher and font-size buttons stay visible. */
+    /* Shrink-wrap to tabs so launcher sits after the last tab; cap so launcher, font-size and settings buttons stay visible. */
     display: flex;
     flex: 0 1 auto;
     width: max-content;
-    max-width: calc(100% - var(--at-launcher-width) - var(--at-fontsize-width));
+    max-width: calc(100% - var(--at-launcher-width) - var(--at-fontsize-width) - var(--at-settings-width));
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
@@ -415,6 +416,112 @@ body.at-options {
 .at-fontsize__button:disabled {
     opacity: 0.35;
     cursor: default;
+}
+
+/* Settings button and its popover, after the font-size group. */
+.at-settings {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: stretch;
+    width: var(--at-settings-width);
+    border-left: 1px solid rgba(0, 0, 0, 0.12);
+
+    @media (prefers-color-scheme: dark) {
+        border-left-color: rgba(255, 255, 255, 0.12);
+    }
+}
+
+.at-settings__button {
+    flex: 1 1 0;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.at-settings__button:hover {
+    background: rgba(0, 0, 0, 0.06);
+
+    @media (prefers-color-scheme: dark) {
+        background: rgba(255, 255, 255, 0.08);
+    }
+}
+
+.at-settings__menu {
+    position: fixed;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: max-content;
+    max-width: min(280px, calc(100vw - 16px));
+    padding: 10px;
+    border: 1px solid #d0d0d0;
+    border-radius: 8px;
+    background: #ffffff;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    color: #1a1a1a;
+    font-size: 12px;
+
+    @media (prefers-color-scheme: dark) {
+        border-color: #3a3a3a;
+        background: #2a2a2a;
+        color: #e8eaed;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    }
+}
+
+.at-settings__heading {
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0.7;
+}
+
+.at-settings__field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.at-settings__field select {
+    font: inherit;
+}
+
+.at-settings__check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.at-settings__note {
+    margin: 0;
+    font-size: 11px;
+    opacity: 0.75;
+}
+
+.at-settings__note:empty {
+    display: none;
+}
+
+.at-settings__all {
+    align-self: flex-start;
+    margin: 0;
+    padding: 4px 8px;
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+
+    @media (prefers-color-scheme: dark) {
+        border-color: rgba(255, 255, 255, 0.2);
+    }
 }
 
 .at-launcher__primary,
