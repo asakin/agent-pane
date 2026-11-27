@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -148,7 +149,11 @@ func watchHangup(reply *os.File) <-chan struct{} {
 	gone := make(chan struct{})
 	go func() {
 		defer close(gone)
-		_, _ = reply.Read(make([]byte, 1))
+		start := time.Now()
+		n, err := reply.Read(make([]byte, 1))
+		if !errors.Is(err, os.ErrClosed) {
+			println("DIAG watchHangup", n, fmt.Sprintf("%v %#v", err, err), time.Since(start).String())
+		}
 	}()
 	return gone
 }
