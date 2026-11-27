@@ -42,6 +42,12 @@ verified issue and author details:
 - **Author:** Tessl, for @owner
 ```
 
+Status is Proposed while the RFC is under review, Accepted once the
+maintainer merges it as accepted, and Implemented once the work it describes
+has merged. The pull request that completes it sets Implemented and adds
+`- **Implemented in:** #<pr>` after the Status line, listing every pull
+request that delivered part of it.
+
 Use these second-level headings in this order so readers can find the same
 kind of information across RFCs:
 
