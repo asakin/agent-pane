@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-pane/internal/herdrcore"
@@ -130,7 +132,6 @@ type layoutPlace struct {
 	// in, as the extension names it (windowName), when that was this
 	// browser's.
 	Space    string `json:"id"`
-	Name     string `json:"name,omitempty"`
 	Window   string `json:"window,omitempty"`
 	Position int    `json:"position"`
 	Active   bool   `json:"active,omitempty"`
@@ -190,163 +191,157 @@ func (m *SessionManager) layoutSessions() map[string]layoutSession {
 	return out
 }
 
-// syncLayout applies change to the host's spaces and writes the document. A
-// failure is logged: the next write tries again with everything since.
-func (m *SessionManager) syncLayout(change *layoutChange) {
-	if err := m.writeLayout(change); err != nil {
-		m.logger.Warn("failed to write the pane tab layout", "error", err)
-	}
+// layoutState is the host's side of the layout document. Its fields are
+// guarded by mu, which is never held across document I/O.
+type layoutState struct {
+	mu sync.Mutex
+	// spaces are the host's own, read from the document once (loaded) and
+	// kept here after, so a change another client writes does not replace
+	// them.
+	spaces []layoutSpace
+	loaded bool
+	// pending are the reports made before the document was read, in order.
+	pending []layoutChange
+	// writer is set while a write runs and closed when it ends; dirty says
+	// the model changed since that write read it.
+	writer chan struct{}
+	dirty  bool
+	// retry tries a failed write again after retryDelay.
+	retry      *time.Timer
+	retryDelay time.Duration
+	// wait and retryFirst, when set, replace layoutWaitBudget and
+	// layoutRetryFirst.
+	wait, retryFirst time.Duration
+}
+
+// syncLayout writes the document after the host's sessions changed.
+func (m *SessionManager) syncLayout() {
+	_ = m.writeLayout(nil)
 }
 
 // writeLayout applies change to the host's spaces and writes the document,
-// once the host knows every Durable pane tab it holds. Before that, or while
-// the host shuts down, it writes nothing: tabs not taken back yet would be
-// dropped.
+// once the host knows every Durable pane tab it holds: before that, tabs
+// not taken back yet would be dropped, and a report's pane tabs cannot all
+// be named, so a report is refused and the panel sends it again.
 func (m *SessionManager) writeLayout(change *layoutChange) error {
 	if _, ok := m.durable.(*coreBackend); !ok {
 		return nil
 	}
 	if !m.ensureRediscovered() {
+		if change != nil {
+			return errors.New(errRediscoveryPending)
+		}
 		return nil
 	}
 	return m.writeLayoutNow(change)
 }
 
-// layoutWaitBudget is how long a caller that starts a write waits for it,
-// unless the SessionManager's layoutWait says otherwise. Past it the write
-// goes on alone, so a slow core never makes a terminal call that already
-// succeeded miss the extension's RPC deadline.
+// layoutWaitBudget is how long a caller that starts a write waits for it.
+// Past it the write goes on alone, so a slow core never makes a terminal
+// call that already succeeded miss the extension's RPC deadline.
 const layoutWaitBudget = time.Second
 
-// layoutRetryFirst (or the SessionManager's layoutRetryFirst) and
-// layoutRetryMax bound the wait before a write that failed is tried again,
-// doubling each time it fails.
+// layoutRetryFirst and layoutRetryMax bound the wait before a write that
+// failed is tried again, doubling each time it fails.
 const (
 	layoutRetryFirst = time.Second
 	layoutRetryMax   = 30 * time.Second
 )
 
-// layoutPendingMax bounds the windows whose reports wait for a document not
-// read yet.
-const layoutPendingMax = 256
-
-// queueLayoutChange keeps a report until the document is read: each window's
-// newest, which replaces its older one but keeps the space that one took, in
-// the order the newest arrived. Each report is a window's whole arrangement,
-// so the newest of each, in that order, ends where all of them would.
-// Guarded by layoutMu.
-func (m *SessionManager) queueLayoutChange(c layoutChange) error {
-	if i := slicesIndex(m.layoutPending, func(p layoutChange) bool { return p.window == c.window }); i >= 0 {
-		if c.space == "" {
-			c.space = m.layoutPending[i].space
-		}
-		m.layoutPending = slices.Delete(m.layoutPending, i, i+1)
-	} else if len(m.layoutPending) >= layoutPendingMax {
-		return fmt.Errorf("too many windows report a layout before the document is read")
-	}
-	m.layoutPending = append(m.layoutPending, c)
-	return nil
-}
+// layoutPendingMax bounds the reports that wait for a document not read
+// yet. Past it a report fails, and the panel sends it again.
+const layoutPendingMax = 1024
 
 // writeLayoutNow applies change to the host's model, then writes the
-// document. The model changes first, so a write that fails loses nothing:
-// it is tried again (retryLayoutLocked), and the next one carries it. One
-// write runs at a time; a caller that finds one running leaves its change
-// for that write to carry and returns at once, and a caller that starts one
-// waits for it at most layoutWaitBudget, so no request waits long on
-// document I/O.
+// document. It fails only when it refuses the change. The model changes
+// before any document I/O, so a write that fails loses nothing: it is logged
+// and tried again. One write runs at a time: a caller that finds one running
+// leaves its change for that write and returns at once, and one that starts
+// a write waits for it at most layoutWaitBudget.
 func (m *SessionManager) writeLayoutNow(change *layoutChange) error {
 	core, ok := m.durable.(*coreBackend)
 	if !ok {
 		return nil
 	}
+	live := m.layoutSessions()
+	l := &m.layout
+	l.mu.Lock()
 	m.mu.RLock()
 	closing, browser := m.closing, m.browser
 	m.mu.RUnlock()
-	if closing {
-		return nil
-	}
-	live := m.layoutSessions()
-	m.layoutMu.Lock()
-	if !m.layoutLoaded && len(live) == 0 {
-		// Nothing to record, and the core need not start for it.
-		m.layoutMu.Unlock()
+	if closing || (!l.loaded && len(live) == 0) {
+		// With no session, nothing to record, and the core need not start.
+		l.mu.Unlock()
 		return nil
 	}
 	if change != nil {
-		if m.layoutLoaded {
-			m.layout = change.apply(m.layout)
-		} else if err := m.queueLayoutChange(*change); err != nil {
+		if l.loaded {
+			l.spaces = change.apply(l.spaces)
+		} else if len(l.pending) < layoutPendingMax {
 			// The host's spaces come from the document, read first.
-			m.layoutMu.Unlock()
-			return err
+			l.pending = append(l.pending, *change)
+		} else {
+			l.mu.Unlock()
+			return errors.New("too many pane tab layout reports wait for the document to be read")
 		}
 	}
-	m.layoutDirty = true
-	if m.layoutWriting || m.layoutClosed {
-		m.layoutMu.Unlock()
+	l.dirty = true
+	if l.writer != nil {
+		l.mu.Unlock()
 		return nil
 	}
-	m.layoutWriting = true
 	done := make(chan struct{})
-	m.layoutWriter = done
-	wait := cmp.Or(m.layoutWait, layoutWaitBudget)
-	m.layoutMu.Unlock()
-	result := make(chan error, 1)
+	l.writer = done
+	wait := cmp.Or(l.wait, layoutWaitBudget)
+	l.mu.Unlock()
 	go func() {
 		defer close(done)
-		result <- m.drainLayout(core, browser)
+		m.drainLayout(core, browser)
 	}()
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
-	case err := <-result:
-		return err
+	case <-done:
 	case <-timer.C:
-		go func() {
-			if err := <-result; err != nil {
-				m.logger.Warn("failed to write the pane tab layout", "error", err)
-			}
-		}()
-		return nil
 	}
+	return nil
 }
 
 // drainLayout writes the model until a write finds it unchanged, fails, or
-// the host shuts down.
-func (m *SessionManager) drainLayout(core *coreBackend, browser string) error {
+// the host shuts down. A failed write is tried again later, so a change the
+// model holds reaches the document without waiting for another change.
+func (m *SessionManager) drainLayout(core *coreBackend, browser string) {
+	l := &m.layout
 	for {
 		err := m.writeLayoutOnce(core, browser)
-		m.layoutMu.Lock()
 		if err != nil {
-			m.layoutDirty = true
-			m.retryLayoutLocked()
+			m.logger.Warn("failed to write the pane tab layout", "error", err)
+		}
+		l.mu.Lock()
+		m.mu.RLock()
+		closing := m.closing
+		m.mu.RUnlock()
+		if err != nil {
+			l.dirty = true
+			if l.retry == nil && !closing {
+				l.retryDelay = min(max(2*l.retryDelay, cmp.Or(l.retryFirst, layoutRetryFirst)), layoutRetryMax)
+				l.retry = time.AfterFunc(l.retryDelay, func() {
+					l.mu.Lock()
+					l.retry = nil
+					l.mu.Unlock()
+					m.syncLayout()
+				})
+			}
 		} else {
-			m.layoutRetryDelay = 0
+			l.retryDelay = 0
 		}
-		if err != nil || !m.layoutDirty || m.layoutClosed {
-			m.layoutWriting = false
-			m.layoutMu.Unlock()
-			return err
+		if err != nil || !l.dirty || closing {
+			l.writer = nil
+			l.mu.Unlock()
+			return
 		}
-		m.layoutMu.Unlock()
+		l.mu.Unlock()
 	}
-}
-
-// retryLayoutLocked tries a failed write again later, so a change the model
-// holds reaches the document without waiting for another change. Guarded by
-// layoutMu.
-func (m *SessionManager) retryLayoutLocked() {
-	if m.layoutRetry != nil || m.layoutClosed {
-		return
-	}
-	m.layoutRetryDelay = min(max(2*m.layoutRetryDelay, cmp.Or(m.layoutRetryFirst, layoutRetryFirst)), layoutRetryMax)
-	m.layoutRetry = time.AfterFunc(m.layoutRetryDelay, func() {
-		m.layoutMu.Lock()
-		m.layoutRetry = nil
-		m.layoutMu.Unlock()
-		m.syncLayout(nil)
-	})
 }
 
 // writeLayoutOnce writes the host's model into the document as it is now.
@@ -357,10 +352,11 @@ func (m *SessionManager) writeLayoutOnce(core *coreBackend, browser string) erro
 	if err != nil {
 		return err
 	}
+	l := &m.layout
 	for range layoutWriteAttempts {
-		m.layoutMu.Lock()
-		m.layoutDirty = false
-		m.layoutMu.Unlock()
+		l.mu.Lock()
+		l.dirty = false
+		l.mu.Unlock()
 		doc, err := conn.DocGet(ctx, layoutDocName)
 		if err != nil {
 			return err
@@ -374,22 +370,22 @@ func (m *SessionManager) writeLayoutOnce(core *coreBackend, browser string) erro
 			return err
 		}
 		read := parseLayout(doc.Value)
-		m.layoutMu.Lock()
+		l.mu.Lock()
 		// Taken while the model cannot change, so every pane tab a change in
 		// the model names is in it: a session that starts later is written
 		// by the next pass.
 		live := m.layoutSessions()
-		if !m.layoutLoaded {
-			m.layout = ownSpaces(read, browser, live)
-			for _, change := range m.layoutPending {
-				m.layout = change.apply(m.layout)
+		if !l.loaded {
+			l.spaces = ownSpaces(read, browser, live)
+			for _, change := range l.pending {
+				l.spaces = change.apply(l.spaces)
 			}
-			m.layoutPending = nil
-			m.layoutLoaded = true
+			l.pending = nil
+			l.loaded = true
 		}
-		m.layout = reconcileSpaces(m.layout, live)
-		next := mergeLayout(read, m.layout, live, recorded)
-		m.layoutMu.Unlock()
+		l.spaces = reconcileSpaces(l.spaces, live)
+		next := mergeLayout(read, l.spaces, live, recorded)
+		l.mu.Unlock()
 		if sameLayout(doc.Value, next) {
 			return nil
 		}
@@ -427,6 +423,9 @@ func ownSpaces(read layoutDoc, browser string, live map[string]layoutSession) []
 			}
 		}
 		if mine {
+			// The host names no space: a name another client wrote is not
+			// kept.
+			sp.Name = ""
 			own = append(own, sp)
 		}
 	}
@@ -452,11 +451,12 @@ func reconcileSpaces(spaces []layoutSpace, live map[string]layoutSession) []layo
 		sp.Tabs = tabs
 		out = append(out, sp)
 	}
-	for _, ls := range sortedSessions(live) {
+	added := slices.SortedFunc(maps.Values(live), func(a, b layoutSession) int { return strings.Compare(a.tab, b.tab) })
+	for _, ls := range added {
 		if placed[ls.tab] {
 			continue
 		}
-		i := slicesIndex(out, func(sp layoutSpace) bool { return sp.AgentPane.Window == ls.window })
+		i := slices.IndexFunc(out, func(sp layoutSpace) bool { return sp.AgentPane.Window == ls.window })
 		if i < 0 {
 			out = append(out, layoutSpace{ID: newLayoutID("sp"), AgentPane: layoutSpaceMeta{Window: ls.window}})
 			i = len(out) - 1
@@ -468,11 +468,8 @@ func reconcileSpaces(spaces []layoutSpace, live map[string]layoutSession) []layo
 		if len(sp.Tabs) == 0 {
 			continue
 		}
-		if slicesIndex(sp.Tabs, func(t layoutTab) bool { return t.ID == sp.AgentPane.Active }) < 0 {
+		if slices.IndexFunc(sp.Tabs, func(t layoutTab) bool { return t.ID == sp.AgentPane.Active }) < 0 {
 			sp.AgentPane.Active = sp.Tabs[0].ID
-		}
-		if sp.Tabs == nil {
-			sp.Tabs = []layoutTab{}
 		}
 		kept = append(kept, sp)
 	}
@@ -486,30 +483,6 @@ func (ls layoutSession) layoutTab(locked *int) layoutTab {
 		Root:      layoutBlock{ID: ls.tab, Type: "block", Content: layoutBlockContent{Terminal: ls.terminal}},
 		AgentPane: layoutTabMeta{Agent: ls.agent, LockedTab: locked},
 	}
-}
-
-// sortedSessions orders sessions by pane id, so tabs added back come in a
-// stable order.
-func sortedSessions(live map[string]layoutSession) []layoutSession {
-	out := make([]layoutSession, 0, len(live))
-	for _, ls := range live {
-		out = append(out, ls)
-	}
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j].tab < out[j-1].tab; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
-	return out
-}
-
-func slicesIndex[T any](s []T, f func(T) bool) int {
-	for i, v := range s {
-		if f(v) {
-			return i
-		}
-	}
-	return -1
 }
 
 // mergeLayout is the document to write: the spaces of other hosts as read,
@@ -612,10 +585,10 @@ type layoutChange struct {
 func (c layoutChange) apply(spaces []layoutSpace) []layoutSpace {
 	target := -1
 	if c.space != "" {
-		target = slicesIndex(spaces, func(sp layoutSpace) bool { return sp.ID == c.space })
+		target = slices.IndexFunc(spaces, func(sp layoutSpace) bool { return sp.ID == c.space })
 	}
 	if target < 0 {
-		target = slicesIndex(spaces, func(sp layoutSpace) bool { return sp.AgentPane.Window == c.window })
+		target = slices.IndexFunc(spaces, func(sp layoutSpace) bool { return sp.AgentPane.Window == c.window })
 	}
 	if target < 0 {
 		if len(c.tabs) == 0 {
@@ -652,13 +625,13 @@ func (c layoutChange) apply(spaces []layoutSpace) []layoutSpace {
 // layoutPlaces is where each of the host's Durable pane tabs sits, by public
 // pane id, for tty.list.
 func (m *SessionManager) layoutPlaces() map[string]layoutPlace {
-	m.layoutMu.Lock()
-	defer m.layoutMu.Unlock()
+	m.layout.mu.Lock()
+	defer m.layout.mu.Unlock()
 	m.mu.RLock()
 	browser := m.browser
 	m.mu.RUnlock()
 	places := map[string]layoutPlace{}
-	for _, sp := range m.layout {
+	for _, sp := range m.layout.spaces {
 		window := ""
 		if b, w, ok := strings.Cut(sp.AgentPane.Window, ":"); ok && b == browser {
 			window = w
@@ -666,7 +639,6 @@ func (m *SessionManager) layoutPlaces() map[string]layoutPlace {
 		for i, tab := range sp.Tabs {
 			places[tab.ID] = layoutPlace{
 				Space:     sp.ID,
-				Name:      sp.Name,
 				Window:    window,
 				Position:  i,
 				Active:    tab.ID == sp.AgentPane.Active,

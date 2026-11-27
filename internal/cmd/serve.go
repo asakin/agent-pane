@@ -152,27 +152,8 @@ type SessionManager struct {
 	// detachedEarly holds the ids of sessions whose window closed before
 	// the host took them back; guarded by mu.
 	detachedEarly map[string]struct{}
-	// layout is this host's spaces of the layout document (layout.go),
-	// read from the document once (layoutLoaded) and kept here after, so a
-	// change another client writes does not replace it. Reports made before
-	// that read wait in layoutPending, each window's newest. layoutWriting says a write runs, and
-	// layoutDirty that the model changed since it read it; layoutWriter is
-	// closed when the last write started ends. layoutRetry tries a failed
-	// write again after layoutRetryDelay. layoutWait and layoutRetryFirst,
-	// when set, replace layoutWaitBudget and layoutRetryFirst. All are
-	// guarded by layoutMu, which is never held across document I/O.
-	layoutMu         sync.Mutex
-	layout           []layoutSpace
-	layoutLoaded     bool
-	layoutPending    []layoutChange
-	layoutWriting    bool
-	layoutDirty      bool
-	layoutWriter     chan struct{}
-	layoutClosed     bool
-	layoutRetry      *time.Timer
-	layoutRetryDelay time.Duration
-	layoutWait       time.Duration
-	layoutRetryFirst time.Duration
+	// layout is the host's side of the layout document (layout.go).
+	layout layoutState
 }
 
 func (m *SessionManager) takePageRead() bool {
@@ -560,7 +541,7 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 	session.mu.Unlock()
 	if session.isDurable() {
 		m.record(session)
-		m.syncLayout(nil)
+		m.syncLayout()
 	}
 
 	// The session is reaped when its program exits or its terminal ends.
@@ -664,7 +645,7 @@ func (m *SessionManager) Destroy(id string) error {
 	m.dropTokens(id)
 	session.finalize()
 	if durable {
-		m.syncLayout(nil)
+		m.syncLayout()
 	}
 	return nil
 }
@@ -690,17 +671,15 @@ func (m *SessionManager) Close() {
 	m.mu.Lock()
 	m.closing = true
 	m.mu.Unlock()
-	m.layoutMu.Lock()
-	m.layoutClosed = true
-	if m.layoutRetry != nil {
-		m.layoutRetry.Stop()
-		m.layoutRetry = nil
+	// No layout write starts once closing is set (writeLayoutNow checks it
+	// under layout.mu), so the one running now is the last.
+	m.layout.mu.Lock()
+	if m.layout.retry != nil {
+		m.layout.retry.Stop()
+		m.layout.retry = nil
 	}
-	var writer chan struct{}
-	if m.layoutWriting {
-		writer = m.layoutWriter
-	}
-	m.layoutMu.Unlock()
+	writer := m.layout.writer
+	m.layout.mu.Unlock()
 	m.creating.Wait()
 	m.ending.Wait()
 	// A write still running reads the live sessions: let it end before they
@@ -751,7 +730,7 @@ func (m *SessionManager) remove(id string) {
 	m.dropTokens(id)
 	session.finalize()
 	if durable {
-		m.syncLayout(nil)
+		m.syncLayout()
 	}
 }
 
@@ -1030,7 +1009,7 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			sessions.setWindow(session, sessions.windowLabel(params.Window))
 		}
 		if session.isDurable() {
-			sessions.syncLayout(nil)
+			sessions.syncLayout()
 		}
 
 		return sessions.endpoint(session.ID)

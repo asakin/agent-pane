@@ -102,7 +102,8 @@ export async function loadWindowState(windowId: number): Promise<WindowTabState 
     return checked;
 }
 
-async function chromeTabExists(tabId: number): Promise<boolean> {
+/** Whether the Chrome tab exists. */
+export async function chromeTabExists(tabId: number): Promise<boolean> {
     try {
         await browser.tabs.get(tabId);
         return true;

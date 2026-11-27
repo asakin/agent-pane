@@ -23,7 +23,7 @@ func (c *Client) DocGet(ctx context.Context, name string) (Doc, error) {
 // DocSet writes value as the document name if its version is still version,
 // and returns the new version. A writer that lost the race gets an error of
 // kind "conflict" (see IsKind) and should read the document again. The core
-// sends a "doc" event to every subscriber.
+// sends a "doc" event only to subscriptions with no label filter.
 func (c *Client) DocSet(ctx context.Context, name string, value any, version uint64) (uint64, error) {
 	var r struct {
 		Version uint64 `json:"version"`
