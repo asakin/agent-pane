@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -138,6 +139,9 @@ func TestLayoutDocumentFollowsDurablePaneTabs(t *testing.T) {
 }
 
 func TestBuiltinPaneTabsAreNotInTheLayout(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS terminals start through the spawn agent")
+	}
 	core := newFakeCore()
 	h := newLayoutHarness(t, core, "b1")
 	ep := h.create(t, shell("7@r1"))
