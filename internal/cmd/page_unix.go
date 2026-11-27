@@ -110,6 +110,9 @@ func (s *Session) handlePageRequest(reply *os.File, body []byte, call func() ext
 		ctx, cancel := s.requestContext(t.total(), watchHangup(reply))
 		defer cancel()
 		content, err := s.pageRead(ctx, t, call(), req)
+		if ctx.Err() != nil && !s.isClosed() {
+			println("DIAG early hangup", fmt.Sprint(err))
+		}
 		out := pageReply{ID: req.ID, Content: content}
 		if err != nil {
 			out = pageReply{ID: req.ID, Error: err.Error()}
@@ -159,11 +162,7 @@ func watchHangup(reply *os.File) <-chan struct{} {
 	gone := make(chan struct{})
 	go func() {
 		defer close(gone)
-		start := time.Now()
-		n, err := reply.Read(make([]byte, 1))
-		if !errors.Is(err, os.ErrClosed) {
-			println("DIAG watchHangup", n, fmt.Sprintf("%v %#v", err, err), time.Since(start).String())
-		}
+		_, _ = reply.Read(make([]byte, 1))
 	}()
 	return gone
 }
@@ -240,6 +239,9 @@ func pageClient(fdEnv string, req pageRequest) (string, error) {
 	}
 	defer mine.Close()
 	r := &heldPeerReader{File: mine, peer: pair[1]}
+	if os.Getenv("DIAG_OLD_CLIENT") != "" {
+		r.closePeer()
+	}
 	defer r.closePeer()
 
 	req.ID = strconv.Itoa(os.Getpid())
