@@ -1106,14 +1106,7 @@ func NewMessagingHost(logger *slog.Logger, sessions *SessionManager, version str
 			return nil, fmt.Errorf("failed to unmarshal xterm config params: %w", err)
 		}
 
-		var theme string
-		if darkTheme := cfg().String("themeDark"); params.Variant == "dark" && darkTheme != "" {
-			theme = darkTheme
-		} else {
-			theme = cfg().String("theme")
-		}
-
-		themeBytes, err := themeFs.ReadFile(filepath.Join("themes", theme+".json"))
+		themeBytes, err := themeFs.ReadFile(filepath.Join("themes", terminalThemeName(params.Variant)+".json"))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read theme file: %w", err)
 		}
@@ -1264,6 +1257,15 @@ func folderPick(stdout []byte, runErr error) (string, error) {
 		return "", fmt.Errorf("folder picker: %s", strings.TrimSpace(detail))
 	}
 	return strings.TrimSpace(string(stdout)), nil
+}
+
+// terminalThemeName is the theme for the browser's color scheme: themeDark
+// when set and the variant is dark, else theme.
+func terminalThemeName(variant string) string {
+	if darkTheme := cfg().String("themeDark"); variant == "dark" && darkTheme != "" {
+		return darkTheme
+	}
+	return cfg().String("theme")
 }
 
 func listThemeNames() ([]string, error) {

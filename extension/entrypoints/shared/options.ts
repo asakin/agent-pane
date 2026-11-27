@@ -10,6 +10,7 @@ import type {
 import { type BrowserReport, browserReportFromResponse, browserStatusLabel } from "./browserControl";
 import { clampFontSize } from "./fontSize";
 import { normalizeTerminalBackend } from "./terminalBackend";
+import { THEME_DEFAULT, themeOptions } from "./themes";
 import {
     BLOCKED_DOMAINS_KEY,
     type BlockedDomainEdit,
@@ -69,21 +70,6 @@ function textToEnv(text: string): Record<string, string> {
         out[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
     }
     return out;
-}
-
-function fillSelect(select: HTMLSelectElement, values: string[], selected?: string) {
-    select.innerHTML = "";
-    for (const value of values) {
-        const opt = document.createElement("option");
-        opt.value = value;
-        opt.textContent = value;
-        select.appendChild(opt);
-    }
-    if (selected !== undefined && values.includes(selected)) {
-        select.value = selected;
-    } else if (values.length > 0) {
-        select.value = values[0]!;
-    }
 }
 
 function renderAgents(agents: AgentInfo[]) {
@@ -297,8 +283,17 @@ async function load() {
     knownAgents = Array.isArray(agents) ? agents : [];
     configPathEl.textContent = path;
 
-    const themeList = themes?.length ? themes : ["Tomorrow Night"];
-    fillSelect(themeEl, themeList, String(config.theme ?? "Tomorrow Night"));
+    themeEl.replaceChildren();
+    for (const choice of themeOptions(themes ?? [], config.theme)) {
+        const opt = document.createElement("option");
+        opt.value = choice.value;
+        opt.textContent = choice.label;
+        themeEl.appendChild(opt);
+    }
+    themeEl.value = typeof config.theme === "string" ? config.theme : THEME_DEFAULT;
+    if (!themeEl.value) {
+        themeEl.selectedIndex = 0;
+    }
 
     commandEl.value = String(config.command ?? "");
     const args = Array.isArray(config.args) ? (config.args as string[]) : [];
