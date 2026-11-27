@@ -139,12 +139,12 @@ The built-in "tom" extension, on by default, appends `GOOSE_MOIM_MESSAGE_FILE`'s
 
 1. Loads the definition `<id>` from the catalog, as the launcher does.
 2. Finds its `command` on `PATH`, skipping the shims folder, so it never finds itself. When nothing is found it prints the shell's usual "command not found" message and exits 127.
-3. When `AGENT_PANE=1` and no `yield` condition holds, adds `pane.env`, then runs the command with `pane.args` followed by `args`. Otherwise it runs the command with `args` alone.
+3. When `AGENT_PANE=1` and no `yield` condition holds, adds `pane.env`, then runs the command with `pane.args` followed by `args`. Otherwise it runs the command with `args` alone. It never adds the definition's top-level `args`: whoever starts the step passes the arguments it wants.
 4. On Unix it replaces itself with the command (`execve`), so signals, exit status and the terminal go straight to the agent. On Windows, which has no `exec`, it starts the command, waits, and exits with its status.
 
 The binary started under another name than `agent-pane` (`agent-pane.exe` on Windows) acts as `exec-agent` for the enabled definition whose `command` is that name. That is how a shim works: it is a link to the binary, not a script, so there is no quoting layer between the person's arguments and the agent.
 
-The launcher, in `buildTerminalCommand` in [`internal/cmd/serve.go`](../../internal/cmd/serve.go), starts `agent-pane exec-agent <id>` by the binary's absolute path, through the login shell as today, instead of the agent's command.
+The launcher, in `buildTerminalCommand` in [`internal/cmd/serve.go`](../../internal/cmd/serve.go), starts `agent-pane exec-agent <id>` by the binary's absolute path, through the login shell as today, instead of the agent's command. It passes the same arguments it passes the agent today, the definition's top-level `args` followed by the invocation's, so a launched agent gets `pane.args`, then the definition's `args`, then the invocation's, and a definition without `pane` gets exactly today's command line. A typed command through a shim passes only what the person typed, so it gets `pane.args` and the person's arguments, and not the definition's `args`, which stay launcher defaults as today. Because the definition's and the person's arguments come after `pane.args`, an agent that lets a later flag win, such as Claude Code's `--append-system-prompt`, keeps theirs.
 
 ### The shims folder
 
@@ -202,7 +202,7 @@ Where an agent gets no session context (Cursor, a `yield` that holds, an agent r
 | `shims` | An entry is missing, extra, or does not point at the installed binary | |
 | `instructions block` | | `~/AGENTS.md` or `~/CLAUDE.md` still holds an Agent Pane block |
 
-Its help text and the README stop saying `~/AGENTS.md` and `~/CLAUDE.md` hold an Agent Pane block, and [agents/README.md](../../agents/README.md) documents `pane`. `scripts/install_test.sh` replaces its block assertions with: a block is removed and surrounding lines kept, a file holding only the block is deleted, and the new files and shims are written and refreshed. `internal/cmd` tests cover: loading `pane`; `exec-agent` adding the adapter only with `AGENT_PANE=1`, skipping itself on `PATH`, each `yield` kind, and the shim name dispatch; the shims folder at the front of `PATH` in `sessionEnv` and `helperEnv`; and, for zsh, bash and fish, that a startup file which prepends a folder leaves the shims folder first.
+Its help text and the README stop saying `~/AGENTS.md` and `~/CLAUDE.md` hold an Agent Pane block, and [agents/README.md](../../agents/README.md) documents `pane`. `scripts/install_test.sh` replaces its block assertions with: a block is removed and surrounding lines kept, a file holding only the block is deleted, and the new files and shims are written and refreshed. `internal/cmd` tests cover: loading `pane`; `exec-agent` adding the adapter only with `AGENT_PANE=1`, the launcher's command line keeping the definition's `args` before the invocation's, a shim passing only the typed arguments, skipping itself on `PATH`, each `yield` kind, and the shim name dispatch; the shims folder at the front of `PATH` in `sessionEnv` and `helperEnv`; and, for zsh, bash and fish, that a startup file which prepends a folder leaves the shims folder first.
 
 ## Drawbacks
 
