@@ -45,7 +45,8 @@
           }
         ]
       },
-      "environment": "factory-siglify-agent-pane-implement"
+      "environment": "factory-siglify-agent-pane-implement",
+      "instructions": "When the issue implements an RFC in docs/rfcs/ and this pull request completes it, set the RFC's Status to Implemented and add `- **Implemented in:** #<this pull request>` after the Status line, in a commit after the pull request is open."
     },
     "merge-conflict-sweep": {
       "tags": [

@@ -1,6 +1,7 @@
 # RFC 0004: A layout document for Durable pane tabs
 
-- **Status:** Accepted
+- **Status:** Implemented
+- **Implemented in:** #92
 - **Issue:** #90
 - **Author:** Claude, for @asakin
 

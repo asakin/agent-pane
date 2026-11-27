@@ -1,6 +1,7 @@
 # RFC 0002: Windows support
 
-- **Status:** Accepted
+- **Status:** Implemented
+- **Implemented in:** #63
 - **Issue:** #47
 - **Author:** Tessl, for @asakin
 
