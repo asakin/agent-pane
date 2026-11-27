@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseHTML } from "linkedom";
-import { byPosition, groupSpaces, listedTab, mountRunningTabs, newRunId, openSpace, runningName, serialReporter, spaceName, splitRunning, windowName, windowRun } from "../entrypoints/shared/runningTabs.ts";
+import { byPosition, groupSpaces, listedTab, mountRunningTabs, newRunId, openSpace, restoreAtStart, runningName, serialReporter, spaceName, splitRunning, windowName, windowRun } from "../entrypoints/shared/runningTabs.ts";
 
 const durable = (id, window, extra = {}) => ({ id, durable: true, ...(window ? { window } : {}), ...extra });
 
@@ -73,6 +73,8 @@ test("the Running pane tabs list opens or ends each entry and hides when empty",
 });
 
 const inSpace = (id, space, position, extra = {}) => durable(id, "", { label: id, space: { id: space, window: "4@old", position, ...extra } });
+/** A tabExists that knows only these Chrome tabs. */
+const exists = (...ids) => async (id) => ids.includes(id);
 
 test("offered pane tabs are grouped by space, each in its order", () => {
     const offer = [
@@ -95,7 +97,7 @@ test("offered pane tabs are grouped by space, each in its order", () => {
     assert.deepEqual(byPosition([inSpace("q", "s", 2), inSpace("p", "s", 0), durable("n")]).map((s) => s.id), ["p", "q", "n"]);
 });
 
-test("restoring a space opens its pane tabs in order with the same one active, locks only within one Chrome run", () => {
+test("restoring a space opens its pane tabs in order with the same one active, locks only within one Chrome run", async () => {
     const space = groupSpaces([
         inSpace("a", "sp-1", 0, { lockedTab: 11 }),
         inSpace("b", "sp-1", 1, { active: true }),
@@ -105,17 +107,49 @@ test("restoring a space opens its pane tabs in order with the same one active, l
     assert.equal(windowRun(undefined), "");
 
     // After Chrome started again: a new run, so no lock carries.
-    const restarted = openSpace(space, "new");
+    const restarted = await openSpace(space, "new", exists());
     assert.deepEqual(restarted.tabs.map((t) => t.id), ["a", "b", "c"]);
     assert.equal(restarted.activeId, "b");
     assert.ok(restarted.tabs.every((t) => t.lockedTabId === undefined));
 
     // Taken into another window of the same run: locks carry.
-    const sameRun = openSpace(space, "old");
+    const sameRun = await openSpace(space, "old", exists(11, 12));
     assert.deepEqual(sameRun.tabs.map((t) => t.lockedTabId), [11, undefined, 12]);
+    assert.ok(sameRun.tabs.every((t) => !t.lockedTabClosed));
+
+    // A locked Chrome tab that closed while the space was offered: the lock
+    // is marked closed, as the panel's own state is, so no read goes to it.
+    const oneGone = await openSpace(space, "old", exists(12));
+    assert.deepEqual(oneGone.tabs.map((t) => [t.lockedTabId, t.lockedTabClosed]), [[11, true], [undefined, undefined], [12, undefined]]);
 
     // Without an active tab, the first one is.
-    assert.equal(openSpace(groupSpaces([inSpace("a", "s", 0), inSpace("b", "s", 1)])[0], "new").activeId, "a");
+    assert.equal((await openSpace(groupSpaces([inSpace("a", "s", 0), inSpace("b", "s", 1)])[0], "new", exists())).activeId, "a");
+});
+
+test("a panel takes back its window's pane tabs at start in their order, with locks checked", async () => {
+    const mine = (id, position, extra = {}) => durable(id, "7@r1", { space: { id: "sp-1", window: "7@r1", position, ...extra } });
+    const listed = [
+        mine("c", 2, { lockedTab: 21 }),
+        mine("a", 0, { lockedTab: 20 }),
+        mine("b", 1, { active: true }),
+        durable("elsewhere", "8@r1"),
+        mine("held", 3),
+    ];
+    const held = { tabs: [{ id: "held", app: "", cwd: "/w" }], activeId: "held" };
+    const restored = await restoreAtStart(held, listed, "7@r1", "r1", exists(20));
+    assert.deepEqual(restored.tabs.map((t) => t.id), ["held", "a", "b", "c"]);
+    assert.equal(restored.tabs[0].cwd, "/w");
+    assert.equal(restored.activeId, "held", "the panel's own active tab stays");
+    assert.deepEqual(restored.tabs.slice(1).map((t) => [t.lockedTabId, t.lockedTabClosed]), [[20, undefined], [undefined, undefined], [21, true]]);
+
+    // With nothing of its own, the space's active one is active.
+    assert.equal((await restoreAtStart(null, listed, "7@r1", "r1", exists())).activeId, "b");
+    // After Chrome restarted, no lock carries and none is checked.
+    const asked = [];
+    const restarted = await restoreAtStart(null, listed, "7@r1", "r2", async (id) => (asked.push(id), true));
+    assert.ok(restarted.tabs.every((t) => t.lockedTabId === undefined));
+    assert.deepEqual(asked, []);
+    assert.equal(await restoreAtStart(held, [durable("elsewhere", "8@r1")], "7@r1", "r1", exists()), null);
 });
 
 test("the Running pane tabs list opens a whole space at once", async () => {
@@ -182,6 +216,30 @@ test("layout reports go to the host one at a time, newest last, keeping a taken 
     await new Promise((resolve) => setImmediate(resolve));
     report({ window: "w", state: 4 });
     assert.deepEqual(sent.slice(2), [{ window: "w", state: 4 }]);
+});
+
+test("a report the host refused is sent again after a wait, unless a newer one goes first", async () => {
+    const sent = [];
+    const answers = [];
+    const report = serialReporter((r) => {
+        sent.push(r);
+        return new Promise((resolve, reject) => answers.push({ resolve, reject }));
+    }, { first: 20, max: 40 });
+    const tick = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    report({ window: "w", state: 1, space: "sp-1" });
+    answers.shift().reject(new Error("durable pane tabs are not known yet"));
+    await tick(5);
+    assert.equal(sent.length, 1, "no resend before the wait");
+    await tick(40);
+    assert.deepEqual(sent.slice(1), [{ window: "w", state: 1, space: "sp-1" }]);
+    // A newer report while a resend waits goes at once, in its place.
+    answers.shift().reject(new Error("durable pane tabs are not known yet"));
+    await tick(0);
+    report({ window: "w", state: 2 });
+    assert.deepEqual(sent.slice(2), [{ window: "w", state: 2, space: "sp-1" }]);
+    answers.shift().resolve();
+    await tick(80);
+    assert.equal(sent.length, 3, "nothing is sent again after the host took it");
 });
 
 test("a report queued behind the one the host took a space with does not take it again", async () => {

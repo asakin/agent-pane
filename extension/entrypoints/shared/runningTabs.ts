@@ -1,4 +1,5 @@
 import type { ListedSpace, ListedTTY, RequestLayoutTTY } from "./rpc.ts";
+import { type TabLock, closeMissingLocks } from "./tabLock.ts";
 
 /**
  * Durable (preview) pane tabs outlive the side panel that showed them: a
@@ -50,7 +51,6 @@ export function splitRunning(
 export type OfferedSpace = {
     /** The space's id; absent for a pane tab with no space. */
     id?: string;
-    name?: string;
     /** The window it was last shown in, as windowName makes it. */
     window?: string;
     tabs: ListedTTY[];
@@ -83,7 +83,6 @@ export function groupSpaces(offer: ListedTTY[]): OfferedSpace[] {
         if (!group) {
             group = {
                 id: sp.id,
-                ...(typeof sp.name === "string" && sp.name ? { name: sp.name } : {}),
                 ...(typeof sp.window === "string" && sp.window ? { window: sp.window } : {}),
                 tabs: [],
             };
@@ -107,12 +106,54 @@ export function windowRun(window: string | undefined): string {
 /**
  * The pane tabs a window opens when it takes a space: in order, the one the
  * space showed last active. A lock names a Chrome tab of one browser run, so
- * it carries only into a window of the same run; approvals never do.
+ * it carries only into a window of the same run, and only while that Chrome
+ * tab exists; approvals never do.
  */
-export function openSpace(space: OfferedSpace, runId: string): { tabs: SpaceTab[]; activeId: string } {
-    const tabs = space.tabs.map((s) => listedTab(s, runId));
+export async function openSpace(
+    space: OfferedSpace,
+    runId: string,
+    tabExists: (chromeTabId: number) => Promise<boolean>,
+): Promise<{ tabs: SpaceTab[]; activeId: string }> {
+    const tabs = await listedTabs(space.tabs, runId, tabExists);
     const active = space.tabs.find((s) => listedSpace(s)?.active === true) ?? space.tabs[0];
     return { tabs, activeId: active?.id ?? "" };
+}
+
+/**
+ * The pane tabs a panel takes back at start: the running sessions its
+ * window showed last that it does not hold, after its own, in their order,
+ * with the one its space showed last active when the panel had none. Null
+ * when there are none.
+ */
+export async function restoreAtStart<T extends SpaceTab>(
+    state: { tabs: T[]; activeId: string } | null,
+    listed: ListedTTY[],
+    window: string,
+    runId: string,
+    tabExists: (chromeTabId: number) => Promise<boolean>,
+): Promise<{ tabs: (T | SpaceTab)[]; activeId: string } | null> {
+    const held = new Set(state?.tabs.map((tab) => tab.id) ?? []);
+    const ordered = byPosition(splitRunning(listed, window, held, new Set()).restore);
+    const [first] = ordered;
+    if (!first) {
+        return null;
+    }
+    const active = ordered.find((s) => listedSpace(s)?.active === true) ?? first;
+    const tabs = [...(state?.tabs ?? []), ...(await listedTabs(ordered, runId, tabExists))];
+    return { tabs, activeId: state?.activeId ?? active.id };
+}
+
+/**
+ * listedTab for each session, with a lock on a Chrome tab that no longer
+ * exists marked closed, as the panel's own state is (closeMissingLocks).
+ */
+export async function listedTabs(
+    sessions: ListedTTY[],
+    runId: string,
+    tabExists: (chromeTabId: number) => Promise<boolean>,
+): Promise<SpaceTab[]> {
+    const tabs = sessions.map((s) => listedTab(s, runId));
+    return (await closeMissingLocks({ tabs, activeId: "" }, tabExists)).tabs;
 }
 
 /**
@@ -132,13 +173,10 @@ export function listedTab(s: ListedTTY, runId: string): SpaceTab {
     };
 }
 
-export type SpaceTab = { id: string; app: string; pane?: string; lockedTabId?: number };
+export type SpaceTab = TabLock & { id: string; app: string; pane?: string };
 
 /** What the Running pane tabs list calls a space. */
 export function spaceName(space: OfferedSpace): string {
-    if (space.name) {
-        return space.name;
-    }
     const names = space.tabs.map(runningName);
     return names.length <= 2 ? names.join(", ") : `${names[0]} and ${names.length - 1} more`;
 }
@@ -169,29 +207,44 @@ export type LayoutReport<S> = { window: string; state: S; space?: string };
  * Sends a window's layout reports one at a time, each after the host
  * answered the one before, so the host applies them in the order they were
  * made. Reports made while one is in flight collapse into the newest. A
- * space the window took goes with every report until the host has taken one
- * that carried it, or the window took another, so a report that failed
- * does not lose it.
+ * report the host refused, or that did not reach it, is sent again after a
+ * wait that doubles from retry.first up to retry.max, unless a newer one
+ * goes first. A space the window took goes with every report until the host
+ * has taken one that carried it, or the window took another.
  */
-export function serialReporter<S>(send: (report: LayoutReport<S>) => Promise<void>): (report: LayoutReport<S>) => void {
+export function serialReporter<S>(
+    send: (report: LayoutReport<S>) => Promise<void>,
+    retry = { first: 1000, max: 30000 },
+): (report: LayoutReport<S>) => void {
     let pending: LayoutReport<S> | undefined;
     let claim: string | undefined;
     let busy = false;
+    let delay = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const drain = async () => {
+        clearTimeout(timer);
+        timer = undefined;
         busy = true;
         while (pending) {
             // The claim is added as the report goes, so a report queued
             // behind the one the host accepted with it does not take the
             // space again.
-            const next: LayoutReport<S> = { ...pending, ...(claim ? { space: claim } : {}) };
+            const report = pending;
+            const next: LayoutReport<S> = { ...report, ...(claim ? { space: claim } : {}) };
             pending = undefined;
             try {
                 await send(next);
+                delay = 0;
                 if (next.space === claim) {
                     claim = undefined;
                 }
             } catch {
-                // The next report carries everything since, the claim too.
+                if (!pending) {
+                    pending = report;
+                    delay = Math.min(Math.max(2 * delay, retry.first), retry.max);
+                    timer = setTimeout(() => void drain(), delay);
+                    break;
+                }
             }
         }
         busy = false;

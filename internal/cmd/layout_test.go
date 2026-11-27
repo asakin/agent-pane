@@ -327,6 +327,31 @@ func TestLayoutEditedByAnotherClient(t *testing.T) {
 	}
 }
 
+// Another client may edit the document before the host starts. The host
+// takes back its spaces but not a name it never set, and passes a lock on
+// to the side panel, which checks the Chrome tab exists before it uses it.
+func TestLayoutEditedBeforeTheHostStarts(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	noRediscoverWait(t)
+	core := newFakeCore()
+	first := newLayoutHarness(t, core, "b1")
+	a := first.create(t, shell("7@r1"))
+	doc := core.layout(t)
+	doc.Spaces[0].Name = "Edited"
+	locked := 99
+	doc.Spaces[0].Tabs[0].AgentPane.LockedTab = &locked
+	core.putDoc(layoutDocName, doc)
+
+	h := restartHost(t, first, core, "b1")
+	items := h.listFacts(t)
+	if len(items) != 1 || items[0].ID != a.ID || items[0].Space == nil || items[0].Space.LockedTab == nil || *items[0].Space.LockedTab != 99 {
+		t.Fatalf("tty.list %+v", items)
+	}
+	if sp := spaceFor(t, core.layout(t), "b1:7@r1"); sp.Name != "" {
+		t.Fatalf("space %+v kept the name another client wrote", sp)
+	}
+}
+
 // A registry that cannot be read leaves the document as it is: other hosts'
 // tabs cannot be told from ended ones without it.
 func TestAnUnreadableRegistryDropsNoOtherHostsTabs(t *testing.T) {
@@ -343,9 +368,7 @@ func TestAnUnreadableRegistryDropsNoOtherHostsTabs(t *testing.T) {
 	if err := os.WriteFile(h.sessions.registry.path, []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, msg := h.call(t, "tty.layout", map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID, "lockedTab": 3}}}); msg == "" {
-		t.Fatal("tty.layout wrote without the records")
-	}
+	h.layoutCall(t, map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID, "lockedTab": 3}}})
 	if got := spaceFor(t, core.layout(t), "b2:1@r9"); !sameIDs(tabIDs(got), []string{publicID("tab", "other")}) {
 		t.Fatalf("other host's space %+v", got)
 	}
@@ -354,7 +377,7 @@ func TestAnUnreadableRegistryDropsNoOtherHostsTabs(t *testing.T) {
 	if err := h.sessions.registry.put(paneRecord{ID: "x", Pane: "other", Session: "session-x", Browser: "b2"}); err != nil {
 		t.Fatal(err)
 	}
-	h.sessions.syncLayout(nil)
+	h.sessions.syncLayout()
 	doc = core.layout(t)
 	if mine := spaceFor(t, doc, "b1:7@r1"); mine.Tabs[0].AgentPane.LockedTab == nil || *mine.Tabs[0].AgentPane.LockedTab != 3 {
 		t.Fatalf("own space %+v", mine)
@@ -373,11 +396,9 @@ func TestALayoutReportSurvivesAFailedDocumentRead(t *testing.T) {
 	a := h.create(t, shell("7@r1"))
 	b := h.create(t, shell("7@r1"))
 	core.set(func(f *fakeCore) { f.docGet = func(string) error { return errors.New("core is busy") } })
-	if _, msg := h.call(t, "tty.layout", map[string]any{"window": "7@r1", "active": b.ID, "tabs": []map[string]any{{"id": b.ID}, {"id": a.ID}}}); msg == "" {
-		t.Fatal("tty.layout wrote a document it could not read")
-	}
+	h.layoutCall(t, map[string]any{"window": "7@r1", "active": b.ID, "tabs": []map[string]any{{"id": b.ID}, {"id": a.ID}}})
 	core.set(func(f *fakeCore) { f.docGet = nil })
-	h.sessions.syncLayout(nil)
+	h.sessions.syncLayout()
 	sp := spaceFor(t, core.layout(t), "b1:7@r1")
 	if !sameIDs(tabIDs(sp), []string{tabOf(b), tabOf(a)}) || sp.AgentPane.Active != tabOf(b) {
 		t.Fatalf("space %+v", sp)
@@ -406,7 +427,7 @@ func TestALayoutChangeDoesNotWaitForAWriteInFlight(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		h.sessions.syncLayout(nil)
+		h.sessions.syncLayout()
 	}()
 	<-stalled
 	report := make(chan string, 1)
@@ -432,40 +453,69 @@ func TestALayoutChangeDoesNotWaitForAWriteInFlight(t *testing.T) {
 	}
 }
 
-// Reports made before the document could be read are kept, each window's
-// newest, however many there are, and the space a window took stays taken.
-func TestLayoutReportsBeforeTheFirstReadKeepTheNewest(t *testing.T) {
+// Reports made before the document could be read are applied, once it is,
+// in the order they came: a space one window took and another took after
+// stays with the second, and a lock on a pane tab a later report leaves out
+// is kept.
+func TestLayoutReportsBeforeTheFirstReadAreAppliedInOrder(t *testing.T) {
 	useBackend(t, terminalBackendDurable)
 	core := newFakeCore()
 	core.set(func(f *fakeCore) { f.docGet = func(string) error { return errors.New("core is busy") } })
 	h := newLayoutHarness(t, core, "b1")
 	a := h.create(t, shell("7@r1"))
 	b := h.create(t, shell("7@r1"))
-	saved := layoutTab{ID: tabOf(a)}
-	core.putDoc(layoutDocName, layoutDoc{Spaces: []layoutSpace{{ID: "sp-saved", Name: "Saved", Tabs: []layoutTab{saved}, AgentPane: layoutSpaceMeta{Window: "b1:5@r0"}}}})
-	report := func(params map[string]any) {
-		t.Helper()
-		if _, msg := h.call(t, "tty.layout", params); msg == "" {
-			t.Fatal("tty.layout wrote a document it could not read")
-		}
-	}
-	report(map[string]any{"window": "7@r1", "space": "sp-saved", "active": a.ID, "tabs": []map[string]any{{"id": a.ID}, {"id": b.ID}}})
-	for range layoutPendingMax + 10 {
-		report(map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID}, {"id": b.ID}}})
-	}
-	report(map[string]any{"window": "7@r1", "active": b.ID, "tabs": []map[string]any{{"id": b.ID, "lockedTab": 5}, {"id": a.ID}}})
+	c := h.create(t, shell("8@r1"))
+	core.putDoc(layoutDocName, layoutDoc{Spaces: []layoutSpace{{ID: "sp-saved", Tabs: []layoutTab{{ID: tabOf(a)}}, AgentPane: layoutSpaceMeta{Window: "b1:5@r0"}}}})
+	h.layoutCall(t, map[string]any{"window": "7@r1", "space": "sp-saved", "active": a.ID, "tabs": []map[string]any{{"id": a.ID}, {"id": b.ID, "lockedTab": 5}}})
+	h.layoutCall(t, map[string]any{"window": "8@r1", "space": "sp-saved", "active": c.ID, "tabs": []map[string]any{{"id": c.ID}}})
+	h.layoutCall(t, map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID}}})
 	core.set(func(f *fakeCore) { f.docGet = nil })
-	h.sessions.syncLayout(nil)
+	h.sessions.syncLayout()
+	// Replayed in order: 8@r1 took sp-saved after 7@r1 did, and b, which
+	// 7@r1's last report leaves out, stays there with its lock.
 	doc := core.layout(t)
-	sp := spaceFor(t, doc, "b1:7@r1")
-	if len(doc.Spaces) != 1 || sp.ID != "sp-saved" || sp.Name != "Saved" {
+	got := spaceFor(t, doc, "b1:8@r1")
+	if got.ID != "sp-saved" || !sameIDs(tabIDs(got), []string{tabOf(c), tabOf(b)}) {
 		t.Fatalf("layout %+v", doc)
 	}
-	if !sameIDs(tabIDs(sp), []string{tabOf(b), tabOf(a)}) || sp.AgentPane.Active != tabOf(b) {
-		t.Fatalf("space %+v", sp)
+	if l := got.Tabs[1].AgentPane.LockedTab; l == nil || *l != 5 {
+		t.Fatalf("locks %+v", got.Tabs)
 	}
-	if l := sp.Tabs[0].AgentPane.LockedTab; l == nil || *l != 5 {
-		t.Fatalf("locks %+v", sp.Tabs)
+	if sp := spaceFor(t, doc, "b1:7@r1"); sp.ID == "sp-saved" || !sameIDs(tabIDs(sp), []string{tabOf(a)}) {
+		t.Fatalf("layout %+v", doc)
+	}
+}
+
+// Past layoutPendingMax reports waiting for the document, a report is
+// refused, so the panel sends it again.
+func TestTooManyLayoutReportsBeforeTheFirstReadAreRefused(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	core.set(func(f *fakeCore) { f.docGet = func(string) error { return errors.New("core is busy") } })
+	h := newLayoutHarness(t, core, "b1")
+	shortLayoutTimers(h.sessions)
+	a := h.create(t, shell("7@r1"))
+	params := map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID}}}
+	for range layoutPendingMax - len(h.sessions.layout.pending) {
+		h.layoutCall(t, params)
+	}
+	if _, msg := h.call(t, "tty.layout", params); msg == "" {
+		t.Fatal("tty.layout took a report past the bound")
+	}
+}
+
+// A report made before the host has taken back its pane tabs is refused:
+// its pane tabs cannot all be named yet.
+func TestALayoutReportBeforeRediscoveryIsRefused(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newLayoutHarness(t, core, "b1")
+	a := h.create(t, shell("7@r1"))
+	h.sessions.rediscoverMu.Lock()
+	h.sessions.rediscovered, h.sessions.lastRediscover = false, time.Now()
+	h.sessions.rediscoverMu.Unlock()
+	if _, msg := h.call(t, "tty.layout", map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID}}}); !strings.Contains(msg, errRediscoveryPending) {
+		t.Fatalf("tty.layout before rediscovery: %q", msg)
 	}
 }
 
@@ -490,7 +540,7 @@ func TestAPaneTabStartedDuringAWriteKeepsItsReport(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		h.sessions.syncLayout(nil)
+		h.sessions.syncLayout()
 	}()
 	<-stalled
 	b := h.create(t, shell("7@r1"))
@@ -508,18 +558,18 @@ func TestAPaneTabStartedDuringAWriteKeepsItsReport(t *testing.T) {
 
 // waitLayoutWriter waits for the last layout write started to end.
 func (m *SessionManager) waitLayoutWriter() {
-	m.layoutMu.Lock()
-	w := m.layoutWriter
-	m.layoutMu.Unlock()
+	m.layout.mu.Lock()
+	w := m.layout.writer
+	m.layout.mu.Unlock()
 	if w != nil {
 		<-w
 	}
 }
 
 func shortLayoutTimers(m *SessionManager) {
-	m.layoutMu.Lock()
-	m.layoutWait, m.layoutRetryFirst = 50*time.Millisecond, 10*time.Millisecond
-	m.layoutMu.Unlock()
+	m.layout.mu.Lock()
+	m.layout.wait, m.layout.retryFirst = 50*time.Millisecond, 10*time.Millisecond
+	m.layout.mu.Unlock()
 }
 
 // A terminal call that starts a layout write does not wait on a slow core
@@ -566,9 +616,7 @@ func TestAFailedLayoutWriteIsTriedAgain(t *testing.T) {
 	a := h.create(t, shell("7@r1"))
 	b := h.create(t, shell("7@r1"))
 	core.set(func(f *fakeCore) { f.docGet = func(string) error { return errors.New("core is busy") } })
-	if _, msg := h.call(t, "tty.layout", map[string]any{"window": "7@r1", "active": b.ID, "tabs": []map[string]any{{"id": b.ID}, {"id": a.ID}}}); msg == "" {
-		t.Fatal("tty.layout wrote a document it could not read")
-	}
+	h.layoutCall(t, map[string]any{"window": "7@r1", "active": b.ID, "tabs": []map[string]any{{"id": b.ID}, {"id": a.ID}}})
 	core.set(func(f *fakeCore) { f.docGet = nil })
 	deadline := time.Now().Add(5 * time.Second)
 	for {

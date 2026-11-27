@@ -164,7 +164,6 @@ export type ListedTTY = {
 /** A Durable pane tab's place in the layout document. */
 export type ListedSpace = {
     id: string;
-    name?: string;
     /** The Chrome window the space was last shown in (windowName), when it was this browser's. */
     window?: string;
     position: number;

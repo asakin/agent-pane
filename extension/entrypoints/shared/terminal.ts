@@ -47,7 +47,7 @@ import { createApprovalPrompts, createReadNotice, mountSendTab, mountTeach, send
 import { isOwnExtensionPage } from "./sender";
 import { describeUrl } from "./tabLock";
 import { type PaneStatus, isStatusMessage, parseStatus } from "./paneStatus";
-import { byPosition, listedTab, mountRunningTabs, type OfferedSpace, openSpace, serialReporter, splitRunning } from "./runningTabs";
+import { listedTabs, mountRunningTabs, type OfferedSpace, openSpace, restoreAtStart, serialReporter, splitRunning } from "./runningTabs";
 
 const terminalFontFamily = "JetBrainsMono Nerd Font Mono";
 
@@ -69,6 +69,7 @@ import {
     type WindowTab,
     type WindowTabState,
     attachTTY,
+    chromeTabExists,
     clearWindowState,
     createTTY,
     currentRunId,
@@ -457,17 +458,10 @@ async function main() {
     // Durable pane tabs last shown in this window outlive the panel's own
     // record of them (an extension reload clears it): take them back.
     const listedAtStart = await listTTY();
-    if (listedAtStart) {
-        const held = new Set(state?.tabs.map((tab) => tab.id) ?? []);
-        const { restore } = splitRunning(listedAtStart, myWindow, held, new Set());
-        const ordered = byPosition(restore);
-        const [first] = ordered;
-        if (first) {
-            const tabs = [...(state?.tabs ?? []), ...ordered.map((s) => listedTab(s, runId))];
-            const active = ordered.find((s) => s.space?.active === true) ?? first;
-            state = { tabs, activeId: state?.activeId ?? active.id };
-            await saveState(state);
-        }
+    const restored = listedAtStart && await restoreAtStart(state, listedAtStart, myWindow, runId, chromeTabExists);
+    if (restored) {
+        state = restored;
+        await saveState(state);
     }
 
     const titles = new Map<string, string>();
@@ -769,16 +763,22 @@ async function main() {
     });
 
     async function openRunning(s: ListedTTY) {
-        if (!state || hasTab(s.id)) {
-            if (state && hasTab(s.id)) {
-                await switchTo(s.id);
-            }
+        if (!state) {
             return;
         }
-        state = { tabs: [...state.tabs, listedTab(s, runId)], activeId: state.activeId };
-        await saveState(state);
-        refreshStrip();
+        const tabs = hasTab(s.id) ? [] : await listedTabs([s], runId, chromeTabExists);
+        if (!state) {
+            return;
+        }
+        if (!hasTab(s.id)) {
+            state = { tabs: [...state.tabs, ...tabs], activeId: state.activeId };
+            await saveState(state);
+            refreshStrip();
+        }
         await switchTo(s.id);
+        if (tabs.length === 0) {
+            return;
+        }
         void loadFacts();
     }
 
@@ -788,9 +788,9 @@ async function main() {
         if (!state) {
             return;
         }
-        const opened = openSpace(space, runId);
+        const opened = await openSpace(space, runId, chromeTabExists);
         const fresh = opened.tabs.filter((tab) => !hasTab(tab.id));
-        if (fresh.length > 0) {
+        if (state && fresh.length > 0) {
             state = { tabs: [...state.tabs, ...fresh], activeId: state.activeId };
             await saveState(state, space.id);
             refreshStrip();
