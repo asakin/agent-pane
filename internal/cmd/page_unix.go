@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -110,9 +109,6 @@ func (s *Session) handlePageRequest(reply *os.File, body []byte, call func() ext
 		ctx, cancel := s.requestContext(t.total(), watchHangup(reply))
 		defer cancel()
 		content, err := s.pageRead(ctx, t, call(), req)
-		if ctx.Err() != nil && !s.isClosed() {
-			println("DIAG early hangup", fmt.Sprint(err))
-		}
 		out := pageReply{ID: req.ID, Content: content}
 		if err != nil {
 			out = pageReply{ID: req.ID, Error: err.Error()}
@@ -247,9 +243,6 @@ func pageClient(fdEnv string, req pageRequest) (string, error) {
 		return "", err
 	}
 	err = syscall.Sendmsg(fd, body, syscall.UnixRights(pair[1]), nil, 0)
-	if os.Getenv("DIAG_OLD_CLIENT") != "" {
-		r.closePeer()
-	}
 	if err != nil {
 		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EDESTADDRREQ) {
 			return "", errors.New(errTerminalClosed)
