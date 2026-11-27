@@ -183,3 +183,30 @@ test("layout reports go to the host one at a time, newest last, keeping a taken 
     report({ window: "w", state: 4 });
     assert.deepEqual(sent.slice(2), [{ window: "w", state: 4 }]);
 });
+
+test("a taken space goes with the next report when the one carrying it failed", async () => {
+    const sent = [];
+    const answers = [];
+    const report = serialReporter((r) => {
+        sent.push(r);
+        return new Promise((resolve, reject) => answers.push({ resolve, reject }));
+    });
+    report({ window: "w", state: 1, space: "sp-1" });
+    report({ window: "w", state: 2 });
+    answers.shift().reject(new Error("host is gone"));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent.slice(1), [{ window: "w", state: 2, space: "sp-1" }]);
+    answers.shift().reject(new Error("host is gone"));
+    await new Promise((resolve) => setImmediate(resolve));
+    report({ window: "w", state: 3 });
+    assert.deepEqual(sent.slice(2), [{ window: "w", state: 3, space: "sp-1" }]);
+    answers.shift().resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    report({ window: "w", state: 4 });
+    assert.deepEqual(sent.slice(3), [{ window: "w", state: 4 }]);
+    // Taking another space replaces the claim.
+    report({ window: "w", state: 5, space: "sp-2" });
+    answers.shift().reject(new Error("host is gone"));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent.slice(4), [{ window: "w", state: 5, space: "sp-2" }]);
+});

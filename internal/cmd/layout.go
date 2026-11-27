@@ -190,7 +190,7 @@ func (m *SessionManager) layoutSessions() map[string]layoutSession {
 
 // syncLayout applies change to the host's spaces and writes the document. A
 // failure is logged: the next write tries again with everything since.
-func (m *SessionManager) syncLayout(change func(spaces []layoutSpace) []layoutSpace) {
+func (m *SessionManager) syncLayout(change *layoutChange) {
 	if err := m.writeLayout(change); err != nil {
 		m.logger.Warn("failed to write the pane tab layout", "error", err)
 	}
@@ -200,7 +200,7 @@ func (m *SessionManager) syncLayout(change func(spaces []layoutSpace) []layoutSp
 // once the host knows every Durable pane tab it holds. Before that, or while
 // the host shuts down, it writes nothing: tabs not taken back yet would be
 // dropped.
-func (m *SessionManager) writeLayout(change func(spaces []layoutSpace) []layoutSpace) error {
+func (m *SessionManager) writeLayout(change *layoutChange) error {
 	if _, ok := m.durable.(*coreBackend); !ok {
 		return nil
 	}
@@ -210,15 +210,34 @@ func (m *SessionManager) writeLayout(change func(spaces []layoutSpace) []layoutS
 	return m.writeLayoutNow(change)
 }
 
-// layoutPendingMax bounds the changes kept for a document not read yet.
+// layoutPendingMax bounds the windows whose reports wait for a document not
+// read yet.
 const layoutPendingMax = 256
+
+// queueLayoutChange keeps a report until the document is read: each window's
+// newest, which replaces its older one but keeps the space that one took, in
+// the order the newest arrived. Each report is a window's whole arrangement,
+// so the newest of each, in that order, ends where all of them would.
+// Guarded by layoutMu.
+func (m *SessionManager) queueLayoutChange(c layoutChange) error {
+	if i := slicesIndex(m.layoutPending, func(p layoutChange) bool { return p.window == c.window }); i >= 0 {
+		if c.space == "" {
+			c.space = m.layoutPending[i].space
+		}
+		m.layoutPending = slices.Delete(m.layoutPending, i, i+1)
+	} else if len(m.layoutPending) >= layoutPendingMax {
+		return fmt.Errorf("too many windows report a layout before the document is read")
+	}
+	m.layoutPending = append(m.layoutPending, c)
+	return nil
+}
 
 // writeLayoutNow applies change to the host's model, then writes the
 // document. The model changes first, so a write that fails loses nothing:
 // the next one carries it. One write runs at a time; a caller that finds one
 // running leaves its change for that write to carry and returns at once, so
 // no request waits behind another's document I/O.
-func (m *SessionManager) writeLayoutNow(change func(spaces []layoutSpace) []layoutSpace) error {
+func (m *SessionManager) writeLayoutNow(change *layoutChange) error {
 	core, ok := m.durable.(*coreBackend)
 	if !ok {
 		return nil
@@ -238,10 +257,11 @@ func (m *SessionManager) writeLayoutNow(change func(spaces []layoutSpace) []layo
 	}
 	if change != nil {
 		if m.layoutLoaded {
-			m.layout = change(m.layout)
-		} else if len(m.layoutPending) < layoutPendingMax {
+			m.layout = change.apply(m.layout)
+		} else if err := m.queueLayoutChange(*change); err != nil {
 			// The host's spaces come from the document, read first.
-			m.layoutPending = append(m.layoutPending, change)
+			m.layoutMu.Unlock()
+			return err
 		}
 	}
 	m.layoutDirty = true
@@ -290,13 +310,16 @@ func (m *SessionManager) writeLayoutOnce(core *coreBackend, browser string) erro
 			// ended ones: write nothing rather than drop them.
 			return err
 		}
-		live := m.layoutSessions()
 		read := parseLayout(doc.Value)
 		m.layoutMu.Lock()
+		// Taken while the model cannot change, so every pane tab a change in
+		// the model names is in it: a session that starts later is written
+		// by the next pass.
+		live := m.layoutSessions()
 		if !m.layoutLoaded {
 			m.layout = ownSpaces(read, browser, live)
 			for _, change := range m.layoutPending {
-				m.layout = change(m.layout)
+				m.layout = change.apply(m.layout)
 			}
 			m.layoutPending = nil
 			m.layoutLoaded = true
@@ -488,12 +511,7 @@ func (m *SessionManager) applyLayoutReport(r layoutReport) error {
 		return fmt.Errorf("invalid window %q", r.Window)
 	}
 	window := m.windowLabel(r.Window)
-	type reported struct {
-		ls     layoutSession
-		locked *int
-	}
-	var tabs []reported
-	active := ""
+	change := layoutChange{window: window, space: r.Space, tabs: []layoutTab{}}
 	for _, rt := range r.Tabs {
 		s, ok := m.Get(rt.ID)
 		if !ok || !s.isDurable() {
@@ -507,57 +525,65 @@ func (m *SessionManager) applyLayoutReport(r layoutReport) error {
 			continue
 		}
 		tab := publicID("tab", pane.id)
-		tabs = append(tabs, reported{ls: layoutSession{tab: tab}, locked: rt.LockedTab})
+		change.tabs = append(change.tabs, layoutTab{ID: tab, AgentPane: layoutTabMeta{LockedTab: rt.LockedTab}})
 		if rt.ID == r.Active {
-			active = tab
+			change.active = tab
 		}
 		m.setWindow(s, window)
 	}
-	return m.writeLayout(func(spaces []layoutSpace) []layoutSpace {
-		target := -1
-		if r.Space != "" {
-			target = slicesIndex(spaces, func(sp layoutSpace) bool { return sp.ID == r.Space })
+	return m.writeLayout(&change)
+}
+
+// layoutChange is one tty.layout report as the host applies it: the window's
+// pane tabs by public id, in order, with their locks, the active one, and
+// the space the window took, if it took one.
+type layoutChange struct {
+	window string
+	space  string
+	tabs   []layoutTab
+	active string
+}
+
+// apply makes the change's window show its tabs: they leave the spaces they
+// were in, and another space the window held is left to be offered.
+func (c layoutChange) apply(spaces []layoutSpace) []layoutSpace {
+	target := -1
+	if c.space != "" {
+		target = slicesIndex(spaces, func(sp layoutSpace) bool { return sp.ID == c.space })
+	}
+	if target < 0 {
+		target = slicesIndex(spaces, func(sp layoutSpace) bool { return sp.AgentPane.Window == c.window })
+	}
+	if target < 0 {
+		if len(c.tabs) == 0 {
+			return spaces
 		}
-		if target < 0 {
-			target = slicesIndex(spaces, func(sp layoutSpace) bool { return sp.AgentPane.Window == window })
-		}
-		if target < 0 {
-			if len(tabs) == 0 {
-				return spaces
+		spaces = append(spaces, layoutSpace{ID: newLayoutID("sp")})
+		target = len(spaces) - 1
+	}
+	listed := map[string]bool{}
+	for _, t := range c.tabs {
+		listed[t.ID] = true
+	}
+	for i := range spaces {
+		kept := []layoutTab{}
+		for _, tab := range spaces[i].Tabs {
+			if !listed[tab.ID] {
+				kept = append(kept, tab)
 			}
-			spaces = append(spaces, layoutSpace{ID: newLayoutID("sp")})
-			target = len(spaces) - 1
 		}
-		listed := map[string]*int{}
-		for _, t := range tabs {
-			listed[t.ls.tab] = t.locked
+		spaces[i].Tabs = kept
+		if i != target && spaces[i].AgentPane.Window == c.window {
+			spaces[i].AgentPane.Window = ""
 		}
-		// The reported tabs leave the spaces they were in, and another
-		// space this window held is left to be offered.
-		ordered := make([]layoutTab, 0, len(tabs))
-		for _, t := range tabs {
-			ordered = append(ordered, layoutTab{ID: t.ls.tab, AgentPane: layoutTabMeta{LockedTab: t.locked}})
-		}
-		for i := range spaces {
-			kept := []layoutTab{}
-			for _, tab := range spaces[i].Tabs {
-				if _, ok := listed[tab.ID]; !ok {
-					kept = append(kept, tab)
-				}
-			}
-			spaces[i].Tabs = kept
-			if i != target && spaces[i].AgentPane.Window == window {
-				spaces[i].AgentPane.Window = ""
-			}
-		}
-		// Tabs the space had that the panel does not show stay after its own.
-		spaces[target].Tabs = append(ordered, spaces[target].Tabs...)
-		spaces[target].AgentPane.Window = window
-		if active != "" {
-			spaces[target].AgentPane.Active = active
-		}
-		return spaces
-	})
+	}
+	// Tabs the space had that the panel does not show stay after its own.
+	spaces[target].Tabs = append(slices.Clone(c.tabs), spaces[target].Tabs...)
+	spaces[target].AgentPane.Window = c.window
+	if c.active != "" {
+		spaces[target].AgentPane.Active = c.active
+	}
+	return spaces
 }
 
 // layoutPlaces is where each of the host's Durable pane tabs sits, by public

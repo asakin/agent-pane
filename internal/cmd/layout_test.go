@@ -428,6 +428,78 @@ func TestALayoutChangeDoesNotWaitForAWriteInFlight(t *testing.T) {
 	}
 }
 
+// Reports made before the document could be read are kept, each window's
+// newest, however many there are, and the space a window took stays taken.
+func TestLayoutReportsBeforeTheFirstReadKeepTheNewest(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	core.docGet = func(string) error { return errors.New("core is busy") }
+	h := newLayoutHarness(t, core, "b1")
+	a := h.create(t, shell("7@r1"))
+	b := h.create(t, shell("7@r1"))
+	saved := layoutTab{ID: tabOf(a)}
+	core.putDoc(layoutDocName, layoutDoc{Spaces: []layoutSpace{{ID: "sp-saved", Name: "Saved", Tabs: []layoutTab{saved}, AgentPane: layoutSpaceMeta{Window: "b1:5@r0"}}}})
+	report := func(params map[string]any) {
+		t.Helper()
+		if _, msg := h.call(t, "tty.layout", params); msg == "" {
+			t.Fatal("tty.layout wrote a document it could not read")
+		}
+	}
+	report(map[string]any{"window": "7@r1", "space": "sp-saved", "active": a.ID, "tabs": []map[string]any{{"id": a.ID}, {"id": b.ID}}})
+	for range layoutPendingMax + 10 {
+		report(map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID}, {"id": b.ID}}})
+	}
+	report(map[string]any{"window": "7@r1", "active": b.ID, "tabs": []map[string]any{{"id": b.ID, "lockedTab": 5}, {"id": a.ID}}})
+	core.docGet = nil
+	h.sessions.syncLayout(nil)
+	doc := core.layout(t)
+	sp := spaceFor(t, doc, "b1:7@r1")
+	if len(doc.Spaces) != 1 || sp.ID != "sp-saved" || sp.Name != "Saved" {
+		t.Fatalf("layout %+v", doc)
+	}
+	if !sameIDs(tabIDs(sp), []string{tabOf(b), tabOf(a)}) || sp.AgentPane.Active != tabOf(b) {
+		t.Fatalf("space %+v", sp)
+	}
+	if l := sp.Tabs[0].AgentPane.LockedTab; l == nil || *l != 5 {
+		t.Fatalf("locks %+v", sp.Tabs)
+	}
+}
+
+// A pane tab that starts while a write is in flight, and the report that
+// follows, are both written, the report's lock included.
+func TestAPaneTabStartedDuringAWriteKeepsItsReport(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	core := newFakeCore()
+	h := newLayoutHarness(t, core, "b1")
+	a := h.create(t, shell("7@r1"))
+	stalled, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	core.docGet = func(string) error {
+		once.Do(func() {
+			close(stalled)
+			<-release
+		})
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.sessions.syncLayout(nil)
+	}()
+	<-stalled
+	b := h.create(t, shell("7@r1"))
+	h.layoutCall(t, map[string]any{"window": "7@r1", "active": b.ID, "tabs": []map[string]any{{"id": b.ID, "lockedTab": 8}, {"id": a.ID}}})
+	close(release)
+	<-done
+	sp := spaceFor(t, core.layout(t), "b1:7@r1")
+	if !sameIDs(tabIDs(sp), []string{tabOf(b), tabOf(a)}) || sp.AgentPane.Active != tabOf(b) {
+		t.Fatalf("space %+v", sp)
+	}
+	if l := sp.Tabs[0].AgentPane.LockedTab; l == nil || *l != 8 {
+		t.Fatalf("locks %+v", sp.Tabs)
+	}
+}
+
 // Another client may put another host's tab into one of this host's
 // spaces. The host keeps it, after its own.
 func TestAMixedSpaceKeepsTheOtherHostsTabs(t *testing.T) {
