@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"agent-pane/internal/herdrcore"
 )
@@ -143,6 +144,27 @@ type layoutPlace struct {
 type layoutTabReport struct {
 	ID        string `json:"id"`
 	LockedTab *int   `json:"lockedTab,omitempty"`
+	// Name is the name a person set; "" follows the automatic one.
+	Name string `json:"name,omitempty"`
+}
+
+// maxTabName bounds a pane tab name a person sets, in runes.
+const maxTabName = 100
+
+// tabName is a reported pane tab name as the host keeps it: one line, with
+// no control characters or surrounding space, at most maxTabName runes.
+func tabName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, name)
+	name = strings.TrimSpace(name)
+	if runes := []rune(name); len(runes) > maxTabName {
+		name = strings.TrimSpace(string(runes[:maxTabName]))
+	}
+	return name
 }
 
 // layoutReport is tty.layout's params: the pane tabs a window's side panel
@@ -181,7 +203,8 @@ func (m *SessionManager) layoutSessions() map[string]layoutSession {
 			s.mu.Unlock()
 			continue
 		}
-		ls := layoutSession{session: s, tab: publicID("tab", s.pane.id), name: s.Label, agent: s.agent, window: s.window}
+		// A name the person set wins over the automatic one.
+		ls := layoutSession{session: s, tab: publicID("tab", s.pane.id), name: cmp.Or(s.name, s.Label), agent: s.agent, window: s.window}
 		s.mu.Unlock()
 		t.mu.Lock()
 		ls.terminal = t.address
@@ -554,11 +577,19 @@ func (m *SessionManager) applyLayoutReport(r layoutReport) error {
 			// Built-in pane tabs are not in the layout.
 			continue
 		}
+		name := tabName(rt.Name)
 		s.mu.Lock()
 		pane := s.pane
+		renamed := pane != nil && s.name != name
+		if renamed {
+			s.name = name
+		}
 		s.mu.Unlock()
 		if pane == nil {
 			continue
+		}
+		if renamed {
+			m.recordName(s.ID, name)
 		}
 		tab := publicID("tab", pane.id)
 		change.tabs = append(change.tabs, layoutTab{ID: tab, AgentPane: layoutTabMeta{LockedTab: rt.LockedTab}})
@@ -568,6 +599,22 @@ func (m *SessionManager) applyLayoutReport(r layoutReport) error {
 		m.setWindow(s, window)
 	}
 	return m.writeLayout(&change)
+}
+
+// recordName keeps a pane tab's new name in its record, so a later host
+// takes it back with the name.
+func (m *SessionManager) recordName(id, name string) {
+	if m.registry == nil {
+		return
+	}
+	if err := m.registry.update(func(records map[string]paneRecord) {
+		if rec, ok := records[id]; ok {
+			rec.Name = name
+			records[id] = rec
+		}
+	}); err != nil {
+		m.logger.Warn("failed to record a pane tab's name", "error", err)
+	}
 }
 
 // layoutChange is one tty.layout report as the host applies it: the window's

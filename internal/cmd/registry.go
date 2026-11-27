@@ -28,6 +28,8 @@ type paneRecord struct {
 	Session string `json:"session"`
 	Agent   string `json:"agent,omitempty"`
 	Label   string `json:"label,omitempty"`
+	// Name is the pane tab's name a person set.
+	Name string `json:"name,omitempty"`
 	// Socket is the session's page socket, served again at the same path
 	// because the program's AGENT_PANE_SOCKET names it.
 	Socket string `json:"socket,omitempty"`

@@ -27,7 +27,7 @@ import {
     optsFromAppId,
 } from "./agentLauncher";
 import { NativeUnavailable } from "./nativeRpc";
-import { moveTab, renderTabList } from "./tabStrip";
+import { moveTab, renderTabList, setTabName } from "./tabStrip";
 import { type PtyAttachHandle, attachPtySocket } from "./ptyAttach";
 import { RECONNECT_GAVE_UP, createReconnectBackoff } from "./reconnect";
 import { canStepFontSize, clampFontSize, configWithFontSize, stepFontSize } from "./fontSize";
@@ -597,7 +597,8 @@ async function main() {
     // Page reading. Send tab is the person's own action, so it needs no
     // prompt; reads an agent asks for are approved here, per terminal.
     const notice = createReadNotice(noticeHost);
-    const terminalName = (tty: string) => titles.get(tty) || tabApp(state ?? { tabs: [], activeId: "" }, tty) || "Terminal";
+    const terminalName = (tty: string) => state?.tabs.find((tab) => tab.id === tty)?.name || titles.get(tty)
+        || tabApp(state ?? { tabs: [], activeId: "" }, tty) || "Terminal";
     const prompts = createApprovalPrompts(approveHost, terminalName);
 
     async function sendTab(format: PageFormat) {
@@ -821,10 +822,22 @@ async function main() {
             onSelect: (id) => void switchTo(id),
             onClose: (id) => void closeTab(id),
             onMove: (id, slot) => void moveTo(id, slot),
+            onRename: (id, name) => void renameTab(id, name),
         }, statuses);
         launcher.setLaunchEnabled(true);
         void refreshStatus();
     };
+
+    // A name the person set replaces the terminal's title in the strip, and
+    // goes to the host with the layout, so a Durable pane tab keeps it.
+    async function renameTab(id: string, name: string) {
+        if (!state || !hasTab(id)) {
+            return;
+        }
+        state = setTabName(state, id, name);
+        refreshStrip();
+        await saveState(state);
+    }
 
     function hasTab(id: string): boolean {
         return !!state && state.tabs.some((tab) => tab.id === id);

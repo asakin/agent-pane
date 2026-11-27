@@ -1086,3 +1086,23 @@ body.at-options {
         color: #f2b8b5;
     }
 }
+
+.at-tabs__rename {
+    position: fixed;
+    z-index: 1000;
+    box-sizing: border-box;
+    padding: 0 6px;
+    border: 1px solid #1a73e8;
+    border-radius: 2px;
+    background: #ffffff;
+    color: #1a1a1a;
+    font: inherit;
+    font-size: 12px;
+    outline: none;
+
+    @media (prefers-color-scheme: dark) {
+        border-color: #8ab4f8;
+        background: #1d1f21;
+        color: #e8eaed;
+    }
+}

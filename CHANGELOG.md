@@ -8,6 +8,7 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 - Durable (preview) pane tabs keep their arrangement when Chrome quits, crashes or is killed: each Chrome window's pane tabs, their order, names, the active one and their locks are kept in a layout document in Agent Pane's private core ([RFC 0004](docs/rfcs/0004-pane-tab-layout-document.md)). After Chrome starts again, the **N running** list in every window offers each window's pane tabs as a group, and **Open all** opens them at once, in order, with the same one active. Approvals do not carry over, and a lock does only while the same Chrome run continues.
 - Pane tabs can be reordered by dragging them along the side panel's tab strip, which marks where the tab will land, or with Ctrl+Shift+Left and Ctrl+Shift+Right on a focused tab. The active pane tab stays active, the order survives closing and reopening the side panel, and Durable (preview) pane tabs keep it in the layout document after Chrome quits.
+- Rename a pane tab by double-clicking it or pressing F2 on it: Enter saves, Escape cancels. The name replaces the terminal's title in the tab strip, its tooltip and the **N running** list, and an empty name brings the title back. It survives closing and reopening the side panel, and a Durable (preview) pane tab keeps it when Chrome quits, as its name in the layout document.
 
 ### Changed
 

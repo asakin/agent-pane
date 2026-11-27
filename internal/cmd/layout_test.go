@@ -217,6 +217,51 @@ func TestLayoutSpacesAreRestoredAfterChromeRestarts(t *testing.T) {
 	}
 }
 
+// A name a person gives a pane tab is its name in the document and in
+// tty.list, and outlives the host; an empty one returns the automatic name.
+func TestARenamedPaneTabKeepsItsName(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	noRediscoverWait(t)
+	core := newFakeCore()
+	first := newLayoutHarness(t, core, "b1")
+	a := first.create(t, shell("7@r1"))
+	b := first.create(t, shell("7@r1"))
+	first.layoutCall(t, map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID, "name": "  review\nbot  "}, {"id": b.ID}}})
+	seven := spaceFor(t, core.layout(t), "b1:7@r1")
+	if seven.Tabs[0].Name != "review bot" || seven.Tabs[1].Name != "Terminal" {
+		t.Fatalf("names %+v", seven.Tabs)
+	}
+
+	h := restartHost(t, first, core, "b1")
+	for _, item := range h.listFacts(t) {
+		want := map[string]string{a.ID: "review bot", b.ID: ""}[item.ID]
+		if item.Name != want {
+			t.Fatalf("tty.list item %+v, want name %q", item, want)
+		}
+	}
+	if got := spaceFor(t, core.layout(t), "b1:7@r1").Tabs[0].Name; got != "review bot" {
+		t.Fatalf("name after restart %q", got)
+	}
+
+	h.layoutCall(t, map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID, "name": ""}, {"id": b.ID}}})
+	if got := spaceFor(t, core.layout(t), "b1:7@r1").Tabs[0].Name; got != "Terminal" {
+		t.Fatalf("name after clearing %q", got)
+	}
+	records, err := h.sessions.registry.load()
+	if err != nil || records[a.ID].Name != "" {
+		t.Fatalf("record %+v %v", records[a.ID], err)
+	}
+}
+
+func TestTabNameIsOneBoundedLine(t *testing.T) {
+	if got := tabName(" a\tb\x00c "); got != "a b c" {
+		t.Fatalf("tabName %q", got)
+	}
+	if got := []rune(tabName(strings.Repeat("é", 300))); len(got) != maxTabName {
+		t.Fatalf("tabName kept %d runes", len(got))
+	}
+}
+
 // Two browsers' hosts write the same document at once; neither loses the
 // other's spaces.
 func TestTwoHostsWriteTheLayoutAtOnce(t *testing.T) {
