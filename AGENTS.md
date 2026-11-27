@@ -2,6 +2,8 @@
 
 Development instructions for coding agents working on this repository. See [README](README.md) for the product overview.
 
+If `AGENTS.local.md` exists at the repository root, read it too. It holds instructions for one machine's checkout and is not committed; not every agent loads it on its own.
+
 ## Essential knowledge
 
 - **Documentation:** Use the [README glossary](README.md#terminology). Describe current behavior without treating it as a permanent restriction on future features. Keep feature requirements scoped to their implementation issues, and update descriptive docs when behavior changes.
