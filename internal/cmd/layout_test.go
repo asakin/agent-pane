@@ -258,7 +258,8 @@ func TestARenamedPaneTabKeepsItsName(t *testing.T) {
 func TestAFailedNameRecordIsWrittenAgain(t *testing.T) {
 	useBackend(t, terminalBackendDurable)
 	noRediscoverWait(t)
-	h := newLayoutHarness(t, newFakeCore(), "b1")
+	core := newFakeCore()
+	h := newLayoutHarness(t, core, "b1")
 	a := h.create(t, shell("7@r1"))
 	report := map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID, "name": "review"}}}
 
@@ -268,8 +269,13 @@ func TestAFailedNameRecordIsWrittenAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.layoutCall(t, report)
+	if _, msg := h.call(t, "tty.layout", report); msg == "" {
+		t.Fatal("tty.layout succeeded without recording the name")
+	}
 	unlock()
+	if doc := core.layout(t); spaceFor(t, doc, "b1:7@r1").Tabs[0].Name != "review" {
+		t.Fatalf("layout while locked %+v", doc)
+	}
 	if records, err := h.sessions.registry.load(); err != nil || records[a.ID].Name != "" {
 		t.Fatalf("record while locked %+v %v", records[a.ID], err)
 	}
