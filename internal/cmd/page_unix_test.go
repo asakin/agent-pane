@@ -691,6 +691,42 @@ func TestPageReadEndsWhenTheClientGoesAway(t *testing.T) {
 	waitFor(t, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return len(s.replies) == 0 })
 }
 
+// The host acknowledges a request as soon as it has the reply socket, while
+// the read still waits for the person, so the client can let go of its copy.
+func TestPageRequestIsAcknowledgedAtOnce(t *testing.T) {
+	ext := newBlockingExtension()
+	m, _, fd := pageSession(t, nil)
+	m.SetExtensionCaller(ext.call)
+	pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine, err := pollableFile(pair[0], "mine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mine.Close()
+	body, _ := json.Marshal(pageRequest{Method: "page.read", Format: "text"})
+	// Held until the acknowledgement, as pageClient holds it.
+	defer syscall.Close(pair[1])
+	if err := syscall.Sendmsg(mustAtoi(t, fd), body, syscall.UnixRights(pair[1]), nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := mine.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 1)
+	if _, err := io.ReadFull(mine, got); err != nil || got[0] != '\n' {
+		t.Fatalf("acknowledgement %q %v", got, err)
+	}
+	<-ext.asked
+	ext.answer <- "tab"
+	var out pageReply
+	if err := json.NewDecoder(mine).Decode(&out); err != nil || out.Content != "secret" {
+		t.Fatalf("reply %+v %v", out, err)
+	}
+}
+
 func mustAtoi(t *testing.T, s string) int {
 	t.Helper()
 	var n int
