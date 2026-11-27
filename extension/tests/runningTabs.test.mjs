@@ -184,6 +184,25 @@ test("layout reports go to the host one at a time, newest last, keeping a taken 
     assert.deepEqual(sent.slice(2), [{ window: "w", state: 4 }]);
 });
 
+test("a report queued behind the one the host took a space with does not take it again", async () => {
+    const sent = [];
+    const answers = [];
+    const report = serialReporter((r) => {
+        sent.push(r);
+        return new Promise((resolve) => answers.push(resolve));
+    });
+    report({ window: "w", state: 1, space: "sp-1" });
+    report({ window: "w", state: 2 });
+    answers.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent, [{ window: "w", state: 1, space: "sp-1" }, { window: "w", state: 2 }]);
+    // A newer selection made while the older one is in flight stays.
+    report({ window: "w", state: 3, space: "sp-2" });
+    answers.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent.slice(2), [{ window: "w", state: 3, space: "sp-2" }]);
+});
+
 test("a taken space goes with the next report when the one carrying it failed", async () => {
     const sent = [];
     const answers = [];
