@@ -685,9 +685,14 @@ div#terminal {
     line-height: 1.45;
 }
 
+.at-setup__text a {
+    color: #6599ee;
+}
+
 .at-setup__actions {
     display: flex;
     gap: 8px;
+    margin: 0 0 12px;
 }
 
 .at-setup__commands {
