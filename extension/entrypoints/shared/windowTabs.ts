@@ -6,6 +6,7 @@ import type {
     RequestLayoutTTY,
     ResponseAttachTTY,
     ResponseCreateTTY,
+    ResponseLayoutTTY,
 } from "./rpc";
 import { layoutParams, newRunId as makeRunId } from "./runningTabs";
 import { type TabLock, closeMissingLocks, isTabLock } from "./tabLock";
@@ -116,19 +117,19 @@ export async function saveWindowState(windowId: number, state: WindowTabState): 
 
 /**
  * Tells the host what the window shows, for the layout document that
- * outlives Chrome. A host that cannot take it (an older one, or none) is
- * not an error: the panel's own state is unchanged.
+ * outlives Chrome. It rejects when the host did not take the report (an
+ * older host, none, or one that could not write it), so the caller can send
+ * what it carried again; the panel's own state is unchanged either way.
  */
 export async function reportLayout(window: string, state: WindowTabState, space?: string): Promise<void> {
-    try {
-        await browser.runtime.sendMessage<RequestLayoutTTY>({
-            jsonrpc: "2.0",
-            id: crypto.randomUUID(),
-            method: "tty.layout",
-            params: layoutParams(window, state.tabs, state.activeId, space),
-        });
-    } catch {
-        // Host may be gone.
+    const resp = await browser.runtime.sendMessage<RequestLayoutTTY, ResponseLayoutTTY>({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "tty.layout",
+        params: layoutParams(window, state.tabs, state.activeId, space),
+    });
+    if (resp && "error" in resp) {
+        throw errorFromResponse(resp);
     }
 }
 

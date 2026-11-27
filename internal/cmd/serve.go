@@ -154,14 +154,14 @@ type SessionManager struct {
 	detachedEarly map[string]struct{}
 	// layout is this host's spaces of the layout document (layout.go),
 	// read from the document once (layoutLoaded) and kept here after, so a
-	// change another client writes does not replace it. Changes made before
-	// that read wait in layoutPending. layoutWriting says a write runs, and
+	// change another client writes does not replace it. Reports made before
+	// that read wait in layoutPending, each window's newest. layoutWriting says a write runs, and
 	// layoutDirty that the model changed since it read it. All are guarded
 	// by layoutMu, which is never held across document I/O.
 	layoutMu      sync.Mutex
 	layout        []layoutSpace
 	layoutLoaded  bool
-	layoutPending []func([]layoutSpace) []layoutSpace
+	layoutPending []layoutChange
 	layoutWriting bool
 	layoutDirty   bool
 }

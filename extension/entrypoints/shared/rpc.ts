@@ -139,6 +139,8 @@ export type ResponseCreateTTY = JSONRPCResponseBase<{
 
 export type ResponseAttachTTY = ResponseCreateTTY
 
+export type ResponseLayoutTTY = JSONRPCResponseBase
+
 /** One live session in tty.list's answer. */
 export type ListedTTY = {
     id: string;

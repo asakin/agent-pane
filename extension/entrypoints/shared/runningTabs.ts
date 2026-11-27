@@ -168,11 +168,14 @@ export type LayoutReport<S> = { window: string; state: S; space?: string };
 /**
  * Sends a window's layout reports one at a time, each after the host
  * answered the one before, so the host applies them in the order they were
- * made. Reports made while one is in flight collapse into the newest, which
- * keeps the space an older one took.
+ * made. Reports made while one is in flight collapse into the newest. A
+ * space the window took goes with every report until the host has taken one
+ * that carried it, or the window took another, so a report that failed
+ * does not lose it.
  */
 export function serialReporter<S>(send: (report: LayoutReport<S>) => Promise<void>): (report: LayoutReport<S>) => void {
     let pending: LayoutReport<S> | undefined;
+    let claim: string | undefined;
     let busy = false;
     const drain = async () => {
         busy = true;
@@ -181,15 +184,20 @@ export function serialReporter<S>(send: (report: LayoutReport<S>) => Promise<voi
             pending = undefined;
             try {
                 await send(next);
+                if (next.space === claim) {
+                    claim = undefined;
+                }
             } catch {
-                // The next report carries everything since.
+                // The next report carries everything since, the claim too.
             }
         }
         busy = false;
     };
     return (report) => {
-        const space = report.space ?? pending?.space;
-        pending = { ...report, ...(space ? { space } : {}) };
+        if (report.space) {
+            claim = report.space;
+        }
+        pending = { ...report, ...(claim ? { space: claim } : {}) };
         if (!busy) {
             void drain();
         }
