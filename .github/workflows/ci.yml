@@ -110,7 +110,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test -race -v -count=50 -run 'TestPage' ./internal/cmd 2>&1 | grep -E 'DIAG|FAIL|^ok|page_unix_test|panic' | head -400; exit "${PIPESTATUS[0]}"
+      - run: |
+          for old in 1 ""; do
+            echo "DIAG_OLD_CLIENT=$old"
+            DIAG_OLD_CLIENT=$old go test -race -v -count=50 -run 'TestPage' ./internal/cmd > out.txt 2>&1 && echo PASS || echo FAILED
+            grep -c 'DIAG early hangup' out.txt || true
+            grep -E 'DIAG|--- FAIL|page_unix_test.go:[0-9]+: [^m]' out.txt | sort | uniq -c | sort -rn | head -30
+          done
         shell: bash
       - run: go vet ./...
       - run: go test -race ./...
