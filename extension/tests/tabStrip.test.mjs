@@ -250,9 +250,10 @@ test("double-clicking a pane tab edits its name: Enter saves, Escape cancels", (
     handlers.onRename = (id, name) => renamed.push([id, name]);
     renderTabList(list, state("a", "a", "b"), new Map([["a", "pi"], ["b", "codex"]]), handlers);
     const [a, b] = list.children;
-    const key = (el, k) => {
+    const key = (el, k, isComposing = false) => {
         const e = new document.defaultView.Event("keydown", { bubbles: true, cancelable: true });
         e.key = k;
+        e.isComposing = isComposing;
         el.dispatchEvent(e);
     };
     const field = () => document.querySelector(".at-tabs__rename");
@@ -260,6 +261,11 @@ test("double-clicking a pane tab edits its name: Enter saves, Escape cancels", (
     a.dispatchEvent(new document.defaultView.Event("dblclick", { bubbles: true }));
     assert.equal(field().value, "pi", "the field starts with what the tab shows");
     field().value = "reviewer";
+    // Enter and Escape that confirm or drop an IME composition leave the field open.
+    key(field(), "Enter", true);
+    key(field(), "Escape", true);
+    assert.equal(field()?.value, "reviewer");
+    assert.deepEqual(renamed, []);
     key(field(), "Enter");
     assert.equal(field(), null);
     assert.deepEqual(renamed, [["a", "reviewer"]]);

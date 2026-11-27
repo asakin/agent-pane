@@ -56,6 +56,9 @@ type Session struct {
 	// name is the pane tab's name a person set, "" while it follows the
 	// automatic one (Durable only).
 	name string
+	// nameUnsaved is set while name is not yet in the pane tab's record
+	// because writing it failed; the next tty.layout report tries again.
+	nameUnsaved bool
 	// page is the host's end of the page channel; nil where there is none.
 	page *net.UnixConn
 	// pageSocket serves the session's processes that did not inherit the
