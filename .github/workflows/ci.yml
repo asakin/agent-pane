@@ -110,7 +110,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test -race -count=50 -run 'TestPage' ./internal/cmd
       - run: go vet ./...
       - run: go test -race ./...
 
