@@ -165,9 +165,9 @@ A page read goes the other way: the program in the pane tab asks the host over a
 
 The extension asks for `nativeMessaging`, `scripting`, `tabs`, `sidePanel`, `storage` and access to all sites, the last two being what page reading needs. Everything on your machine runs as your user: a shell in a pane tab can do what you can do, and any other program running as you can read Chrome's profile, run `agent-pane`, or edit the installed files. Agent Pane is not a sandbox. A browser-control tool such as Playwriter is a separate program with its own Chrome extension: Agent Pane does not install it, and its page-read approvals and blocked domains do not apply to it. Page content goes only to the terminal that asked for it: over its inherited descriptor, or over its page socket, which checks that the connecting process was started in that terminal. On Windows there is no page endpoint yet, so nothing can read the page. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
-## Where it is going
+## Design proposals and plans
 
-The next step is making pane tabs outlive Chrome, so quitting the browser or updating Agent Pane does not end the agents in them, and letting agents in different pane tabs start, message and wait on each other. The design is [RFC 0001](rfcs/0001-herdr-core-backend.md); the work is tracked in the [issues](https://github.com/asakin/agent-pane/issues).
+Larger changes are designed as RFCs in [docs/rfcs](docs/rfcs/), such as [RFC 0001](docs/rfcs/0001-herdr-core-backend.md), the design behind Durable pane tabs and helper agents. The work is tracked in the [issues](https://github.com/asakin/agent-pane/issues).
 
 ## Build from source
 
