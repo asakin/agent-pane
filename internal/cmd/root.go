@@ -257,6 +257,10 @@ func configPath() string {
 	return filepath.Join(configDir, "config.json")
 }
 
+// legacyThemeDark is the themeDark earlier versions put in the default
+// config.json.
+const legacyThemeDark = "Tomorrow Night"
+
 // writeConfigMap merges values into config.json and reloads koanf.
 func writeConfigMap(updates map[string]interface{}) error {
 	if err := os.MkdirAll(configDir, 0755); err != nil {
@@ -267,6 +271,14 @@ func writeConfigMap(updates map[string]interface{}) error {
 	path := configPath()
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &current)
+	}
+
+	// Earlier versions wrote themeDark into every new config.json, and it
+	// would keep overriding the theme picked in Options in dark mode.
+	if _, ok := updates["theme"]; ok && current["themeDark"] == legacyThemeDark {
+		if _, set := updates["themeDark"]; !set {
+			delete(current, "themeDark")
+		}
 	}
 
 	for key, value := range updates {
