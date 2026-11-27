@@ -180,7 +180,10 @@ export function serialReporter<S>(send: (report: LayoutReport<S>) => Promise<voi
     const drain = async () => {
         busy = true;
         while (pending) {
-            const next = pending;
+            // The claim is added as the report goes, so a report queued
+            // behind the one the host accepted with it does not take the
+            // space again.
+            const next: LayoutReport<S> = { ...pending, ...(claim ? { space: claim } : {}) };
             pending = undefined;
             try {
                 await send(next);
@@ -193,11 +196,11 @@ export function serialReporter<S>(send: (report: LayoutReport<S>) => Promise<voi
         }
         busy = false;
     };
-    return (report) => {
-        if (report.space) {
-            claim = report.space;
+    return ({ space, ...report }) => {
+        if (space) {
+            claim = space;
         }
-        pending = { ...report, ...(claim ? { space: claim } : {}) };
+        pending = report;
         if (!busy) {
             void drain();
         }
