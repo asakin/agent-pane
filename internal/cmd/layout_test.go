@@ -217,6 +217,84 @@ func TestLayoutSpacesAreRestoredAfterChromeRestarts(t *testing.T) {
 	}
 }
 
+// A name a person gives a pane tab is its name in the document and in
+// tty.list, and outlives the host; an empty one returns the automatic name.
+func TestARenamedPaneTabKeepsItsName(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	noRediscoverWait(t)
+	core := newFakeCore()
+	first := newLayoutHarness(t, core, "b1")
+	a := first.create(t, shell("7@r1"))
+	b := first.create(t, shell("7@r1"))
+	first.layoutCall(t, map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID, "name": "  review\nbot  "}, {"id": b.ID}}})
+	seven := spaceFor(t, core.layout(t), "b1:7@r1")
+	if seven.Tabs[0].Name != "review bot" || seven.Tabs[1].Name != "Terminal" {
+		t.Fatalf("names %+v", seven.Tabs)
+	}
+
+	h := restartHost(t, first, core, "b1")
+	for _, item := range h.listFacts(t) {
+		want := map[string]string{a.ID: "review bot", b.ID: ""}[item.ID]
+		if item.Name != want {
+			t.Fatalf("tty.list item %+v, want name %q", item, want)
+		}
+	}
+	if got := spaceFor(t, core.layout(t), "b1:7@r1").Tabs[0].Name; got != "review bot" {
+		t.Fatalf("name after restart %q", got)
+	}
+
+	h.layoutCall(t, map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID, "name": ""}, {"id": b.ID}}})
+	if got := spaceFor(t, core.layout(t), "b1:7@r1").Tabs[0].Name; got != "Terminal" {
+		t.Fatalf("name after clearing %q", got)
+	}
+	records, err := h.sessions.registry.load()
+	if err != nil || records[a.ID].Name != "" {
+		t.Fatalf("record %+v %v", records[a.ID], err)
+	}
+}
+
+// A name whose record write failed is written by the next report, though
+// the report names it unchanged.
+func TestAFailedNameRecordIsWrittenAgain(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	noRediscoverWait(t)
+	core := newFakeCore()
+	h := newLayoutHarness(t, core, "b1")
+	a := h.create(t, shell("7@r1"))
+	report := map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID, "name": "review"}}}
+
+	defer func(old time.Duration) { registryLockTimeout = old }(registryLockTimeout)
+	registryLockTimeout = 50 * time.Millisecond
+	unlock, err := lockFile(context.Background(), h.sessions.registry.path+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, msg := h.call(t, "tty.layout", report); msg == "" {
+		t.Fatal("tty.layout succeeded without recording the name")
+	}
+	unlock()
+	if doc := core.layout(t); spaceFor(t, doc, "b1:7@r1").Tabs[0].Name != "review" {
+		t.Fatalf("layout while locked %+v", doc)
+	}
+	if records, err := h.sessions.registry.load(); err != nil || records[a.ID].Name != "" {
+		t.Fatalf("record while locked %+v %v", records[a.ID], err)
+	}
+
+	h.layoutCall(t, report)
+	if records, err := h.sessions.registry.load(); err != nil || records[a.ID].Name != "review" {
+		t.Fatalf("record after the next report %+v %v", records[a.ID], err)
+	}
+}
+
+func TestTabNameIsOneBoundedLine(t *testing.T) {
+	if got := tabName(" a\tb\x00c "); got != "a b c" {
+		t.Fatalf("tabName %q", got)
+	}
+	if got := []rune(tabName(strings.Repeat("é", 300))); len(got) != maxTabName {
+		t.Fatalf("tabName kept %d runes", len(got))
+	}
+}
+
 // Two browsers' hosts write the same document at once; neither loses the
 // other's spaces.
 func TestTwoHostsWriteTheLayoutAtOnce(t *testing.T) {

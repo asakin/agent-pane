@@ -31,6 +31,7 @@ test("a running pane tab is named by its agent and title", () => {
     assert.equal(runningName({ id: "a", label: "Codex", title: "review" }), "Codex: review");
     assert.equal(runningName({ id: "a", label: "Codex", title: "Codex" }), "Codex");
     assert.equal(runningName({ id: "a" }), "Terminal");
+    assert.equal(runningName({ id: "a", label: "Codex", title: "review", name: "my reviewer" }), "my reviewer", "a name a person set wins");
 });
 
 test("the Running pane tabs list opens or ends each entry and hides when empty", async () => {
@@ -196,6 +197,11 @@ test("a pane tab taken back in the same run keeps its lock", () => {
     assert.deepEqual(listedTab(durable("a", "7@r1", { agent: "pi", space: space("7@r1", 12) }), "r1"), { id: "a", app: "pi", lockedTabId: 12 });
     assert.deepEqual(listedTab(durable("a", "7@r0", { agent: "pi", space: space("7@r0", 12) }), "r1"), { id: "a", app: "pi" });
     assert.deepEqual(listedTab(durable("a", "7@r1", { agent: "pi" }), "r1"), { id: "a", app: "pi" });
+});
+
+test("a pane tab taken back keeps the name a person gave it", () => {
+    assert.deepEqual(listedTab(durable("a", "7@r0", { agent: "pi", name: "reviewer" }), "r1"), { id: "a", app: "pi", name: "reviewer" });
+    assert.deepEqual(listedTab(durable("a", "7@r0", { name: "" }), "r1"), { id: "a", app: "" });
 });
 
 test("layout reports go to the host one at a time, newest last, keeping a taken space", async () => {

@@ -53,6 +53,12 @@ type Session struct {
 
 	// Label names the terminal in approval prompts (agent name or Terminal).
 	Label string
+	// name is the pane tab's name a person set, "" while it follows the
+	// automatic one (Durable only).
+	name string
+	// nameUnsaved is set while name is not yet in the pane tab's record
+	// because writing it failed; the next tty.layout report tries again.
+	nameUnsaved bool
 	// page is the host's end of the page channel; nil where there is none.
 	page *net.UnixConn
 	// pageSocket serves the session's processes that did not inherit the
@@ -284,6 +290,8 @@ type ttyListItem struct {
 	Pane   string      `json:"pane,omitempty"`
 	Agent  string      `json:"agent,omitempty"`
 	Label  string      `json:"label,omitempty"`
+	// Name is the pane tab's name a person set.
+	Name string `json:"name,omitempty"`
 	// Window names the Chrome window the session was last shown in, when
 	// it is this browser's and still open as far as the host knows.
 	Window  string `json:"window,omitempty"`
@@ -309,6 +317,7 @@ func (m *SessionManager) listItems() []ttyListItem {
 			s.mu.Lock()
 			item.Status, item.Title = s.facts.Status, s.facts.Title
 			item.Agent, item.Label, item.Durable = s.agent, s.Label, durable
+			item.Name = s.name
 			if s.pane != nil {
 				item.Pane = s.pane.id
 				if place, ok := places[publicID("tab", s.pane.id)]; ok && durable {

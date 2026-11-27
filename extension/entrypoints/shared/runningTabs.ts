@@ -169,11 +169,12 @@ export function listedTab(s: ListedTTY, runId: string): SpaceTab {
         id: s.id,
         app: typeof s.agent === "string" ? s.agent : "",
         ...(typeof s.pane === "string" && s.pane ? { pane: s.pane } : {}),
+        ...(typeof s.name === "string" && s.name ? { name: s.name } : {}),
         ...(sameRun && Number.isInteger(locked) ? { lockedTabId: locked } : {}),
     };
 }
 
-export type SpaceTab = TabLock & { id: string; app: string; pane?: string };
+export type SpaceTab = TabLock & { id: string; app: string; pane?: string; name?: string };
 
 /** What the Running pane tabs list calls a space. */
 export function spaceName(space: OfferedSpace): string {
@@ -183,19 +184,22 @@ export function spaceName(space: OfferedSpace): string {
 
 /**
  * tty.layout's params for what a window shows: its pane tabs in order, the
- * active one and their locks. A lock on a Chrome tab that closed is not one.
+ * active one, their locks and the names a person gave them. A lock on a
+ * Chrome tab that closed is not one.
  */
 export function layoutParams(
     window: string,
-    tabs: { id: string; lockedTabId?: number; lockedTabClosed?: boolean }[],
+    tabs: { id: string; lockedTabId?: number; lockedTabClosed?: boolean; name?: string }[],
     activeId: string,
     space?: string,
 ): NonNullable<RequestLayoutTTY["params"]> {
     return {
         window,
-        tabs: tabs.map((tab) => tab.lockedTabId !== undefined && !tab.lockedTabClosed
-            ? { id: tab.id, lockedTab: tab.lockedTabId }
-            : { id: tab.id }),
+        tabs: tabs.map((tab) => ({
+            id: tab.id,
+            ...(tab.lockedTabId !== undefined && !tab.lockedTabClosed ? { lockedTab: tab.lockedTabId } : {}),
+            ...(tab.name ? { name: tab.name } : {}),
+        })),
         active: activeId,
         ...(space ? { space } : {}),
     };
@@ -272,8 +276,12 @@ export function windowName(windowId: number, runId: string): string {
     return `${windowId}@${runId}`;
 }
 
-/** What the Running pane tabs list calls a session. */
+/** What the Running pane tabs list calls a session: a name a person gave it wins. */
 export function runningName(s: ListedTTY): string {
+    const name = typeof s.name === "string" ? s.name.trim() : "";
+    if (name) {
+        return name;
+    }
     const title = typeof s.title === "string" ? s.title.trim() : "";
     const label = typeof s.label === "string" && s.label ? s.label : "Terminal";
     return title && title !== label ? `${label}: ${title}` : label;

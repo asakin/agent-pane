@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseHTML } from "linkedom";
-import { dropSlot, moveTab, renderTabList } from "../entrypoints/shared/tabStrip.ts";
+import { cleanTabName, dropSlot, MAX_TAB_NAME, moveTab, renderTabList, setTabName } from "../entrypoints/shared/tabStrip.ts";
 
 const setup = () => {
     const { document } = parseHTML(`<html><body><div id="list"></div></body></html>`);
@@ -213,4 +213,75 @@ test("Ctrl+Shift+Left and Right move the focused pane tab and keep it focused", 
     key("c", "ArrowLeft", { ctrlKey: true });
     assert.deepEqual(order(), ["b", "c", "a"], "the shortcut needs both Ctrl and Shift");
     assert.deepEqual(moves, [["b", 0], ["b", -1], ["a", 3], ["a", 4]]);
+});
+
+test("a name a person set wins over the terminal's title, and clearing it brings the title back", () => {
+    const { list, handlers } = setup();
+    const titles = new Map([["a", "⠋ pi working"], ["b", "codex"]]);
+    let current = setTabName(state("a", "a", "b"), "a", "  my reviewer\n");
+    assert.equal(current.tabs[0].name, "my reviewer");
+    renderTabList(list, current, titles, handlers);
+    assert.deepEqual(labels(list), ["my reviewer", "codex"]);
+    assert.equal(list.children[0].title, "my reviewer");
+
+    // The agent keeps changing the title; the name stays.
+    titles.set("a", "⠙ pi working");
+    renderTabList(list, current, titles, handlers);
+    assert.deepEqual(labels(list), ["my reviewer", "codex"]);
+
+    current = setTabName(current, "a", "   ");
+    assert.equal("name" in current.tabs[0], false);
+    renderTabList(list, current, titles, handlers);
+    assert.deepEqual(labels(list), ["⠙ pi working", "codex"]);
+});
+
+test("a pane tab name is one line of at most MAX_TAB_NAME characters", () => {
+    assert.equal(cleanTabName("a\tb\u0000c"), "a b c");
+    assert.equal(Array.from(cleanTabName("é".repeat(300))).length, MAX_TAB_NAME);
+    const before = state("a", "a", "b");
+    const after = setTabName(before, "a", "x");
+    assert.equal(after.tabs[1], before.tabs[1], "other pane tabs are untouched");
+    assert.equal(after.activeId, "a");
+});
+
+test("double-clicking a pane tab edits its name: Enter saves, Escape cancels", () => {
+    const { document, list, handlers } = setup();
+    const renamed = [];
+    handlers.onRename = (id, name) => renamed.push([id, name]);
+    renderTabList(list, state("a", "a", "b"), new Map([["a", "pi"], ["b", "codex"]]), handlers);
+    const [a, b] = list.children;
+    const key = (el, k, isComposing = false) => {
+        const e = new document.defaultView.Event("keydown", { bubbles: true, cancelable: true });
+        e.key = k;
+        e.isComposing = isComposing;
+        el.dispatchEvent(e);
+    };
+    const field = () => document.querySelector(".at-tabs__rename");
+
+    a.dispatchEvent(new document.defaultView.Event("dblclick", { bubbles: true }));
+    assert.equal(field().value, "pi", "the field starts with what the tab shows");
+    field().value = "reviewer";
+    // Enter and Escape that confirm or drop an IME composition leave the field open.
+    key(field(), "Enter", true);
+    key(field(), "Escape", true);
+    assert.equal(field()?.value, "reviewer");
+    assert.deepEqual(renamed, []);
+    key(field(), "Enter");
+    assert.equal(field(), null);
+    assert.deepEqual(renamed, [["a", "reviewer"]]);
+
+    key(b, "F2");
+    field().value = "ignored";
+    key(field(), "Escape");
+    assert.equal(field(), null);
+    assert.deepEqual(renamed, [["a", "reviewer"]], "Escape saves nothing");
+
+    // Saving the text unchanged does not pin the title as a name.
+    b.dispatchEvent(new document.defaultView.Event("dblclick", { bubbles: true }));
+    key(field(), "Enter");
+    assert.deepEqual(renamed, [["a", "reviewer"]]);
+
+    // Double-clicking the close mark does not rename.
+    b.querySelector(".at-tabs__close").dispatchEvent(new document.defaultView.Event("dblclick", { bubbles: true }));
+    assert.equal(field(), null);
 });

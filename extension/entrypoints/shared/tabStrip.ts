@@ -6,6 +6,8 @@ export type TabStripHandlers = {
     onClose: (id: string) => void;
     /** Moves the pane tab to slot, a place between the tabs as they are now (0 is first, tabs.length last). */
     onMove?: (id: string, slot: number) => void;
+    /** A person renamed the pane tab; "" returns it to its terminal's title. */
+    onRename?: (id: string, name: string) => void;
 };
 
 /**
@@ -147,16 +149,19 @@ export function renderTabList(
                 }
             }
         }
-        const named = titles.get(id) || id;
+        // A name the person set wins over the terminal's title.
+        const shown = entry.name || titles.get(id);
+        const named = shown || id;
         const title = mark ? `${named}: ${mark.text}` : named;
         if (tab.title !== title) {
             tab.title = title;
         }
         const label = tab.querySelector(".at-tabs__label");
-        const text = shortTabLabel(id, titles.get(id));
+        const text = shortTabLabel(id, shown);
         if (label && label.textContent !== text) {
             label.textContent = text;
         }
+        tab.dataset.name = entry.name ?? "";
 
         const expected: Element | null = previous ? previous.nextElementSibling : list.firstElementChild;
         if (expected !== tab) {
@@ -230,7 +235,121 @@ function createTabButton(list: HTMLElement, id: string, handlers: TabStripHandle
         // Moving the button in the list takes focus from it.
         tab.focus();
     });
+
+    // Double-click or F2 edits the name in place.
+    const rename = () => {
+        if (!listHandlers.get(list)?.onRename || tab.ownerDocument.querySelector(".at-tabs__rename")) {
+            return;
+        }
+        const current = tab.dataset.name || tab.querySelector(".at-tabs__label")?.textContent || "";
+        editTabName(tab, current, (name) => listHandlers.get(list)?.onRename?.(id, name));
+    };
+    tab.addEventListener("dblclick", (e) => {
+        if (close.contains(e.target as Node)) {
+            return;
+        }
+        e.preventDefault();
+        rename();
+    });
+    tab.addEventListener("keydown", (e) => {
+        if ((e as KeyboardEvent).key === "F2") {
+            e.preventDefault();
+            rename();
+        }
+    });
     return tab;
+}
+
+/** The longest pane tab name a person can set, in characters. */
+export const MAX_TAB_NAME = 100;
+
+/**
+ * A pane tab name as a person typed it, on one line and at most
+ * MAX_TAB_NAME characters. "" means the pane tab follows its terminal's title.
+ */
+export function cleanTabName(name: string): string {
+    const line = name.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim();
+    return Array.from(line).slice(0, MAX_TAB_NAME).join("").trim();
+}
+
+/**
+ * Gives a pane tab the name a person typed. An empty name returns it to its
+ * terminal's title.
+ */
+export function setTabName<T extends { id: string; name?: string }>(
+    state: { tabs: T[]; activeId: string },
+    id: string,
+    name: string,
+): { tabs: T[]; activeId: string } {
+    const clean = cleanTabName(name);
+    return {
+        tabs: state.tabs.map((tab) => {
+            if (tab.id !== id) {
+                return tab;
+            }
+            const { name: _old, ...rest } = tab;
+            return (clean ? { ...rest, name: clean } : rest) as T;
+        }),
+        activeId: state.activeId,
+    };
+}
+
+/**
+ * Edits a pane tab's name in a field over its button, which is left alone so
+ * the strip can keep updating it. Enter, or leaving the field, saves; Escape
+ * cancels. save is called only when the text changed.
+ */
+export function editTabName(tab: HTMLElement, current: string, save: (name: string) => void): HTMLInputElement {
+    const doc = tab.ownerDocument;
+    const input = doc.createElement("input");
+    input.type = "text";
+    input.className = "at-tabs__rename";
+    input.value = current;
+    input.maxLength = MAX_TAB_NAME;
+    input.spellcheck = false;
+    input.setAttribute("aria-label", "Pane tab name (empty for the terminal's title)");
+
+    let open = true;
+    const finish = (keep: boolean, refocus: boolean) => {
+        if (!open) {
+            return;
+        }
+        open = false;
+        input.remove();
+        if (keep && input.value !== current) {
+            save(input.value);
+        }
+        if (refocus) {
+            tab.focus?.();
+        }
+    };
+    input.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        // Enter and Escape during IME composition belong to the composition.
+        if (e.isComposing || e.keyCode === 229) {
+            return;
+        }
+        if (e.key === "Enter") {
+            e.preventDefault();
+            finish(true, true);
+        } else if (e.key === "Escape") {
+            e.preventDefault();
+            finish(false, true);
+        }
+    });
+    input.addEventListener("blur", () => finish(true, false));
+
+    const r = tab.getBoundingClientRect?.();
+    if (r) {
+        input.style.top = `${r.top}px`;
+        input.style.left = `${r.left}px`;
+        input.style.width = `${Math.max(r.width, 120)}px`;
+        input.style.height = `${r.height}px`;
+    }
+    doc.body.appendChild(input);
+    input.focus?.();
+    input.select?.();
+    return input;
 }
 
 export function shortTabLabel(id: string, title?: string): string {
