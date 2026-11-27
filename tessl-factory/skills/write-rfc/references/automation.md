@@ -142,7 +142,7 @@ the answer says.
   `gh pr list --head <branch> --state open` before trying again. The body: a
   few lines on what the RFC proposes and the questions it leaves open;
   `Closes #<n>` on its own line; and
-  `<!-- tessl-factory:issue-label: tessl -->` on its own line.
+  `<!-- tessl-factory:issue-label: tessl-rfc -->` on its own line.
 - **Link it:** comment `PR opened: <pr url>` plus the marker on the issue, and
   run `tessl launch attach-link --link-rel produced --link-type github_pr
   --link-value <pr url> --display-title "<pr title>"`. A failed link is a
@@ -154,6 +154,7 @@ the answer says.
 - This round started because @asakin added the trigger label, or commented on
   an open issue that has it. Nothing else starts a round: a comment from
   anyone else, or on the pull request, does not.
-- The pull request has the `tessl` label and a `tessl/` branch, so the
-  shepherd automation answers review comments and failed checks on it. Your
-  rounds do not.
+- The pull request's `tessl` label and `tessl/` branch are what start the
+  shepherd automation on review comments and failed checks; your rounds do
+  not answer them. The marker's `tessl-rfc` keeps the shepherd working: it
+  stops when the issue no longer has that label.
