@@ -1,7 +1,7 @@
 /** The terminal backend new pane tabs run in, as config.json's terminalBackend has it. */
 export type TerminalBackend = "builtin" | "durable";
 
-/** Built-in unless the setting names Durable (preview). */
+/** Durable unless the setting names Built-in. */
 export function normalizeTerminalBackend(raw: unknown): TerminalBackend {
-    return raw === "durable" ? "durable" : "builtin";
+    return raw === "builtin" ? "builtin" : "durable";
 }

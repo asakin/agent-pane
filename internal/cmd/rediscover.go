@@ -10,7 +10,7 @@ import (
 	"agent-pane/internal/herdrcore"
 )
 
-// Durable (preview) pane tabs outlive the host that started them: their
+// Durable pane tabs outlive the host that started them: their
 // programs run in the core. A later host takes them back here, from the core
 // terminals carrying Agent Pane's labels and the host-private registry that
 // joins those public labels to the session and pane tab ids the extension
@@ -40,7 +40,7 @@ func (m *SessionManager) wantsRediscovery() bool {
 	if !known {
 		return false
 	}
-	if cfg().String(terminalBackendKey) == terminalBackendDurable {
+	if durableChosen() {
 		return true
 	}
 	records, err := m.registry.load()

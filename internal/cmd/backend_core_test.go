@@ -607,10 +607,23 @@ func readFrame(t *testing.T, conn *websocket.Conn) string {
 	return string(data)
 }
 
-func TestBuiltinBackendIsTheDefault(t *testing.T) {
+func TestDurableBackendIsTheDefault(t *testing.T) {
+	core := newFakeCore()
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
+	if _, ok := h.sessions.Get(ep.ID); !ok {
+		t.Fatal("session not found")
+	}
+	if len(core.runs) != 1 {
+		t.Fatalf("the core ran %d terminals with no backend set", len(core.runs))
+	}
+}
+
+func TestBuiltinBackendWhenChosen(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("macOS terminals start through the spawn agent")
 	}
+	useBackend(t, terminalBackendBuiltin)
 	core := newFakeCore()
 	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
 	ep := h.create(t, map[string]any{"mode": "shell", "cols": 80, "rows": 24})
@@ -619,10 +632,10 @@ func TestBuiltinBackendIsTheDefault(t *testing.T) {
 		t.Fatal("session not found")
 	}
 	if _, ok := s.term.(*ptyTerminal); !ok {
-		t.Fatalf("default backend made %T", s.term)
+		t.Fatalf("Built-in backend made %T", s.term)
 	}
 	if len(core.runs) != 0 {
-		t.Fatal("the core ran a terminal with the preview off")
+		t.Fatal("the core ran a terminal with Built-in chosen")
 	}
 }
 
@@ -771,7 +784,7 @@ func TestDurableFallsBackToBuiltinWithANotice(t *testing.T) {
 		t.Fatalf("fallback made %T", s.term)
 	}
 	replay := readFrame(t, dialAttach(t, ep.URL))
-	if !strings.Contains(replay, "Durable (preview) terminal backend could not start") || !strings.Contains(replay, errCoreMissing.Error()) {
+	if !strings.Contains(replay, "Durable terminal backend could not start") || !strings.Contains(replay, errCoreMissing.Error()) {
 		t.Fatalf("replay %q", replay)
 	}
 }

@@ -15,7 +15,7 @@ import (
 )
 
 // A program reports its status by printing a status report to its terminal
-// (OSC 7501, the bundled core's status protocol). Durable (preview) pane tabs
+// (OSC 7501, the bundled core's status protocol). Durable pane tabs
 // show it in the tab strip; elsewhere the terminal ignores it.
 var (
 	statusStates = []string{"idle", "working", "done", "blocked", "error"}
@@ -81,7 +81,7 @@ func NewCmdStatus() *cobra.Command {
 
 blocked means a person is needed; --kind says why (permission, question or
 auth). The report goes to this process's terminal. Pane tabs on the Durable
-(preview) terminal backend show it in the tab strip; Built-in pane tabs
+terminal backend show it in the tab strip; Built-in pane tabs
 ignore it.`,
 		Args:         cobra.MinimumNArgs(1),
 		SilenceUsage: true,

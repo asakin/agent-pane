@@ -158,7 +158,7 @@ export type ListedTTY = {
     name?: string;
     /** The Chrome window it was last shown in (windowName), absent once that window closed. */
     window?: string;
-    /** Set when it runs in the Durable (preview) backend and outlives the side panel. */
+    /** Set when it runs in the Durable backend and outlives the side panel. */
     durable?: boolean;
     /** Where a Durable pane tab sits in the layout document. */
     space?: ListedSpace;

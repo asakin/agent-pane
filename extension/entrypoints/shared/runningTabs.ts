@@ -2,7 +2,7 @@ import type { ListedSpace, ListedTTY, RequestLayoutTTY } from "./rpc.ts";
 import { type TabLock, closeMissingLocks } from "./tabLock.ts";
 
 /**
- * Durable (preview) pane tabs outlive the side panel that showed them: a
+ * Durable pane tabs outlive the side panel that showed them: a
  * Chrome window closing, Chrome quitting, the extension reloading or the host
  * restarting leaves their programs running. A side panel takes back the ones
  * last shown in its own window, and offers the rest as "Running pane tabs"

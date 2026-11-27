@@ -17,14 +17,20 @@ import (
 	"agent-pane/internal/herdrcore"
 )
 
-// The Options setting that picks the backend new sessions run in. Built-in
-// is the default and the fallback; Durable is the preview that runs them in
-// the bundled core (RFC 0001).
+// The Options setting that picks the backend new sessions run in. Durable,
+// the default, runs them in the bundled core (RFC 0001); Built-in runs them
+// in the host and is the fallback when the core cannot start one.
 const (
 	terminalBackendKey     = "terminalBackend"
 	terminalBackendBuiltin = "builtin"
 	terminalBackendDurable = "durable"
 )
+
+// durableChosen reports whether new sessions run in the Durable backend:
+// unless the setting names Built-in.
+func durableChosen() bool {
+	return cfg().String(terminalBackendKey) != terminalBackendBuiltin
+}
 
 // coreCallTimeout bounds one call to the core, so a core that stopped
 // answering fails a tty.* request instead of hanging it.

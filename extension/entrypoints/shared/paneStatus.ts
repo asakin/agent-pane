@@ -1,6 +1,6 @@
 /**
  * What the program in a pane tab reports it is doing. The host sends it as
- * `tty.event` for pane tabs on the Durable (preview) terminal backend, and
+ * `tty.event` for pane tabs on the Durable terminal backend, and
  * `tty.list` carries the latest; Built-in pane tabs report none.
  */
 export type PaneStatus = {

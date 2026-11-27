@@ -19,7 +19,7 @@ import (
 	"agent-pane/internal/herdrcore"
 )
 
-// Teamwork: a program in a Durable (preview) pane tab starts helpers in the
+// Teamwork: a program in a Durable pane tab starts helpers in the
 // bundled core and sends them work, waits for them and reads their output.
 // A helper belongs to the pane tab that started it: it carries the pane
 // tab's public id, ends when the pane tab's program ends, and is the only
@@ -40,7 +40,7 @@ const envCoreTerminal = "HC_TERMINAL_ID"
 // two minutes coding agents' command tools commonly allow.
 const teamWaitTimeout = 90 * time.Second
 
-var errNotDurable = errors.New("helpers need a pane tab on the Durable (preview) terminal backend; choose it in Options under Terminal backend and open a new pane tab")
+var errNotDurable = errors.New("helpers need a pane tab on the Durable terminal backend; choose it in Options under Terminal backend and open a new pane tab")
 
 var helperNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,31}$`)
 
@@ -374,7 +374,7 @@ const teamHelp = `
 Helpers run in the terminal runtime bundled with Agent Pane, as part of the
 pane tab that started them: they end when its program ends, and only that
 pane tab can address them. Helpers cannot read the page. These commands work
-in pane tabs on the Durable (preview) terminal backend.`
+in pane tabs on the Durable terminal backend.`
 
 func NewCmdLs() *cobra.Command {
 	return &cobra.Command{
