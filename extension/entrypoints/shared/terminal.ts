@@ -1,6 +1,5 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { bindKeySequences } from "./terminalKeys";
 import type {
@@ -89,6 +88,24 @@ import {
     type TtyDimensions,
     windowName,
 } from "./windowTabs";
+
+/**
+ * Switches the terminal to the WebGL renderer. The addon is a quarter of the
+ * side panel's code, so it loads in its own chunk after the terminal opens;
+ * until then, and wherever WebGL fails, the DOM renderer draws.
+ */
+async function useWebglRenderer(terminal: Terminal): Promise<void> {
+    try {
+        const { WebglAddon } = await import("@xterm/addon-webgl");
+        const webglAddon = new WebglAddon();
+        webglAddon.onContextLoss(() => {
+            webglAddon.dispose();
+        });
+        terminal.loadAddon(webglAddon);
+    } catch {
+        // The DOM renderer stays.
+    }
+}
 
 /** tty.list's sessions, or null when the host did not answer. */
 async function listTTY(): Promise<ListedTTY[] | null> {
@@ -516,15 +533,7 @@ async function main() {
         scheduleResize({ tty: activeTtyId, cols: size.cols, rows: size.rows });
     });
 
-    try {
-        const webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => {
-            webglAddon.dispose();
-        });
-        terminal.loadAddon(webglAddon);
-    } catch {
-        // Canvas renderer remains the default.
-    }
+    void useWebglRenderer(terminal);
 
     mountFontSizeControls(fontSizeHost, terminal, fitAddon, xtermResp.result);
     mountQuickSettings(settingsHost, {
@@ -1255,15 +1264,7 @@ async function runSingleTerminal(
         scheduleResize({ tty: activeTtyId, cols: size.cols, rows: size.rows });
     });
 
-    try {
-        const webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => {
-            webglAddon.dispose();
-        });
-        terminal.loadAddon(webglAddon);
-    } catch {
-        // Canvas fallback.
-    }
+    void useWebglRenderer(terminal);
 
     let ws: WebSocket | null = null;
     let ptyAttach: PtyAttachHandle | null = null;
