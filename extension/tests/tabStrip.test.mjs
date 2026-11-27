@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseHTML } from "linkedom";
-import { renderTabList } from "../entrypoints/shared/tabStrip.ts";
+import { dropSlot, moveTab, renderTabList } from "../entrypoints/shared/tabStrip.ts";
 
 const setup = () => {
     const { document } = parseHTML(`<html><body><div id="list"></div></body></html>`);
@@ -106,4 +106,111 @@ test("a status mark is not taken for the label", () => {
     const { list, handlers } = setup();
     renderTabList(list, state("a", "a"), new Map([["a", "pi"]]), handlers, new Map([["a", { state: "idle" }]]));
     assert.deepEqual(labels(list), ["pi"]);
+});
+
+const ids = (s) => s.tabs.map((tab) => tab.id);
+
+test("moving a pane tab puts it at any place and keeps the active one", () => {
+    const s = state("b", "a", "b", "c");
+    assert.deepEqual(ids(moveTab(s, "c", 0)), ["c", "a", "b"], "to first");
+    assert.deepEqual(ids(moveTab(s, "a", 3)), ["b", "c", "a"], "to last");
+    assert.deepEqual(ids(moveTab(s, "a", 2)), ["b", "a", "c"]);
+    assert.deepEqual(ids(moveTab(s, "c", 1)), ["a", "c", "b"]);
+    assert.equal(moveTab(s, "b", 0).activeId, "b");
+    assert.equal(moveTab(s, "a", 3).activeId, "b");
+    assert.equal(moveTab(s, "b", 1), s, "its own place is no move");
+    assert.equal(moveTab(s, "b", 2), s, "just after itself is no move");
+    assert.equal(moveTab(s, "a", -1), s, "past the first does not wrap");
+    assert.deepEqual(ids(moveTab(s, "a", 9)), ["b", "c", "a"], "past the last lands last");
+    assert.equal(moveTab(s, "z", 0), s, "an unknown pane tab");
+    assert.deepEqual(ids(s), ["a", "b", "c"], "the old state is not changed");
+});
+
+test("a drop lands before the first tab whose middle it is left of", () => {
+    const boxes = [{ left: 0, width: 100 }, { left: 100, width: 100 }, { left: 200, width: 100 }];
+    assert.equal(dropSlot(boxes, 10), 0);
+    assert.equal(dropSlot(boxes, 60), 1);
+    assert.equal(dropSlot(boxes, 140), 1);
+    assert.equal(dropSlot(boxes, 260), 3);
+    assert.equal(dropSlot([], 5), 0);
+});
+
+const event = (document, type, props = {}) => Object.assign(new document.defaultView.Event(type, { bubbles: true, cancelable: true }), props);
+
+const moveSetup = (...order) => {
+    const ctx = setup();
+    let current = state(order[0], ...order);
+    const moves = [];
+    const render = () => renderTabList(ctx.list, current, new Map(), ctx.handlers);
+    ctx.handlers.onMove = (id, slot) => {
+        moves.push([id, slot]);
+        current = moveTab(current, id, slot);
+        render();
+    };
+    render();
+    Array.from(ctx.list.children).forEach((tab, i) => {
+        tab.getBoundingClientRect = () => ({ left: i * 100, width: 100 });
+    });
+    return { ...ctx, moves, order: () => ids(current), tab: (id) => ctx.list.querySelector(`[data-tab-id="${id}"]`) };
+};
+
+test("dragging a pane tab shows where it lands and drops it there", () => {
+    const { document, list, moves, order, tab } = moveSetup("a", "b", "c");
+    assert.equal(tab("a").draggable, true);
+    tab("a").dispatchEvent(event(document, "dragstart"));
+
+    const over = event(document, "dragover", { clientX: 280 });
+    tab("c").dispatchEvent(over);
+    assert.equal(over.defaultPrevented, true, "the strip takes the drop");
+    assert.equal(tab("c").dataset.drop, "after");
+    assert.equal(tab("a").dataset.drop, undefined);
+
+    tab("c").dispatchEvent(event(document, "dragover", { clientX: 120 }));
+    assert.equal(tab("b").dataset.drop, "before");
+    assert.equal(tab("c").dataset.drop, undefined);
+
+    tab("c").dispatchEvent(event(document, "drop", { clientX: 290 }));
+    assert.deepEqual(moves, [["a", 3]]);
+    assert.deepEqual(order(), ["b", "c", "a"]);
+    assert.deepEqual(Array.from(list.children).map((t) => t.dataset.tabId), ["b", "c", "a"]);
+    assert.ok(Array.from(list.children).every((t) => t.dataset.drop === undefined), "the mark goes with the drop");
+    assert.equal(tab("a").className, "at-tabs__tab at-tabs__tab--active", "the active tab stays active");
+});
+
+test("a drag that did not start on a pane tab is not taken", () => {
+    const { document, moves, tab } = moveSetup("a", "b");
+    const over = event(document, "dragover", { clientX: 10 });
+    tab("a").dispatchEvent(over);
+    assert.equal(over.defaultPrevented, false);
+    tab("a").dispatchEvent(event(document, "drop", { clientX: 10 }));
+    assert.deepEqual(moves, []);
+
+    tab("b").dispatchEvent(event(document, "dragstart"));
+    tab("b").dispatchEvent(event(document, "dragend"));
+    tab("a").dispatchEvent(event(document, "drop", { clientX: 10 }));
+    assert.deepEqual(moves, [], "a drag that ended elsewhere is over");
+});
+
+test("Ctrl+Shift+Left and Right move the focused pane tab and keep it focused", () => {
+    const { document, list, moves, order, tab } = moveSetup("a", "b", "c");
+    assert.equal(tab("b").getAttribute("aria-keyshortcuts"), "Control+Shift+ArrowLeft Control+Shift+ArrowRight");
+    const focused = [];
+    for (const t of list.children) {
+        t.addEventListener("focus", () => focused.push(t.dataset.tabId));
+    }
+    const key = (id, k, mods = { ctrlKey: true, shiftKey: true }) => {
+        tab(id).dispatchEvent(event(document, "keydown", { key: k, ...mods }));
+    };
+    key("b", "ArrowLeft");
+    assert.deepEqual(order(), ["b", "a", "c"]);
+    assert.deepEqual(focused, ["b"], "the moved tab is focused again");
+    key("b", "ArrowLeft");
+    assert.deepEqual(order(), ["b", "a", "c"], "the first stays first");
+    key("a", "ArrowRight");
+    key("a", "ArrowRight");
+    assert.deepEqual(order(), ["b", "c", "a"], "the last stays last");
+    key("c", "ArrowLeft", { shiftKey: true });
+    key("c", "ArrowLeft", { ctrlKey: true });
+    assert.deepEqual(order(), ["b", "c", "a"], "the shortcut needs both Ctrl and Shift");
+    assert.deepEqual(moves, [["b", 0], ["b", -1], ["a", 3], ["a", 4]]);
 });

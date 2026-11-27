@@ -127,6 +127,15 @@ body.at-options {
     }
 }
 
+/* Where a dragged pane tab will land. */
+.at-tabs__tab[data-drop="before"] {
+    box-shadow: inset 2px 0 0 #2f80ed;
+}
+
+.at-tabs__tab[data-drop="after"] {
+    box-shadow: inset -2px 0 0 #2f80ed;
+}
+
 .at-tabs__tab--active {
     background: #ffffff;
     font-weight: 500;

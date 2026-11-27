@@ -27,7 +27,7 @@ import {
     optsFromAppId,
 } from "./agentLauncher";
 import { NativeUnavailable } from "./nativeRpc";
-import { renderTabList } from "./tabStrip";
+import { moveTab, renderTabList } from "./tabStrip";
 import { type PtyAttachHandle, attachPtySocket } from "./ptyAttach";
 import { RECONNECT_GAVE_UP, createReconnectBackoff } from "./reconnect";
 import { canStepFontSize, clampFontSize, configWithFontSize, stepFontSize } from "./fontSize";
@@ -820,6 +820,7 @@ async function main() {
         renderTabList(list, state!, titles, {
             onSelect: (id) => void switchTo(id),
             onClose: (id) => void closeTab(id),
+            onMove: (id, slot) => void moveTo(id, slot),
         }, statuses);
         launcher.setLaunchEnabled(true);
         void refreshStatus();
@@ -979,6 +980,19 @@ async function main() {
             console.error("switch failed:", err);
             showSetup((err as Error).message);
         }
+    }
+
+    async function moveTo(id: string, slot: number) {
+        if (!state) {
+            return;
+        }
+        const next = moveTab(state, id, slot);
+        if (next === state) {
+            return;
+        }
+        state = next;
+        refreshStrip();
+        await saveState(state);
     }
 
     async function newTab(appId?: string, cwd?: string) {
