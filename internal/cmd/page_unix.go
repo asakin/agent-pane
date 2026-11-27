@@ -78,6 +78,16 @@ func (s *Session) servePage(conn *net.UnixConn, call func() extensionCaller) {
 		if reply == nil {
 			continue
 		}
+		// Tell the client it may close its copy of reply (see
+		// heldPeerReader).
+		if reply.SetWriteDeadline(time.Now().Add(pageReplyWriteTimeout)) != nil {
+			reply.Close()
+			continue
+		}
+		if _, err := reply.Write([]byte{'\n'}); err != nil {
+			reply.Close()
+			continue
+		}
 		s.handlePageRequest(reply, buf[:n], call)
 	}
 }
@@ -221,21 +231,23 @@ func pageClient(fdEnv string, req pageRequest) (string, error) {
 	}
 	syscall.CloseOnExec(pair[0])
 	syscall.CloseOnExec(pair[1])
+	// Keep our copy of the host's end until the host has it: the host's
+	// acknowledgement, or anything else it sends, closes it.
 	mine, err := pollableFile(pair[0], "agent-pane-page-reply")
 	if err != nil {
 		syscall.Close(pair[1])
 		return "", err
 	}
 	defer mine.Close()
+	r := &heldPeerReader{File: mine, peer: pair[1]}
+	defer r.closePeer()
 
 	req.ID = strconv.Itoa(os.Getpid())
 	body, err := json.Marshal(req)
 	if err != nil {
-		syscall.Close(pair[1])
 		return "", err
 	}
 	err = syscall.Sendmsg(fd, body, syscall.UnixRights(pair[1]), nil, 0)
-	syscall.Close(pair[1])
 	if err != nil {
 		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EDESTADDRREQ) {
 			return "", errors.New(errTerminalClosed)
@@ -243,7 +255,32 @@ func pageClient(fdEnv string, req pageRequest) (string, error) {
 		return "", errors.New(errNotPageChannel)
 	}
 
-	return awaitPageReply(mine)
+	return awaitPageReply(r)
+}
+
+// heldPeerReader reads the reply and closes the client's copy of the
+// host's end, peer, once the host has sent anything. macOS can take a
+// descriptor whose every reference is in a message for garbage while the
+// host is receiving it, and flush its socket, so the host would see the
+// client gone at once. The host acknowledges a request it has received with
+// a newline, which the reply's JSON skips; after that only the host holds
+// its end, and its closing it ends the read.
+type heldPeerReader struct {
+	*os.File
+	peer int
+}
+
+func (r *heldPeerReader) Read(p []byte) (int, error) {
+	n, err := r.File.Read(p)
+	r.closePeer()
+	return n, err
+}
+
+func (r *heldPeerReader) closePeer() {
+	if r.peer >= 0 {
+		syscall.Close(r.peer)
+		r.peer = -1
+	}
 }
 
 // pageDescriptor checks that the descriptor fdEnv names is a page channel,
