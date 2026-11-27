@@ -325,6 +325,10 @@ export function editTabName(tab: HTMLElement, current: string, save: (name: stri
     };
     input.addEventListener("keydown", (e) => {
         e.stopPropagation();
+        // Enter and Escape during IME composition belong to the composition.
+        if (e.isComposing || e.keyCode === 229) {
+            return;
+        }
         if (e.key === "Enter") {
             e.preventDefault();
             finish(true, true);

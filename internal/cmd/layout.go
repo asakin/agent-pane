@@ -580,7 +580,8 @@ func (m *SessionManager) applyLayoutReport(r layoutReport) error {
 		name := tabName(rt.Name)
 		s.mu.Lock()
 		pane := s.pane
-		renamed := pane != nil && s.name != name
+		// A name whose record write failed is written again.
+		renamed := pane != nil && (s.name != name || s.nameUnsaved)
 		if renamed {
 			s.name = name
 		}
@@ -589,7 +590,12 @@ func (m *SessionManager) applyLayoutReport(r layoutReport) error {
 			continue
 		}
 		if renamed {
-			m.recordName(s.ID, name)
+			saved := m.recordName(s.ID, name)
+			s.mu.Lock()
+			if s.name == name {
+				s.nameUnsaved = !saved
+			}
+			s.mu.Unlock()
 		}
 		tab := publicID("tab", pane.id)
 		change.tabs = append(change.tabs, layoutTab{ID: tab, AgentPane: layoutTabMeta{LockedTab: rt.LockedTab}})
@@ -602,10 +608,10 @@ func (m *SessionManager) applyLayoutReport(r layoutReport) error {
 }
 
 // recordName keeps a pane tab's new name in its record, so a later host
-// takes it back with the name.
-func (m *SessionManager) recordName(id, name string) {
+// takes it back with the name. It reports whether the record was written.
+func (m *SessionManager) recordName(id, name string) bool {
 	if m.registry == nil {
-		return
+		return true
 	}
 	if err := m.registry.update(func(records map[string]paneRecord) {
 		if rec, ok := records[id]; ok {
@@ -614,7 +620,9 @@ func (m *SessionManager) recordName(id, name string) {
 		}
 	}); err != nil {
 		m.logger.Warn("failed to record a pane tab's name", "error", err)
+		return false
 	}
+	return true
 }
 
 // layoutChange is one tty.layout report as the host applies it: the window's

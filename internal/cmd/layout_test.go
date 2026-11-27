@@ -253,6 +253,33 @@ func TestARenamedPaneTabKeepsItsName(t *testing.T) {
 	}
 }
 
+// A name whose record write failed is written by the next report, though
+// the report names it unchanged.
+func TestAFailedNameRecordIsWrittenAgain(t *testing.T) {
+	useBackend(t, terminalBackendDurable)
+	noRediscoverWait(t)
+	h := newLayoutHarness(t, newFakeCore(), "b1")
+	a := h.create(t, shell("7@r1"))
+	report := map[string]any{"window": "7@r1", "active": a.ID, "tabs": []map[string]any{{"id": a.ID, "name": "review"}}}
+
+	defer func(old time.Duration) { registryLockTimeout = old }(registryLockTimeout)
+	registryLockTimeout = 50 * time.Millisecond
+	unlock, err := lockFile(context.Background(), h.sessions.registry.path+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.layoutCall(t, report)
+	unlock()
+	if records, err := h.sessions.registry.load(); err != nil || records[a.ID].Name != "" {
+		t.Fatalf("record while locked %+v %v", records[a.ID], err)
+	}
+
+	h.layoutCall(t, report)
+	if records, err := h.sessions.registry.load(); err != nil || records[a.ID].Name != "review" {
+		t.Fatalf("record after the next report %+v %v", records[a.ID], err)
+	}
+}
+
 func TestTabNameIsOneBoundedLine(t *testing.T) {
 	if got := tabName(" a\tb\x00c "); got != "a b c" {
 		t.Fatalf("tabName %q", got)
