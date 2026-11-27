@@ -143,6 +143,7 @@ func TestBuiltinPaneTabsAreNotInTheLayout(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("macOS terminals start through the spawn agent")
 	}
+	useBackend(t, terminalBackendBuiltin)
 	core := newFakeCore()
 	h := newLayoutHarness(t, core, "b1")
 	ep := h.create(t, shell("7@r1"))

@@ -27,7 +27,7 @@ The text for the Chrome Web Store listing and its review forms, kept here so eac
 > • One-click agents: start Claude Code, Codex, Pi and others from the launcher.
 > • The page beside the agent: an agent can read the tab next to it (URL, selection, text, Markdown or page structure), only after you allow it, per pane tab. Domains you block are never read.
 > • Send tab: paste the current page into a pane tab as Markdown.
-> • Durable pane tabs (preview): agents keep running when you close Chrome.
+> • Durable pane tabs: agents keep running when you close Chrome.
 >
 > Privacy: Agent Pane has no server, account, analytics or telemetry. Page content goes only to the terminal on your computer that asked for it.
 >

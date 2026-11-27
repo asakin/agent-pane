@@ -39,10 +39,10 @@
         <div class="at-field">
             <label for="terminalBackend">Terminal backend</label>
             <select id="terminalBackend" name="terminalBackend" aria-describedby="terminalBackendHelp">
+                <option value="durable">Durable</option>
                 <option value="builtin">Built-in</option>
-                <option value="durable">Durable (preview)</option>
             </select>
-            <p class="at-field__help" id="terminalBackendHelp">Built-in runs pane tabs in the native host, as before. Durable (preview) runs new pane tabs in the terminal runtime bundled with Agent Pane. In this preview, pane tabs still end when Chrome or the host closes, and page reads use only the pane tab's page socket. If Durable cannot start a pane tab, it runs in Built-in and says why in the terminal. Applies to pane tabs opened after saving.</p>
+            <p class="at-field__help" id="terminalBackendHelp">Durable runs new pane tabs in the terminal runtime bundled with Agent Pane: they keep running when Chrome quits, the extension reloads or Agent Pane updates, and the side panel offers them again. Helper agents (<code>agent-pane run</code>) and agent status marks need it. Built-in runs pane tabs in the native host, and they end when Chrome or the host closes. If Durable cannot start a pane tab, it runs in Built-in and says why in the terminal. Applies to pane tabs opened after saving.</p>
         </div>
         <div class="at-field">
             <label for="env">Environment (KEY=value per line)</label>

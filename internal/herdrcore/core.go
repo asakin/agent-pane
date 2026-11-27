@@ -3,7 +3,7 @@
 // socket (a named pipe on Windows), in framed mode, so one connection carries calls and terminal
 // streams.
 //
-// The host runs terminals in the core when the Durable (preview) terminal
+// The host runs terminals in the core when the Durable terminal
 // backend is chosen (RFC 0001); this package is the bridge's lower half.
 package herdrcore
 

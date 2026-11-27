@@ -24,10 +24,10 @@ env | grep -E '^(AGENT_PANE|TERM_PROGRAM)'
 | `AGENT_PANE_TAB_ID` | Opaque id of the pane tab. It stays the same when the panel restarts a dead terminal in that pane tab. |
 | `AGENT_PANE_SESSION_ID` | Opaque id of the current PTY session in that pane tab. It changes when the terminal is replaced. |
 | `AGENT_PANE_AGENT` | The agent definition the pane tab was launched with (`claude`, `codex`, ...). Unset for a plain shell. It says what was launched, not what is running now. |
-| `AGENT_PANE_FD` | The inherited page-connection descriptor. Unset when there is none, as in pane tabs on the Durable (preview) terminal backend. |
+| `AGENT_PANE_FD` | The inherited page-connection descriptor. Unset when there is none, as in pane tabs on the Durable terminal backend. |
 | `AGENT_PANE_SOCKET` | The session's page socket, used when this process did not inherit the descriptor. |
 | `AGENT_PANE_SKILL_PATH` | Where this file is installed. |
-| `HC_TERMINAL_ID` | Set in pane tabs on the Durable (preview) terminal backend, where the helper commands in section 6 work. |
+| `HC_TERMINAL_ID` | Set in pane tabs on the Durable terminal backend, where the helper commands in section 6 work. |
 
 The ids are labels for logs and messages, not credentials. If `AGENT_PANE` is unset you
 are not in Agent Pane: say so, and do not try the commands below.
@@ -124,12 +124,12 @@ agent-pane status clear
 
 `blocked` means you need the user; `--kind` says why (`permission`, `question` or
 `auth`). The message is optional, one line, and short. Only pane tabs on the Durable
-(preview) terminal backend show it; elsewhere the command succeeds and nothing is
+terminal backend show it; elsewhere the command succeeds and nothing is
 shown, so it is safe to run anywhere `AGENT_PANE=1` is set.
 
 ## 6. Work with helpers
 
-In a pane tab on the Durable (preview) terminal backend you can start helpers: other
+In a pane tab on the Durable terminal backend you can start helpers: other
 agents or commands that run beside you, as part of your pane tab. Start one, give it
 work, wait for it, then read what it did:
 

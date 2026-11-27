@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// paneRegistryPath is the host-private record of Durable (preview) pane
+// paneRegistryPath is the host-private record of Durable pane
 // tabs, ~/.local/share/agent-pane/state/panes.json.
 var paneRegistryPath = filepath.Join(dataDir, "state", "panes.json")
 

@@ -131,7 +131,7 @@ type SessionManager struct {
 
 	// panes are the pane tabs the extension has open, by id; guarded by mu.
 	panes map[string]*paneTab
-	// durable is the Durable (preview) backend, used when the
+	// durable is the Durable backend, used when the
 	// terminalBackend setting picks it; nil where there is none.
 	durable terminalBackend
 	// closing is set by Close, after which Create refuses new sessions;
@@ -492,7 +492,7 @@ var startHook = func() {}
 // Create starts a session running command in the pane tab paneID (a new pane
 // tab when it is empty or cannot be joined). agent is the agent-definition id
 // the launch chose, or "" for a shell. The session runs in the backend the
-// terminalBackend setting picks; when Durable (preview) cannot start it, it
+// terminalBackend setting picks; when Durable cannot start it, it
 // runs in the Built-in backend with a notice in the terminal saying why.
 // When Durable cannot tell whether it started, Create fails instead, so the
 // program does not run twice.
@@ -524,7 +524,7 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 	pid, err := 0, error(nil)
 	started := false
 	var notice []byte
-	if m.durable != nil && cfg().String(terminalBackendKey) == terminalBackendDurable {
+	if m.durable != nil && durableChosen() {
 		pid, err = m.startIn(m.durable, session, agent, command, nil)
 		switch {
 		case err == nil:
@@ -627,9 +627,9 @@ func (m *SessionManager) startIn(backend terminalBackend, session *Session, agen
 }
 
 // fallbackNotice tells the person in a Built-in session why it is not
-// running in the Durable (preview) backend they chose.
+// running in the Durable backend they chose.
 func fallbackNotice(cause error) []byte {
-	return []byte(fmt.Sprintf("\x1b[33mAgent Pane: the Durable (preview) terminal backend could not start this terminal (%s). It runs in the Built-in backend instead.\x1b[0m\r\n", strings.ReplaceAll(cause.Error(), "\n", " ")))
+	return []byte(fmt.Sprintf("\x1b[33mAgent Pane: the Durable terminal backend could not start this terminal (%s). It runs in the Built-in backend instead.\x1b[0m\r\n", strings.ReplaceAll(cause.Error(), "\n", " ")))
 }
 
 // Destroy ends a live session. One still starting is not the caller's yet.
@@ -669,7 +669,7 @@ func (m *SessionManager) endingLocked() func() {
 	return m.ending.Done
 }
 
-// Close lets go of the host's sessions as it exits. Durable (preview)
+// Close lets go of the host's sessions as it exits. Durable
 // sessions keep running in the core, recorded for the next host to take
 // back; their grants end with this host. Any start the core may have made
 // without saying so is ended. Built-in terminals end with the host's
@@ -887,7 +887,7 @@ func NewCmdServe(version string) *cobra.Command {
 			err = <-done
 			logger.Info("Shutting down server")
 			server.Shutdown(context.Background())
-			// Durable (preview) terminals keep running for the next host.
+			// Durable terminals keep running for the next host.
 			sessions.Close()
 			return err
 		},
