@@ -571,6 +571,7 @@ func (m *SessionManager) applyLayoutReport(r layoutReport) error {
 	}
 	window := m.windowLabel(r.Window)
 	change := layoutChange{window: window, space: r.Space, tabs: []layoutTab{}}
+	unsaved := false
 	for _, rt := range r.Tabs {
 		s, ok := m.Get(rt.ID)
 		if !ok || !s.isDurable() {
@@ -596,6 +597,7 @@ func (m *SessionManager) applyLayoutReport(r layoutReport) error {
 				s.nameUnsaved = !saved
 			}
 			s.mu.Unlock()
+			unsaved = unsaved || !saved
 		}
 		tab := publicID("tab", pane.id)
 		change.tabs = append(change.tabs, layoutTab{ID: tab, AgentPane: layoutTabMeta{LockedTab: rt.LockedTab}})
@@ -604,7 +606,15 @@ func (m *SessionManager) applyLayoutReport(r layoutReport) error {
 		}
 		m.setWindow(s, window)
 	}
-	return m.writeLayout(&change)
+	if err := m.writeLayout(&change); err != nil {
+		return err
+	}
+	if unsaved {
+		// The layout applied, but the panel sends the report again until
+		// the name is in the record.
+		return errors.New("failed to record a pane tab's name")
+	}
+	return nil
 }
 
 // recordName keeps a pane tab's new name in its record, so a later host
