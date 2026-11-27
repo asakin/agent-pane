@@ -110,6 +110,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - run: go test -race -v -count=50 -run 'TestPage' ./internal/cmd 2>&1 | grep -E 'DIAG|FAIL|^ok|page_unix_test|panic' | head -400; exit "${PIPESTATUS[0]}"
+        shell: bash
       - run: go vet ./...
       - run: go test -race ./...
 
