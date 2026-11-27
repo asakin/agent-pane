@@ -17,7 +17,7 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 ### Fixed
 
-- The theme picked in Options now colors pane tabs when Chrome is in dark mode; before, they always used Tomorrow Night there. A `themeDark` set in `config.json` still takes its place in dark mode.
+- The theme picked in Options now colors pane tabs when Chrome is in dark mode; before, they always used Tomorrow Night there. Saving a theme also drops the `"themeDark": "Tomorrow Night"` that earlier versions wrote into every new `config.json`; any other `themeDark` set there still takes its place in dark mode.
 
 ## [0.4.2] - 2026-11-21
 

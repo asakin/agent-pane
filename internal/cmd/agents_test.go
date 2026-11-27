@@ -224,6 +224,38 @@ func TestTerminalThemeFollowsSavedTheme(t *testing.T) {
 	}
 }
 
+// A themeDark earlier versions wrote by default gives way to the theme
+// Options saves; any other themeDark stays.
+func TestSavedThemeReplacesGeneratedThemeDark(t *testing.T) {
+	old := configDir
+	configDir = t.TempDir()
+	t.Cleanup(func() { configDir = old })
+	t.Cleanup(unwatchConfig)
+
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(`{"theme": "Tomorrow Night", "themeDark": "Tomorrow Night"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeConfigMap(map[string]any{"theme": "Dracula"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := terminalThemeName("dark"); got != "Dracula" {
+		t.Fatalf("dark theme after save = %q, want Dracula", got)
+	}
+	if saved, err := readConfigMap(); err != nil || saved["themeDark"] != nil {
+		t.Fatalf("themeDark kept: %v %v", saved["themeDark"], err)
+	}
+
+	if err := writeConfigMap(map[string]any{"themeDark": "nord"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeConfigMap(map[string]any{"theme": "GruvboxDark"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := terminalThemeName("dark"); got != "nord" {
+		t.Fatalf("hand-set themeDark = %q, want nord", got)
+	}
+}
+
 // Saves, file watcher reloads and readers can overlap without racing on the
 // loaded configuration, and each save is visible to the next reader.
 func TestConfigReloadsDoNotRace(t *testing.T) {
