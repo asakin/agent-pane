@@ -30,6 +30,7 @@ import { NativeUnavailable } from "./nativeRpc";
 import { moveTab, renderTabList, setTabName } from "./tabStrip";
 import { type PtyAttachHandle, attachPtySocket } from "./ptyAttach";
 import { RECONNECT_GAVE_UP, createReconnectBackoff } from "./reconnect";
+import { mountQuickSettings } from "./quickSettings";
 import { canStepFontSize, clampFontSize, configWithFontSize, stepFontSize } from "./fontSize";
 import {
     type ChromeTabLike,
@@ -116,6 +117,22 @@ async function otherWindowNames(windowId: number, runId: string): Promise<Set<st
         // Without the list, nothing is assumed held by another window.
     }
     return names;
+}
+
+const darkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+
+/** Color the terminal with the theme config.json sets for this color scheme. */
+async function applyTheme(terminal: Terminal, variant: "light" | "dark") {
+    const resp = await browser.runtime.sendMessage<RequestGetXtermConfig, ResponseGetXtermConfig>({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "xterm.getConfig",
+        params: { variant },
+    });
+    if ("error" in resp) {
+        return;
+    }
+    terminal.options.theme = resp.result.theme;
 }
 
 function useBlockCursor(terminal: Terminal) {
@@ -436,6 +453,9 @@ async function main() {
     const fontSizeHost = document.createElement("div");
     strip.appendChild(fontSizeHost);
 
+    const settingsHost = document.createElement("div");
+    strip.appendChild(settingsHost);
+
     // Listen before reading saved locks, so a locked Chrome tab that closes or
     // is replaced while the panel starts up is not missed. Events queue until
     // the status bar below takes over.
@@ -507,6 +527,10 @@ async function main() {
     }
 
     mountFontSizeControls(fontSizeHost, terminal, fitAddon, xtermResp.result);
+    mountQuickSettings(settingsHost, {
+        onThemeSaved: () => applyTheme(terminal, darkScheme.matches ? "dark" : "light"),
+        onAlphabeticalSaved: () => launcher.refreshCatalog(),
+    });
 
     // Chrome tab tracking for the bottom status bar.
     let activeChromeTabId: number | undefined;
@@ -1148,26 +1172,14 @@ async function main() {
     };
 
     globalThis.onfocus = () => {
-        // Don't steal focus from the agent menu.
-        if (document.querySelector(".at-launcher__menu")) {
+        // Don't steal focus from the agent menu or Settings.
+        if (document.querySelector(".at-launcher__menu, .at-settings__menu")) {
             return;
         }
         terminal.focus();
     };
 
-    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", async (event) => {
-        const variant = event.matches ? "dark" : "light";
-        const resp = await browser.runtime.sendMessage<RequestGetXtermConfig, ResponseGetXtermConfig>({
-            jsonrpc: "2.0",
-            id: crypto.randomUUID(),
-            method: "xterm.getConfig",
-            params: { variant },
-        });
-        if ("error" in resp) {
-            return;
-        }
-        terminal.options.theme = resp.result.theme;
-    });
+    darkScheme.addEventListener("change", (event) => void applyTheme(terminal, event.matches ? "dark" : "light"));
 
     let createStarted = false;
     async function createInitial(size: TtyDimensions) {
@@ -1353,19 +1365,7 @@ async function runSingleTerminal(
     globalThis.onfocus = () => {
         terminal.focus();
     };
-    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", async (event) => {
-        const variant = event.matches ? "dark" : "light";
-        const resp = await browser.runtime.sendMessage<RequestGetXtermConfig, ResponseGetXtermConfig>({
-            jsonrpc: "2.0",
-            id: crypto.randomUUID(),
-            method: "xterm.getConfig",
-            params: { variant },
-        });
-        if ("error" in resp) {
-            return;
-        }
-        terminal.options.theme = resp.result.theme;
-    });
+    darkScheme.addEventListener("change", (event) => void applyTheme(terminal, event.matches ? "dark" : "light"));
     terminal.focus();
 }
 

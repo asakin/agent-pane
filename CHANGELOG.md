@@ -6,13 +6,14 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 ### Added
 
+- A **Settings** button (⚙) at the right of the side panel's tab strip holds the everyday settings, each saved at once: a **Theme** picker of five popular dark terminal color themes (Tomorrow Night, the default, Dracula, Solarized Dark, Nord and Gruvbox Dark), which recolors the pane tab straight away, and **Keep the agent menu alphabetical**. **All settings…** opens Options, which keeps every setting. Both edit the same `config.json` values.
 - Durable (preview) pane tabs keep their arrangement when Chrome quits, crashes or is killed: each Chrome window's pane tabs, their order, names, the active one and their locks are kept in a layout document in Agent Pane's private core ([RFC 0004](docs/rfcs/0004-pane-tab-layout-document.md)). After Chrome starts again, the **N running** list in every window offers each window's pane tabs as a group, and **Open all** opens them at once, in order, with the same one active. Approvals do not carry over, and a lock does only while the same Chrome run continues.
 - Pane tabs can be reordered by dragging them along the side panel's tab strip, which marks where the tab will land, or with Ctrl+Shift+Left and Ctrl+Shift+Right on a focused tab. The active pane tab stays active, the order survives closing and reopening the side panel, and Durable (preview) pane tabs keep it in the layout document after Chrome quits.
 - Rename a pane tab by double-clicking it or pressing F2 on it: Enter saves, Escape cancels. The name replaces the terminal's title in the tab strip, its tooltip and the **N running** list, and an empty name brings the title back. It survives closing and reopening the side panel, and a Durable (preview) pane tab keeps it when Chrome quits, as its name in the layout document.
 
 ### Changed
 
-- Options' **Theme** picker offers five popular dark terminal color themes: Tomorrow Night (the default), Dracula, Solarized Dark, Nord and Gruvbox Dark. A theme set by hand in `config.json` stays selectable.
+- Options lists every bundled terminal color theme under **Theme**, and a new **Theme in dark mode** picker sets `themeDark`, which before could only be set in `config.json`.
 - When the side panel can't reach the Agent Pane program, it explains that the program runs the terminals, shows the install command for this platform (`install.ps1` on Windows, `install.sh` elsewhere) with a Copy button, and links to the latest release. The update screen shows the Windows command on Windows too.
 
 ### Fixed
