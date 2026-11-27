@@ -199,9 +199,10 @@ func loadConfig() error {
 
 func defaultConfig() map[string]interface{} {
 	return map[string]interface{}{
-		"command":   getDefaultShell(),
-		"theme":     "Tomorrow Night",
-		"themeDark": "Tomorrow Night",
+		"command": getDefaultShell(),
+		// No themeDark: the chosen theme applies in dark mode too, unless
+		// config.json sets themeDark.
+		"theme": "Tomorrow Night",
 		"xterm": map[string]interface{}{
 			"fontSize": 13,
 		},

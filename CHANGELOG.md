@@ -11,7 +11,12 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 ### Changed
 
+- Options' **Theme** picker offers five popular dark terminal color themes: Tomorrow Night (the default), Dracula, Solarized Dark, Nord and Gruvbox Dark. A theme set by hand in `config.json` stays selectable.
 - When the side panel can't reach the Agent Pane program, it explains that the program runs the terminals, shows the install command for this platform (`install.ps1` on Windows, `install.sh` elsewhere) with a Copy button, and links to the latest release. The update screen shows the Windows command on Windows too.
+
+### Fixed
+
+- The theme picked in Options now colors pane tabs when Chrome is in dark mode; before, they always used Tomorrow Night there. A `themeDark` set in `config.json` still takes its place in dark mode.
 
 ## [0.4.2] - 2026-11-21
 

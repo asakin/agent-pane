@@ -197,6 +197,33 @@ func TestBlockedDomainsPersistAcrossConfigSaves(t *testing.T) {
 	}
 }
 
+// The theme Options saves applies in a dark browser too; a hand-set
+// themeDark still wins there.
+func TestTerminalThemeFollowsSavedTheme(t *testing.T) {
+	old := configDir
+	configDir = t.TempDir()
+	t.Cleanup(func() { configDir = old })
+	t.Cleanup(unwatchConfig)
+
+	if err := writeConfigMap(map[string]any{"theme": "Dracula"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, variant := range []string{"dark", "light"} {
+		if got := terminalThemeName(variant); got != "Dracula" {
+			t.Fatalf("%s theme = %q, want Dracula", variant, got)
+		}
+	}
+	if err := writeConfigMap(map[string]any{"themeDark": "nord"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := terminalThemeName("dark"); got != "nord" {
+		t.Fatalf("dark theme with themeDark = %q, want nord", got)
+	}
+	if got := terminalThemeName("light"); got != "Dracula" {
+		t.Fatalf("light theme with themeDark = %q, want Dracula", got)
+	}
+}
+
 // Saves, file watcher reloads and readers can overlap without racing on the
 // loaded configuration, and each save is visible to the next reader.
 func TestConfigReloadsDoNotRace(t *testing.T) {
