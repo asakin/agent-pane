@@ -21,6 +21,11 @@ export type WindowTab = TabLock & {
      * sessions. Page-read grants belong to it.
      */
     pane?: string;
+    /**
+     * The name a person gave the pane tab. While set, the terminal's title
+     * no longer changes its label.
+     */
+    name?: string;
 };
 
 export type WindowTabState = {
@@ -34,7 +39,8 @@ function isWindowTab(value: unknown): value is WindowTab {
     }
     const tab = value as WindowTab;
     return typeof tab.id === "string" && tab.id !== "" && typeof tab.app === "string" && isTabLock(tab)
-        && (tab.pane === undefined || typeof tab.pane === "string");
+        && (tab.pane === undefined || typeof tab.pane === "string")
+        && (tab.name === undefined || typeof tab.name === "string");
 }
 
 export function windowStateKey(windowId: number): string {

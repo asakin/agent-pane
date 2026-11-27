@@ -188,5 +188,7 @@ test("tty.layout reports a window's pane tabs in order, the active one and live 
     });
     // A window that took a space names it.
     assert.equal(layoutParams("7@run", tabs, "s1", "sp-1").space, "sp-1");
+    // A name the person set goes with its pane tab; none means the title.
+    assert.deepEqual(layoutParams("7@run", [{ id: "s1", app: "", name: "review" }, { id: "s2", app: "" }], "s1").tabs, [{ id: "s1", name: "review" }, { id: "s2" }]);
     assert.equal(nativeTimeoutMs("tty.layout"), NATIVE_RPC_TIMEOUT_MS);
 });

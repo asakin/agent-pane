@@ -223,6 +223,7 @@ func (m *SessionManager) adopt(core *coreBackend, rec paneRecord, term herdrcore
 		ID:      rec.ID,
 		manager: m,
 		Label:   label,
+		name:    rec.Name,
 		term:    t,
 		started: true,
 		agent:   rec.Agent,
@@ -275,6 +276,7 @@ func (m *SessionManager) record(session *Session) {
 		Session: publicID("session", session.ID),
 		Agent:   session.agent,
 		Label:   session.Label,
+		Name:    session.name,
 		Socket:  session.socketPath,
 		Browser: browser,
 	}

@@ -67,7 +67,8 @@ export type RequestListTTY = JSONRPCRequestBase<"tty.list", undefined>
  */
 export type RequestLayoutTTY = JSONRPCRequestBase<"tty.layout", {
     window: string;
-    tabs: { id: string; lockedTab?: number }[];
+    /** name is the name a person set; absent while the tab follows its terminal's title. */
+    tabs: { id: string; lockedTab?: number; name?: string }[];
     active: string;
     space?: string;
 }>
@@ -153,6 +154,8 @@ export type ListedTTY = {
     agent?: string;
     /** What approval prompts call it: the agent's name or Terminal. */
     label?: string;
+    /** The pane tab's name a person set (Durable only). */
+    name?: string;
     /** The Chrome window it was last shown in (windowName), absent once that window closed. */
     window?: string;
     /** Set when it runs in the Durable (preview) backend and outlives the side panel. */
