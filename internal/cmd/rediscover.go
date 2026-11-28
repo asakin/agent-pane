@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -91,6 +92,12 @@ func (m *SessionManager) rediscover() error {
 	ctx, cancel := context.WithTimeout(context.Background(), coreStartTimeout)
 	defer cancel()
 	conn, err := core.connect(ctx)
+	if errors.Is(err, errCoreMissing) {
+		// With no core installed, no Durable pane tab can be running, so
+		// there is nothing to wait for: a saved pane tab the host does not
+		// know is gone, and the panel replaces it.
+		return nil
+	}
 	if err != nil {
 		return err
 	}

@@ -19,6 +19,7 @@ Notable changes to Agent Pane, newest first. The format follows [Keep a Changelo
 
 ### Fixed
 
+- A new Durable pane tab that takes longer than five seconds to start, as the first one after a reboot can while the bundled core starts, no longer shows as failed while its program starts anyway, which a second try would run twice. With the bundled core missing, the side panel can again replace saved pane tabs instead of waiting for Durable pane tabs that cannot be running.
 - The theme picked in Options now colors pane tabs when Chrome is in dark mode; before, they always used Tomorrow Night there. Saving a theme also drops the `"themeDark": "Tomorrow Night"` that earlier versions wrote into every new `config.json`; any other `themeDark` set there still takes its place in dark mode.
 - On macOS, `agent-pane page` reads from a terminal no longer end now and then as soon as they start, with "timed out waiting for Agent Pane" or "denied: nobody answered the approval prompt in the side panel" before the person could answer.
 

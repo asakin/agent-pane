@@ -1637,6 +1637,15 @@ func TestAPaneTabThatCouldNotBeTakenBackIsTriedAgain(t *testing.T) {
 	}
 }
 
+func TestAMissingCoreLeavesNoPaneTabsToWaitFor(t *testing.T) {
+	noRediscoverWait(t)
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return nil, errCoreMissing }})
+	h.initialize(t, "b1")
+	if _, msg := h.call(t, "tty.attach", map[string]any{"id": "saved"}); !strings.Contains(msg, "invalid tty ID") {
+		t.Fatalf("tty.attach with no core installed %q", msg)
+	}
+}
+
 func TestAttachWhileTheCoreIsUnreadableIsNotAMissingSession(t *testing.T) {
 	useBackend(t, terminalBackendDurable)
 	noRediscoverWait(t)
