@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -786,6 +788,43 @@ func TestDurableFallsBackToBuiltinWithANotice(t *testing.T) {
 	replay := readFrame(t, dialAttach(t, ep.URL))
 	if !strings.Contains(replay, "Durable terminal backend could not start") || !strings.Contains(replay, errCoreMissing.Error()) {
 		t.Fatalf("replay %q", replay)
+	}
+}
+
+func TestASlowDurableFailureDoesNotFallBackLate(t *testing.T) {
+	old := createFallbackLimit
+	createFallbackLimit = -1
+	t.Cleanup(func() { createFallbackLimit = old })
+	core := newFakeCore()
+	core.runErr = &herdrcore.Error{Message: "spawn_failed", Kind: "spawn_failed"}
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return core, nil }})
+	if _, msg := h.call(t, "tty.create", map[string]any{"mode": "shell", "cols": 80, "rows": 24}); !strings.Contains(msg, "took too long") {
+		t.Fatalf("tty.create %q", msg)
+	}
+	if len(h.sessions.List()) != 0 {
+		t.Fatal("a session was left after a late failure")
+	}
+}
+
+func TestCoreAbsentNeedsNoExecutableAndNoListener(t *testing.T) {
+	missing := &fs.PathError{Op: "stat", Path: "hc", Err: fs.ErrNotExist}
+	denied := &fs.PathError{Op: "stat", Path: "hc", Err: fs.ErrPermission}
+	noSocket := fmt.Errorf("connect to herdr-core: %w", &net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.ENOENT)})
+	refused := fmt.Errorf("connect to herdr-core: %w", &net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)})
+	hung := fmt.Errorf("connect to herdr-core: %w", context.DeadlineExceeded)
+	for _, c := range []struct {
+		name       string
+		stat, dial error
+		absent     bool
+	}{
+		{"no executable, no socket", missing, noSocket, true},
+		{"no executable, nothing listening", missing, refused, true},
+		{"no executable, a core that does not answer", missing, hung, false},
+		{"an executable that cannot be read", denied, noSocket, false},
+	} {
+		if got := coreAbsent(c.stat, c.dial); got != c.absent {
+			t.Errorf("%s: coreAbsent = %v", c.name, got)
+		}
 	}
 }
 
@@ -1634,6 +1673,15 @@ func TestAPaneTabThatCouldNotBeTakenBackIsTriedAgain(t *testing.T) {
 	core.set(func(f *fakeCore) { f.subErr = nil })
 	if items := h.listFacts(t); len(items) != 1 || items[0].ID != ep.ID {
 		t.Fatalf("tty.list after the core recovered %+v", items)
+	}
+}
+
+func TestAMissingCoreLeavesNoPaneTabsToWaitFor(t *testing.T) {
+	noRediscoverWait(t)
+	h := newNativeHarness(t, &coreBackend{logger: discardLogger(), dial: func(context.Context) (coreAPI, error) { return nil, errCoreMissing }})
+	h.initialize(t, "b1")
+	if _, msg := h.call(t, "tty.attach", map[string]any{"id": "saved"}); !strings.Contains(msg, "invalid tty ID") {
+		t.Fatalf("tty.attach with no core installed %q", msg)
 	}
 }
 

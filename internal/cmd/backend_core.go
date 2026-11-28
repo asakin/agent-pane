@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"agent-pane/internal/herdrcore"
@@ -99,6 +101,13 @@ type coreSubscription struct{ *herdrcore.Subscription }
 
 func (s coreSubscription) Snapshot() []herdrcore.Terminal { return s.Terminals }
 
+// coreAbsent reports whether a failed stat of the core's executable and a
+// failed dial of its socket together show that no core exists: the
+// executable is not there and nothing listens on the socket.
+func coreAbsent(statErr, dialErr error) bool {
+	return errors.Is(statErr, fs.ErrNotExist) && (errors.Is(dialErr, fs.ErrNotExist) || errors.Is(dialErr, syscall.ECONNREFUSED))
+}
+
 // errCoreMissing reports a Durable session with no bundled core installed.
 var errCoreMissing = errors.New("the bundled terminal runtime is not installed; run `agent-pane doctor`")
 
@@ -132,8 +141,18 @@ func newCoreBackend(logger *slog.Logger, core herdrcore.Core) *coreBackend {
 	return &coreBackend{
 		logger: logger,
 		dial: func(ctx context.Context) (coreAPI, error) {
-			if _, err := os.Stat(core.Binary); err != nil {
-				return nil, errCoreMissing
+			if _, statErr := os.Stat(core.Binary); statErr != nil {
+				// A core started earlier keeps running after its executable
+				// is removed, and a stat that fails for another reason
+				// proves nothing, so the socket decides.
+				c, dialErr := core.Dial(ctx)
+				if dialErr == nil {
+					return coreClient{c}, nil
+				}
+				if coreAbsent(statErr, dialErr) {
+					return nil, errCoreMissing
+				}
+				return nil, fmt.Errorf("the bundled terminal runtime cannot be read: %w", statErr)
 			}
 			if err := core.StartVia(ctx, base, launchCore); err != nil {
 				return nil, err

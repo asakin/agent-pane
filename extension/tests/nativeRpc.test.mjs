@@ -3,7 +3,7 @@ import test from "node:test";
 import { isHostNotification, isHostRequest } from "../entrypoints/shared/hostConnection.ts";
 import { checkHost, MIN_HOST_PROTOCOL, MIN_HOST_VERSION } from "../entrypoints/shared/hostVersion.ts";
 import { layoutParams } from "../entrypoints/shared/runningTabs.ts";
-import { BROWSER_STATUS_TIMEOUT_MS, CHOOSE_FOLDER_TIMEOUT_MS, detachOnWindowClose, errorFromResponse, METHOD_NOT_FOUND, NATIVE_RPC_TIMEOUT_MS, nativeTimeoutMs, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
+import { BROWSER_STATUS_TIMEOUT_MS, CHOOSE_FOLDER_TIMEOUT_MS, TTY_CREATE_TIMEOUT_MS, detachOnWindowClose, errorFromResponse, METHOD_NOT_FOUND, NATIVE_RPC_TIMEOUT_MS, nativeTimeoutMs, NativeUnavailable, requestNative } from "../entrypoints/shared/nativeRpc.ts";
 
 function fakePort() {
     const listeners = new Set();
@@ -49,7 +49,12 @@ function ok(id) {
 test("the folder picker is allowed to wait", () => {
     assert.equal(nativeTimeoutMs("dialog.chooseFolder"), CHOOSE_FOLDER_TIMEOUT_MS);
     assert.ok(CHOOSE_FOLDER_TIMEOUT_MS > NATIVE_RPC_TIMEOUT_MS);
-    assert.equal(nativeTimeoutMs("tty.create"), NATIVE_RPC_TIMEOUT_MS);
+    assert.equal(nativeTimeoutMs("tty.attach"), NATIVE_RPC_TIMEOUT_MS);
+});
+
+test("tty.create waits longer than the host may take to start the core", () => {
+    assert.equal(nativeTimeoutMs("tty.create"), TTY_CREATE_TIMEOUT_MS);
+    assert.ok(TTY_CREATE_TIMEOUT_MS > 40_000, "the host allows 30 seconds to start the core and 10 to clean up");
 });
 
 test("browser.status may wait for its version probes", () => {

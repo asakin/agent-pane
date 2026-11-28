@@ -489,6 +489,12 @@ func (m *SessionManager) wsURL(id, token string) string {
 // Tests hold a start there.
 var startHook = func() {}
 
+// createFallbackLimit is how long a failed Durable start may have taken for
+// Create still to fall back to Built-in: the core's start bound. A failure
+// after that has also spent its cleanup time, and the extension's tty.create
+// deadline covers the start and the cleanup, not a fallback after them.
+var createFallbackLimit = coreStartTimeout
+
 // Create starts a session running command in the pane tab paneID (a new pane
 // tab when it is empty or cannot be joined). agent is the agent-definition id
 // the launch chose, or "" for a shell. The session runs in the backend the
@@ -521,6 +527,7 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 	m.mu.Unlock()
 
 	startHook()
+	begun := time.Now()
 	pid, err := 0, error(nil)
 	started := false
 	var notice []byte
@@ -538,7 +545,11 @@ func (m *SessionManager) Create(label, paneID, agent string, command *terminalCo
 			notice = fallbackNotice(err)
 		}
 	}
-	if !started && !errors.Is(err, errCoreUnsure) {
+	if !started && err != nil && !errors.Is(err, errCoreUnsure) && time.Since(begun) > createFallbackLimit {
+		// The extension may already have given up on this tty.create; a
+		// Built-in program started now would run with no pane tab to show it.
+		err = fmt.Errorf("the Durable terminal backend took too long and failed: %w", err)
+	} else if !started && !errors.Is(err, errCoreUnsure) {
 		pid, err = m.startIn(m.backend, session, agent, command, notice)
 	}
 	if err != nil {
