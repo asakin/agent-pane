@@ -54,7 +54,7 @@ test("the folder picker is allowed to wait", () => {
 
 test("tty.create waits longer than the host may take to start the core", () => {
     assert.equal(nativeTimeoutMs("tty.create"), TTY_CREATE_TIMEOUT_MS);
-    assert.ok(TTY_CREATE_TIMEOUT_MS > 30_000, "the host allows 30 seconds to start the core");
+    assert.ok(TTY_CREATE_TIMEOUT_MS > 40_000, "the host allows 30 seconds to start the core and 10 to clean up");
 });
 
 test("browser.status may wait for its version probes", () => {

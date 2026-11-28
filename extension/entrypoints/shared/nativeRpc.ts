@@ -5,11 +5,11 @@ export const CHOOSE_FOLDER_TIMEOUT_MS = 120_000;
 /** browser.status runs each tool's --version, for up to five seconds. */
 export const BROWSER_STATUS_TIMEOUT_MS = 15_000;
 /**
- * tty.create may start the bundled core, and the host allows that 30
- * seconds. Giving up sooner would report a failure for a program that then
- * starts, and a retry would run it twice.
+ * tty.create may start the bundled core, which the host allows 30 seconds,
+ * then 10 more to clean up a failed start. Giving up sooner would report a
+ * failure for a program that then starts, and a retry would run it twice.
  */
-export const TTY_CREATE_TIMEOUT_MS = 35_000;
+export const TTY_CREATE_TIMEOUT_MS = 45_000;
 
 export function nativeTimeoutMs(method: string): number {
     if (method === "dialog.chooseFolder") {
