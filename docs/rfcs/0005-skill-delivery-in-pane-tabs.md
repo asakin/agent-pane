@@ -171,18 +171,6 @@ Its help text and the README stop mentioning `~/AGENTS.md` and `~/CLAUDE.md`, an
 
 The context only points at `agent-pane --skill` rather than repeating the skill's instructions, so the skill stays the one place that says how to use Agent Pane.
 
-## Prior art
-
-None.
-
-## Unresolved questions
-
-None.
-
-## Future possibilities
-
-None.
-
 ## Rollout
 
 Before merging, the implementation pull request records, for each shipped agent at its current version, the answer to "how do I read the page next to me?" in a pane tab (launched and typed, in zsh, bash and fish, on macOS with `path_helper`) and in another terminal. This includes the two adapters known from docs only: Pi's `--append-system-prompt` with a file, and Cursor's `--plugin-dir` rule.
